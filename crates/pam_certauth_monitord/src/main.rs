@@ -111,7 +111,11 @@ async fn main() -> anyhow::Result<()> {
     let udev_q: Arc<dyn UdevQuery> = if args.no_udev {
         Arc::new(AlwaysPresent)
     } else {
-        Arc::new(pam_certauth_monitord::udev_query::RealUdevQuery::default())
+        // RealUdevQuery is a unit struct on Linux and a type-alias to a unit
+        // struct (AlwaysAbsent) on non-Linux dev builds; ::default() is the
+        // single expression that compiles on both.
+        #[allow(clippy::default_trait_access)]
+        Arc::new(<pam_certauth_monitord::udev_query::RealUdevQuery as Default>::default())
     };
     // Map the validated `[monitor].on_usb_removed` (a fieldless enum in
     // pam_certauth_core) onto monitord's local `OnUsbRemoved` (which

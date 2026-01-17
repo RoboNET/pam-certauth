@@ -4,7 +4,9 @@
 //! `SessionRemoved`. Non-Linux builds expose only the [`LogindSignal`]
 //! enum so that the rest of the crate can be compiled and unit-tested.
 
+#[cfg(not(target_os = "linux"))]
 use tokio::sync::mpsc::UnboundedSender;
+#[cfg(not(target_os = "linux"))]
 use tokio::task::JoinHandle;
 
 /// Signals we care about from logind.

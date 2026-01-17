@@ -5,7 +5,7 @@
 //! Only compiled on Linux (where `pam-sys` is available).
 
 #![cfg(target_os = "linux")]
-#![allow(unsafe_code)]
+#![allow(unsafe_code, clippy::doc_markdown)]
 
 use std::ffi::{CStr, CString};
 use std::os::raw::{c_char, c_int, c_void};
@@ -32,14 +32,14 @@ extern "C" {
     /// Re-declared with a stable signature; bindgen generates this with
     /// types that vary across libpam revisions.
     fn pam_get_user(
-        pamh: *mut pam_sys::PamHandle,
+        pamh: *mut pam_sys::pam_handle_t,
         user: *mut *const c_char,
         prompt: *const c_char,
     ) -> c_int;
 
     /// Same rationale as [`pam_get_user`] above.
     fn pam_get_item(
-        pamh: *mut pam_sys::PamHandle,
+        pamh: *mut pam_sys::pam_handle_t,
         item_type: c_int,
         item: *mut *const c_void,
     ) -> c_int;
@@ -56,10 +56,10 @@ extern "C" {
 /// * [`PamHelperError::PamRc`] when the underlying PAM call fails.
 /// * [`PamHelperError::Null`] if PAM returned a NULL user pointer.
 /// * [`PamHelperError::NonUtf8`] if PAM returned non-UTF-8 bytes.
-pub unsafe fn pam_get_user_string(pamh: *mut pam_sys::PamHandle) -> Result<String, PamHelperError> {
+pub unsafe fn pam_get_user_string(pamh: *mut pam_sys::pam_handle_t) -> Result<String, PamHelperError> {
     let mut user_ptr: *const c_char = std::ptr::null();
     // SAFETY: `pamh` is owned by PAM; `user_ptr` is a valid out-pointer.
-    let rc = pam_get_user(pamh, &mut user_ptr, std::ptr::null());
+    let rc = pam_get_user(pamh, &raw mut user_ptr, std::ptr::null());
     if rc != PAM_SUCCESS {
         return Err(PamHelperError::PamRc(rc));
     }
@@ -84,11 +84,11 @@ pub unsafe fn pam_get_user_string(pamh: *mut pam_sys::PamHandle) -> Result<Strin
 ///
 /// See [`pam_get_user_string`].
 pub unsafe fn pam_get_service_string(
-    pamh: *mut pam_sys::PamHandle,
+    pamh: *mut pam_sys::pam_handle_t,
 ) -> Result<String, PamHelperError> {
     let mut item_ptr: *const c_void = std::ptr::null();
     // SAFETY: `pamh` is owned by PAM; `item_ptr` is a valid out-pointer.
-    let rc = pam_get_item(pamh, PAM_SERVICE, &mut item_ptr);
+    let rc = pam_get_item(pamh, PAM_SERVICE, &raw mut item_ptr);
     if rc != PAM_SUCCESS {
         return Err(PamHelperError::PamRc(rc));
     }
@@ -120,11 +120,11 @@ pub unsafe fn pam_get_service_string(
 ///   code other than `PAM_SUCCESS`.
 /// * [`PamHelperError::NonUtf8`] if PAM returned non-UTF-8 bytes.
 pub unsafe fn pam_get_tty_string(
-    pamh: *mut pam_sys::PamHandle,
+    pamh: *mut pam_sys::pam_handle_t,
 ) -> Result<Option<String>, PamHelperError> {
     let mut item_ptr: *const c_void = std::ptr::null();
     // SAFETY: `pamh` is owned by PAM; `item_ptr` is a valid out-pointer.
-    let rc = pam_get_item(pamh, PAM_TTY, &mut item_ptr);
+    let rc = pam_get_item(pamh, PAM_TTY, &raw mut item_ptr);
     if rc != PAM_SUCCESS {
         return Err(PamHelperError::PamRc(rc));
     }

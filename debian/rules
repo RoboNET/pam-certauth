@@ -22,12 +22,14 @@ export LC_ALL = C.UTF-8
 export TZ = UTC
 
 %:
-	dh $@ --buildsystem=cargo
+	dh $@
 
 override_dh_auto_configure:
-	dh_auto_configure -- \
-		--release \
-		--workspace
+	# Skip dh-cargo configure: workspace + direct cargo invocation in build step.
+	@echo "(configure override) no-op"
+
+override_dh_auto_clean:
+	rm -rf target debian/cargo_home
 
 override_dh_auto_build:
 	cargo build --release --workspace --offline || cargo build --release --workspace
@@ -52,10 +54,5 @@ override_dh_auto_test:
 override_dh_strip:
 	dh_strip --no-automatic-dbgsym
 
-override_dh_systemd_enable:
-	dh_systemd_enable --no-enable pam-certauth-monitord.service
-
-override_dh_systemd_start:
-	# Do not auto-start the monitor service on install. Admin must drop a
-	# config file first.
-	dh_systemd_start --no-start --no-restart-on-upgrade
+override_dh_installsystemd:
+	dh_installsystemd --no-enable --no-start --no-restart-on-upgrade pam-certauth-monitord.service

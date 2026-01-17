@@ -6,6 +6,13 @@
 //! so the whole file is gated to Linux builds.
 
 #![cfg(target_os = "linux")]
+#![allow(
+    clippy::expect_used,
+    clippy::unwrap_used,
+    clippy::panic,
+    clippy::items_after_statements,
+    clippy::manual_let_else
+)]
 
 use std::collections::BTreeMap;
 use std::time::Duration;

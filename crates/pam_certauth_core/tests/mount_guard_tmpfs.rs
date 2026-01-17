@@ -1,5 +1,12 @@
 #![allow(missing_docs)]
 #![cfg(target_os = "linux")]
+#![allow(
+    clippy::expect_used,
+    clippy::unwrap_used,
+    clippy::panic,
+    clippy::items_after_statements,
+    clippy::manual_let_else
+)]
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};

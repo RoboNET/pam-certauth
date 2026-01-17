@@ -15,6 +15,13 @@
 //! The other `pam_sm_*` hooks (`acct_mgmt`, `open_session`, `close_session`,
 //! `setcred`) are wired to the [`AuthContext`] stored in PAM data by
 //! `pam_sm_authenticate`.
+#![allow(
+    clippy::similar_names,
+    clippy::doc_markdown,
+    clippy::too_many_lines,
+    clippy::must_use_candidate,
+    clippy::cast_sign_loss
+)]
 
 pub use crate::panic_guard::{PAM_AUTHINFO_UNAVAIL, PAM_SUCCESS};
 
@@ -110,7 +117,7 @@ fn fresh_session_id() -> Result<String, std::io::Error> {
 ///
 /// Called by PAM with a valid handle and argument vector.
 pub unsafe extern "C" fn pam_sm_authenticate(
-    pamh: *mut pam_sys::PamHandle,
+    pamh: *mut pam_sys::pam_handle_t,
     _flags: i32,
     argc: i32,
     argv: *const *const std::ffi::c_char,
@@ -257,7 +264,7 @@ pub unsafe extern "C" fn pam_sm_authenticate(
 ///
 /// Called by PAM with a valid handle.
 pub unsafe extern "C" fn pam_sm_setcred(
-    _pamh: *mut pam_sys::PamHandle,
+    _pamh: *mut pam_sys::pam_handle_t,
     _flags: i32,
     _argc: i32,
     _argv: *const *const std::ffi::c_char,
@@ -273,7 +280,7 @@ pub unsafe extern "C" fn pam_sm_setcred(
 ///
 /// Called by PAM with a valid handle.
 pub unsafe extern "C" fn pam_sm_acct_mgmt(
-    pamh: *mut pam_sys::PamHandle,
+    pamh: *mut pam_sys::pam_handle_t,
     _flags: i32,
     _argc: i32,
     _argv: *const *const std::ffi::c_char,
@@ -309,7 +316,7 @@ const PAM_SESSION_ERR: i32 = 14;
 ///
 /// Called by PAM with a valid handle.
 pub unsafe extern "C" fn pam_sm_open_session(
-    pamh: *mut pam_sys::PamHandle,
+    pamh: *mut pam_sys::pam_handle_t,
     _flags: i32,
     argc: i32,
     argv: *const *const std::ffi::c_char,
@@ -378,7 +385,7 @@ pub unsafe extern "C" fn pam_sm_open_session(
 ///
 /// Called by PAM with a valid handle.
 pub unsafe extern "C" fn pam_sm_close_session(
-    pamh: *mut pam_sys::PamHandle,
+    pamh: *mut pam_sys::pam_handle_t,
     _flags: i32,
     argc: i32,
     argv: *const *const std::ffi::c_char,

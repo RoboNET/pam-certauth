@@ -8,6 +8,7 @@
 //! ```
 
 #![cfg(target_os = "linux")]
+#![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 
 use pam_certauth_core::usb::{wait_for_usb, UsbError};
 use std::time::Duration;
