@@ -1,0 +1,840 @@
+//! Validated config.
+
+use std::collections::{BTreeMap, BTreeSet};
+use std::path::PathBuf;
+use std::time::Duration;
+
+use crate::config::raw::{
+    RawConfig, RawCryptoBackend, RawHostIdFallback, RawHostIdentity, RawMode, RawMonitor,
+    RawMonitorFailMode, RawOnUsbRemoved, RawPkcs11LockingMode, RawRevocationMode, RawTrust,
+    RawTrustOverride, RawUserMapping,
+};
+use crate::error::TrustError;
+use crate::hooks::{validate_hook, HookConfig};
+use crate::token::pkcs11::LockingMode as Pkcs11LockingMode;
+use crate::x509::SignatureAlg;
+use crate::{Error, LogLevel, SyslogFacility};
+
+/// Validated config.
+#[derive(Debug, Clone)]
+pub struct ValidatedConfig {
+    /// Crypto backend.
+    pub crypto_backend: CryptoBackend,
+    /// Mode.
+    pub mode: Mode,
+    /// PKCS#11 module.
+    pub pkcs11_module: Option<PathBuf>,
+    /// Optional `CKA_LABEL` filter for the token.
+    pub pkcs11_token_label: Option<String>,
+    /// Optional `CKA_LABEL` filter for the on-token cert / key
+    /// objects.  Defaults to `None` which means "use the first
+    /// end-entity cert found".
+    pub pkcs11_object_label: Option<String>,
+    /// Maximum number of PIN attempts before bailing (default 3).
+    pub pkcs11_max_pin_attempts: u32,
+    /// PKCS#11 locking mode (default OS).
+    pub pkcs11_locking_mode: Pkcs11LockingMode,
+    /// Prompt string for the token PIN (default in Russian, defined at runtime).
+    pub pkcs11_pin_prompt: Option<String>,
+    /// Maximum time `wait_for_token` will block waiting for the user
+    /// to insert the token (default 10 s).
+    pub pkcs11_slot_wait: Duration,
+    /// PKCS#12 path pattern.
+    pub pkcs12_path_pattern: Option<String>,
+    /// PIN prompt.
+    pub pkcs12_pin_prompt: Option<String>,
+    /// Optional path to the gost-engine `.so`.
+    ///
+    /// Validated to be a readable file when `Some`.  Only meaningful with
+    /// [`CryptoBackend::Openssl`]; combining this field with any other backend
+    /// is rejected at validation time.
+    pub gost_engine_path: Option<PathBuf>,
+    /// USB wait.
+    pub usb_wait: Duration,
+    /// USB removal action.
+    pub on_usb_removed: OnUsbRemoved,
+    /// USB removed grace.
+    pub usb_removed_grace: Duration,
+    /// Suspend grace.
+    pub suspend_grace: Duration,
+    /// Monitor fail mode.
+    pub monitor_fail_mode: MonitorFailMode,
+    /// Monitor IPC section (socket path, timeout, effective fail mode).
+    pub monitor: MonitorSection,
+    /// Trust section.
+    pub trust: TrustSection,
+    /// Trust overrides.
+    pub trust_overrides: Vec<TrustOverride>,
+    /// Host identity.
+    pub host_identity: HostIdentitySection,
+    /// User mappings.
+    pub user_mappings: Vec<UserMapping>,
+    /// Logging.
+    pub logging: LoggingSection,
+    /// Hooks.
+    pub hooks: Vec<HookConfig>,
+}
+
+/// Crypto backend.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CryptoBackend {
+    /// OpenSSL.
+    Openssl,
+    /// Native PKCS#11.
+    Pkcs11Native,
+}
+
+/// Mode.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Mode {
+    /// PKCS#12.
+    Pkcs12,
+    /// PKCS#11.
+    Pkcs11,
+}
+
+/// USB removed action.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OnUsbRemoved {
+    /// Lock.
+    Lock,
+    /// Logout.
+    Logout,
+    /// Hook.
+    Hook,
+    /// Shutdown.
+    Shutdown,
+}
+
+/// Monitor failure mode.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MonitorFailMode {
+    /// Strict.
+    Strict,
+    /// Permissive.
+    Permissive,
+}
+
+/// Validated `[monitor]` section: where to talk to monitord, how long to
+/// wait, and how to react to failures.
+#[derive(Debug, Clone)]
+pub struct MonitorSection {
+    /// Absolute path to the monitord Unix socket.
+    pub socket_path: PathBuf,
+    /// Per-RPC connect+IO timeout.
+    pub timeout: Duration,
+    /// Effective fail mode (resolved from `[monitor].fail_mode` or, when
+    /// absent, the top-level `monitor_fail_mode`).
+    pub fail_mode: MonitorFailMode,
+    /// Absolute path to the persisted session-registry JSON. Read by
+    /// `pam-certauth-monitord`.
+    pub state_file_path: PathBuf,
+    /// Action `pam-certauth-monitord` should take on a confirmed USB
+    /// removal past the grace window.
+    pub on_usb_removed: OnUsbRemoved,
+    /// Grace window between a USB removal event and the configured
+    /// action.
+    pub usb_removed_grace: Duration,
+    /// Suspend-grace window: removals within this many seconds after a
+    /// resume are ignored.
+    pub suspend_grace: Duration,
+    /// Absolute path to the hook executable invoked when
+    /// [`MonitorSection::on_usb_removed`] is [`OnUsbRemoved::Hook`].
+    /// `None` for any other mode.
+    pub on_usb_removed_hook_path: Option<PathBuf>,
+    /// Per-connection idle timeout for the monitord IPC server.
+    pub idle_timeout: Duration,
+    /// Maximum number of concurrent client connections accepted by the
+    /// monitord IPC server.
+    pub max_concurrent_connections: u32,
+}
+
+/// Trust section.
+#[derive(Debug, Clone)]
+pub struct TrustSection {
+    /// Anchors.
+    pub anchors: Vec<PathBuf>,
+    /// Intermediates.
+    pub intermediates: Vec<PathBuf>,
+    /// Revocation.
+    pub revocation: RevocationSection,
+    /// Signature algorithms.
+    pub allowed_signature_algorithms: BTreeSet<String>,
+    /// Trust-anchor SPKI pinning.
+    pub pinning: PinningSection,
+    /// Maximum chain depth (1..=N).  Validator enforces `>= 1` and
+    /// caps at the platform-reasonable upper bound.
+    pub max_chain_depth: u32,
+    /// PKI clock-skew tolerance in seconds.  Validator enforces
+    /// `<= 600` (ten minutes).
+    pub clock_skew_seconds: u64,
+}
+
+/// Validated `[trust.pinning]` section.
+///
+/// When [`PinningSection::enabled`] is `false` the verifier MUST NOT
+/// enforce pinning, regardless of the contents of `allowed_root_spki_sha256`.
+/// When `enabled = true` the verifier MUST reject any chain whose anchor's
+/// SPKI SHA-256 is not in the configured set.
+#[derive(Debug, Clone, Default)]
+pub struct PinningSection {
+    /// Enabled.
+    pub enabled: bool,
+    /// 32-byte SPKI SHA-256 pins (hex strings already validated as
+    /// 64-char ASCII hex by [`validate_trust`]).
+    pub allowed_root_spki_sha256: Vec<String>,
+}
+
+/// Revocation section.
+#[derive(Debug, Clone)]
+pub struct RevocationSection {
+    /// Mode.
+    pub mode: RevocationMode,
+    /// CRL paths.
+    pub crl_paths: Vec<PathBuf>,
+}
+
+/// Revocation mode.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RevocationMode {
+    /// None.
+    None,
+    /// CRL.
+    Crl,
+    /// OCSP.
+    Ocsp,
+    /// CRL then OCSP.
+    CrlThenOcsp,
+}
+
+/// Trust override.
+#[derive(Debug, Clone)]
+pub struct TrustOverride {
+    /// Host ids.
+    pub when_host_id_in: BTreeSet<String>,
+    /// Anchors.
+    pub anchors: Vec<PathBuf>,
+    /// Intermediates.
+    pub intermediates: Vec<PathBuf>,
+}
+
+/// Host identity section.
+#[derive(Debug, Clone)]
+pub struct HostIdentitySection {
+    /// Sources.
+    pub sources: Vec<crate::host_identity::HostIdSourceKind>,
+    /// Fallback.
+    pub fallback: HostIdFallback,
+    /// Override.
+    pub override_value: Option<String>,
+    /// Custom command.
+    pub custom_command: Option<PathBuf>,
+    /// Custom command timeout.
+    pub custom_command_timeout: Duration,
+}
+
+/// Host id fallback.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HostIdFallback {
+    /// Deny.
+    Deny,
+    /// Warn.
+    Warn,
+    /// Allow.
+    Allow,
+}
+
+/// User mapping.
+#[derive(Debug, Clone)]
+pub struct UserMapping {
+    /// PAM user.
+    pub pam_user: String,
+    /// Criteria.
+    pub criteria: UserMatchCriteria,
+}
+
+/// User match criteria.
+#[derive(Debug, Clone)]
+pub enum UserMatchCriteria {
+    /// Subject CN.
+    SubjectCn(String),
+    /// SAN email.
+    SanEmail(String),
+    /// SAN UPN.
+    SanUpn(String),
+}
+
+/// Logging section.
+#[derive(Debug, Clone)]
+pub struct LoggingSection {
+    /// Level.
+    pub level: LogLevel,
+    /// Facility.
+    pub syslog_facility: SyslogFacility,
+    /// Journald priority.
+    pub journald_priority: bool,
+}
+
+impl ValidatedConfig {
+    /// Returns `true` iff the active backend is OpenSSL **and** at least one
+    /// configured signature algorithm in
+    /// [`TrustSection::allowed_signature_algorithms`] requires the gost-engine.
+    ///
+    /// PKCS#11-native does its crypto inside the token and never needs the
+    /// engine, so this returns `false` for that backend regardless of the
+    /// configured OID list.
+    #[must_use]
+    pub fn needs_gost(&self) -> bool {
+        matches!(self.crypto_backend, CryptoBackend::Openssl)
+            && self
+                .trust
+                .allowed_signature_algorithms
+                .iter()
+                .any(|s| SignatureAlg::from_oid_string(s).is_gost())
+    }
+}
+
+impl TryFrom<&RawConfig> for ValidatedConfig {
+    type Error = Error;
+
+    fn try_from(raw: &RawConfig) -> Result<Self, Self::Error> {
+        let trust = validate_trust(&raw.trust)?;
+        let host_identity = validate_host_identity(&raw.host_identity)?;
+        let user_mappings = validate_user_mappings(&raw.user_mapping)?;
+        let logging = LoggingSection {
+            level: raw.logging.level.parse()?,
+            syslog_facility: raw.logging.syslog_facility.parse()?,
+            journald_priority: raw.logging.journald_priority,
+        };
+        let hooks = raw
+            .hooks
+            .iter()
+            .map(validate_hook)
+            .collect::<Result<Vec<_>, _>>()?;
+        let crypto_backend = match raw.crypto_backend {
+            RawCryptoBackend::Openssl => CryptoBackend::Openssl,
+            RawCryptoBackend::Pkcs11Native => CryptoBackend::Pkcs11Native,
+        };
+        let gost_engine_path = validate_gost_engine_path(raw, crypto_backend)?;
+        let mode = match raw.mode {
+            RawMode::Pkcs12 => Mode::Pkcs12,
+            RawMode::Pkcs11 => Mode::Pkcs11,
+        };
+        validate_pkcs11_section(raw, mode)?;
+        Ok(Self {
+            crypto_backend,
+            mode,
+            pkcs11_module: raw.pkcs11_module.clone(),
+            pkcs11_token_label: raw.pkcs11_token_label.clone(),
+            pkcs11_object_label: raw.pkcs11_object_label.clone(),
+            pkcs11_max_pin_attempts: raw.pkcs11_max_pin_attempts,
+            pkcs11_locking_mode: match raw.pkcs11_locking_mode {
+                RawPkcs11LockingMode::Os => Pkcs11LockingMode::Os,
+                RawPkcs11LockingMode::Mutex => Pkcs11LockingMode::Mutex,
+            },
+            pkcs11_pin_prompt: raw.pkcs11_pin_prompt.clone(),
+            pkcs11_slot_wait: Duration::from_secs(u64::from(raw.pkcs11_slot_wait_seconds)),
+            pkcs12_path_pattern: raw.pkcs12_path_pattern.clone(),
+            pkcs12_pin_prompt: raw.pkcs12_pin_prompt.clone(),
+            gost_engine_path,
+            usb_wait: Duration::from_secs(raw.usb_wait_seconds),
+            on_usb_removed: match raw.on_usb_removed {
+                RawOnUsbRemoved::Lock => OnUsbRemoved::Lock,
+                RawOnUsbRemoved::Logout => OnUsbRemoved::Logout,
+                RawOnUsbRemoved::Hook => OnUsbRemoved::Hook,
+                RawOnUsbRemoved::Shutdown => OnUsbRemoved::Shutdown,
+            },
+            usb_removed_grace: Duration::from_secs(raw.usb_removed_grace_seconds),
+            suspend_grace: Duration::from_secs(raw.suspend_grace_seconds),
+            monitor_fail_mode: match raw.monitor_fail_mode {
+                RawMonitorFailMode::Strict => MonitorFailMode::Strict,
+                RawMonitorFailMode::Permissive => MonitorFailMode::Permissive,
+            },
+            monitor: validate_monitor(raw, &raw.monitor, raw.monitor_fail_mode)?,
+            trust,
+            trust_overrides: raw
+                .trust_override
+                .iter()
+                .map(validate_trust_override)
+                .collect::<Result<Vec<_>, _>>()?,
+            host_identity,
+            user_mappings,
+            logging,
+            hooks,
+        })
+    }
+}
+
+/// Hard cap on `max_chain_depth` to keep verifier loops bounded.
+/// Range: `1..=16`; validator rejects values outside this.
+const MAX_CHAIN_DEPTH_HARD_CAP: u32 = 16;
+
+fn validate_trust(raw: &RawTrust) -> Result<TrustSection, Error> {
+    if raw.max_chain_depth == 0 {
+        return Err(TrustError::MaxChainDepthZero.into());
+    }
+    if raw.max_chain_depth > MAX_CHAIN_DEPTH_HARD_CAP {
+        return Err(Error::ConfigInvalid {
+            reason: format!(
+                "trust.max_chain_depth {} exceeds hard cap {MAX_CHAIN_DEPTH_HARD_CAP}",
+                raw.max_chain_depth
+            ),
+        });
+    }
+    if raw.clock_skew_seconds > 600 {
+        return Err(TrustError::ClockSkewTooLarge.into());
+    }
+    for path in raw.anchors.iter().chain(raw.intermediates.iter()) {
+        validate_pem(path)?;
+    }
+    if matches!(raw.revocation.mode, RawRevocationMode::Crl) {
+        for path in &raw.revocation.crl_paths {
+            if !path.is_file() {
+                return Err(TrustError::CrlPathMissing { path: path.clone() }.into());
+            }
+        }
+    }
+    if matches!(
+        raw.revocation.mode,
+        RawRevocationMode::Ocsp | RawRevocationMode::CrlThenOcsp
+    ) && !raw
+        .revocation
+        .ocsp_responder_url
+        .as_deref()
+        .is_some_and(|url| url.starts_with("http://") || url.starts_with("https://"))
+    {
+        return Err(TrustError::OcspResponderInvalid {
+            reason: "missing or non-http URL".to_string(),
+        }
+        .into());
+    }
+    if raw.pinning.enabled {
+        for entry in &raw.pinning.allowed_root_spki_sha256 {
+            if entry.len() != 64 || !entry.chars().all(|c| c.is_ascii_hexdigit()) {
+                return Err(TrustError::PinningHashInvalid {
+                    entry: entry.clone(),
+                }
+                .into());
+            }
+        }
+    }
+    Ok(TrustSection {
+        anchors: raw.anchors.clone(),
+        intermediates: raw.intermediates.clone(),
+        revocation: RevocationSection {
+            mode: match raw.revocation.mode {
+                RawRevocationMode::None => RevocationMode::None,
+                RawRevocationMode::Crl => RevocationMode::Crl,
+                RawRevocationMode::Ocsp => RevocationMode::Ocsp,
+                RawRevocationMode::CrlThenOcsp => RevocationMode::CrlThenOcsp,
+            },
+            crl_paths: raw.revocation.crl_paths.clone(),
+        },
+        allowed_signature_algorithms: raw.allowed_signature_algorithms.iter().cloned().collect(),
+        pinning: PinningSection {
+            enabled: raw.pinning.enabled,
+            // Hex strings have already been validated above when
+            // `pinning.enabled = true`.  We still copy the raw values
+            // through unchanged so the di layer can decode them at
+            // wiring time without revalidating.
+            allowed_root_spki_sha256: raw.pinning.allowed_root_spki_sha256.clone(),
+        },
+        max_chain_depth: raw.max_chain_depth,
+        clock_skew_seconds: raw.clock_skew_seconds,
+    })
+}
+
+fn validate_pem(path: &PathBuf) -> Result<(), Error> {
+    let text = std::fs::read_to_string(path)
+        .map_err(|_| TrustError::AnchorMissing { path: path.clone() })?;
+    if !text.contains("-----BEGIN CERTIFICATE-----") {
+        return Err(TrustError::AnchorNotPem { path: path.clone() }.into());
+    }
+    Ok(())
+}
+
+fn validate_trust_override(raw: &RawTrustOverride) -> Result<TrustOverride, Error> {
+    if raw.when_host_id_in.is_empty() {
+        return Err(Error::ConfigInvalid {
+            reason: "trust_override.when_host_id_in must be non-empty".to_string(),
+        });
+    }
+    for path in raw.anchors.iter().chain(raw.intermediates.iter()) {
+        validate_pem(path)?;
+    }
+    Ok(TrustOverride {
+        when_host_id_in: raw.when_host_id_in.iter().cloned().collect(),
+        anchors: raw.anchors.clone(),
+        intermediates: raw.intermediates.clone(),
+    })
+}
+
+fn validate_host_identity(raw: &RawHostIdentity) -> Result<HostIdentitySection, Error> {
+    let mut seen = BTreeSet::new();
+    let mut sources = Vec::with_capacity(raw.sources.len());
+    for source in &raw.sources {
+        let kind = source.parse()?;
+        if !seen.insert(kind) {
+            return Err(Error::ConfigInvalid {
+                reason: "duplicate host identity source".to_string(),
+            });
+        }
+        sources.push(kind);
+    }
+    if sources.is_empty() {
+        return Err(Error::ConfigInvalid {
+            reason: "host_identity.sources must be non-empty".to_string(),
+        });
+    }
+    if let Some(cmd) = raw.custom_command.as_ref() {
+        if !cmd.is_absolute() {
+            return Err(Error::ConfigInvalid {
+                reason: format!(
+                    "host_identity.custom_command must be an absolute path (got {})",
+                    cmd.display()
+                ),
+            });
+        }
+    }
+    Ok(HostIdentitySection {
+        sources,
+        fallback: match raw.fallback {
+            RawHostIdFallback::Deny => HostIdFallback::Deny,
+            RawHostIdFallback::Warn => HostIdFallback::Warn,
+            RawHostIdFallback::Allow => HostIdFallback::Allow,
+        },
+        override_value: raw.override_value.clone(),
+        custom_command: raw.custom_command.clone(),
+        custom_command_timeout: Duration::from_secs(
+            raw.custom_command_timeout_seconds.clamp(1, 30),
+        ),
+    })
+}
+
+fn validate_user_mappings(raw: &[RawUserMapping]) -> Result<Vec<UserMapping>, Error> {
+    let re = regex::Regex::new(r"^[a-z_][a-z0-9_-]{0,31}$").map_err(|source| Error::Other {
+        reason: source.to_string(),
+    })?;
+    let mut seen = BTreeSet::new();
+    raw.iter()
+        .map(|mapping| {
+            if !re.is_match(&mapping.pam_user) || !seen.insert(mapping.pam_user.clone()) {
+                return Err(Error::ConfigInvalid {
+                    reason: "invalid or duplicate pam_user".to_string(),
+                });
+            }
+            let mut criteria = BTreeMap::new();
+            if let Some(v) = &mapping.cert_subject_cn {
+                criteria.insert("cn", v.clone());
+            }
+            if let Some(v) = &mapping.cert_san_email {
+                criteria.insert("email", v.clone());
+            }
+            if let Some(v) = &mapping.cert_san_upn {
+                criteria.insert("upn", v.clone());
+            }
+            if criteria.len() != 1 {
+                return Err(Error::ConfigInvalid {
+                    reason: "user_mapping must set exactly one criterion".to_string(),
+                });
+            }
+            let criteria = if let Some(v) = criteria.remove("cn") {
+                UserMatchCriteria::SubjectCn(v)
+            } else if let Some(v) = criteria.remove("email") {
+                UserMatchCriteria::SanEmail(v)
+            } else {
+                UserMatchCriteria::SanUpn(criteria.remove("upn").unwrap_or_default())
+            };
+            Ok(UserMapping {
+                pam_user: mapping.pam_user.clone(),
+                criteria,
+            })
+        })
+        .collect()
+}
+
+/// Maximum byte length of any `CKA_LABEL`-style filter accepted by the
+/// validator.  PKCS#11 itself accepts up to 32 bytes for `CKA_LABEL`,
+/// but we allow 64 here so operators can use Cyrillic strings (each
+/// glyph is 2 UTF-8 bytes) without hitting the limit prematurely.
+const PKCS11_LABEL_MAX_LEN: usize = 64;
+/// Maximum length of the user-facing PIN prompt string.
+const PKCS11_PROMPT_MAX_LEN: usize = 128;
+/// Inclusive bounds on `pkcs11_max_pin_attempts`.
+const PKCS11_MAX_PIN_ATTEMPTS_RANGE: std::ops::RangeInclusive<u32> = 1..=5;
+/// Inclusive bounds on `pkcs11_slot_wait_seconds`.  A 0 disables the
+/// wait entirely; > 60 s is rejected to avoid surprising deadlocks
+/// inside the PAM stack.
+const PKCS11_SLOT_WAIT_RANGE: std::ops::RangeInclusive<u32> = 0..=60;
+
+fn validate_pkcs11_label(field: &str, value: &str) -> Result<(), Error> {
+    if value.is_empty() {
+        return Err(Error::ConfigInvalid {
+            reason: format!("{field} must be non-empty when set"),
+        });
+    }
+    if value.len() > PKCS11_LABEL_MAX_LEN {
+        return Err(Error::ConfigInvalid {
+            reason: format!(
+                "{field} must be at most {PKCS11_LABEL_MAX_LEN} bytes (got {})",
+                value.len()
+            ),
+        });
+    }
+    if value.contains('\0') {
+        return Err(Error::ConfigInvalid {
+            reason: format!("{field} must not contain NUL bytes"),
+        });
+    }
+    Ok(())
+}
+
+fn validate_pkcs11_section(raw: &RawConfig, mode: Mode) -> Result<(), Error> {
+    if matches!(mode, Mode::Pkcs11) && raw.pkcs11_module.is_none() {
+        return Err(Error::ConfigInvalid {
+            reason: "pkcs11_module is required when mode = \"pkcs11\"".to_owned(),
+        });
+    }
+    if let Some(label) = raw.pkcs11_token_label.as_deref() {
+        validate_pkcs11_label("pkcs11_token_label", label)?;
+    }
+    if let Some(label) = raw.pkcs11_object_label.as_deref() {
+        validate_pkcs11_label("pkcs11_object_label", label)?;
+    }
+    if !PKCS11_MAX_PIN_ATTEMPTS_RANGE.contains(&raw.pkcs11_max_pin_attempts) {
+        return Err(Error::ConfigInvalid {
+            reason: format!(
+                "pkcs11_max_pin_attempts must be in {:?}, got {}",
+                PKCS11_MAX_PIN_ATTEMPTS_RANGE, raw.pkcs11_max_pin_attempts
+            ),
+        });
+    }
+    if !PKCS11_SLOT_WAIT_RANGE.contains(&raw.pkcs11_slot_wait_seconds) {
+        return Err(Error::ConfigInvalid {
+            reason: format!(
+                "pkcs11_slot_wait_seconds must be in {:?}, got {}",
+                PKCS11_SLOT_WAIT_RANGE, raw.pkcs11_slot_wait_seconds
+            ),
+        });
+    }
+    if let Some(prompt) = raw.pkcs11_pin_prompt.as_deref() {
+        if prompt.is_empty() {
+            return Err(Error::ConfigInvalid {
+                reason: "pkcs11_pin_prompt must be non-empty when set".to_owned(),
+            });
+        }
+        if prompt.len() > PKCS11_PROMPT_MAX_LEN {
+            return Err(Error::ConfigInvalid {
+                reason: format!(
+                    "pkcs11_pin_prompt must be at most {PKCS11_PROMPT_MAX_LEN} bytes (got {})",
+                    prompt.len()
+                ),
+            });
+        }
+    }
+    Ok(())
+}
+
+/// Default monitord socket path when `[monitor].socket_path` is unset.
+const DEFAULT_MONITORD_SOCKET: &str = "/run/pam_certauth/monitord.sock";
+/// Default monitord state-file path when `[monitor].state_file_path` is unset.
+const DEFAULT_MONITORD_STATE_FILE: &str = "/var/lib/pam_certauth/sessions.json";
+/// Default per-RPC timeout in milliseconds.
+const DEFAULT_MONITORD_TIMEOUT_MS: u64 = 2000;
+/// Lower bound on `timeout_ms` (100 ms).
+const MONITORD_TIMEOUT_MS_MIN: u64 = 100;
+/// Upper bound on `timeout_ms` (60 s).
+const MONITORD_TIMEOUT_MS_MAX: u64 = 60_000;
+/// Default per-connection idle timeout (seconds).
+const DEFAULT_MONITORD_IDLE_TIMEOUT_SECS: u64 = 30;
+/// Lower bound on idle-timeout (seconds).
+const MONITORD_IDLE_TIMEOUT_MIN: u64 = 1;
+/// Upper bound on idle-timeout (seconds).
+const MONITORD_IDLE_TIMEOUT_MAX: u64 = 3600;
+/// Default max concurrent connections.
+const DEFAULT_MONITORD_MAX_CONNS: u32 = 64;
+/// Hard cap on max concurrent connections.
+const MONITORD_MAX_CONNS_CAP: u32 = 4096;
+/// Hard cap on USB-removed grace window (seconds).
+const MONITORD_USB_REMOVED_GRACE_MAX: u64 = 600;
+/// Hard cap on suspend grace window (seconds).
+const MONITORD_SUSPEND_GRACE_MAX: u64 = 600;
+
+#[allow(clippy::too_many_lines)]
+fn validate_monitor(
+    raw_top: &RawConfig,
+    raw: &RawMonitor,
+    legacy_fail_mode: RawMonitorFailMode,
+) -> Result<MonitorSection, Error> {
+    let socket_path = raw
+        .socket_path
+        .clone()
+        .unwrap_or_else(|| PathBuf::from(DEFAULT_MONITORD_SOCKET));
+    if !socket_path.is_absolute() {
+        return Err(Error::ConfigInvalid {
+            reason: format!(
+                "monitor.socket_path must be absolute (got {})",
+                socket_path.display()
+            ),
+        });
+    }
+    let state_file_path = raw
+        .state_file_path
+        .clone()
+        .unwrap_or_else(|| PathBuf::from(DEFAULT_MONITORD_STATE_FILE));
+    if !state_file_path.is_absolute() {
+        return Err(Error::ConfigInvalid {
+            reason: format!(
+                "monitor.state_file_path must be absolute (got {})",
+                state_file_path.display()
+            ),
+        });
+    }
+    let timeout_ms = raw.timeout_ms.unwrap_or(DEFAULT_MONITORD_TIMEOUT_MS);
+    if !(MONITORD_TIMEOUT_MS_MIN..=MONITORD_TIMEOUT_MS_MAX).contains(&timeout_ms) {
+        return Err(Error::ConfigInvalid {
+            reason: format!(
+                "monitor.timeout_ms must be in {MONITORD_TIMEOUT_MS_MIN}..={MONITORD_TIMEOUT_MS_MAX} (got {timeout_ms})"
+            ),
+        });
+    }
+    let fail_mode = match raw.fail_mode.as_deref() {
+        None => match legacy_fail_mode {
+            RawMonitorFailMode::Strict => MonitorFailMode::Strict,
+            RawMonitorFailMode::Permissive => MonitorFailMode::Permissive,
+        },
+        Some(s) => match s {
+            "strict" => MonitorFailMode::Strict,
+            "permissive" | "degraded" => MonitorFailMode::Permissive,
+            other => {
+                return Err(Error::ConfigInvalid {
+                    reason: format!(
+                        "monitor.fail_mode must be one of \"strict\", \"permissive\", \"degraded\" (got {other:?})"
+                    ),
+                });
+            }
+        },
+    };
+
+    // The `[monitor]` section's removal-policy fields fall back to the
+    // top-level fields when unset, which keeps existing operator config
+    // working unchanged. Operators upgrading to per-section knobs may
+    // override either independently.
+    let raw_action = raw.on_usb_removed.unwrap_or(raw_top.on_usb_removed);
+    let on_usb_removed = match raw_action {
+        RawOnUsbRemoved::Lock => OnUsbRemoved::Lock,
+        RawOnUsbRemoved::Logout => OnUsbRemoved::Logout,
+        RawOnUsbRemoved::Hook => OnUsbRemoved::Hook,
+        RawOnUsbRemoved::Shutdown => OnUsbRemoved::Shutdown,
+    };
+    let on_usb_removed_hook_path = if matches!(on_usb_removed, OnUsbRemoved::Hook) {
+        let path = raw.on_usb_removed_hook_path.clone().ok_or_else(|| {
+            Error::ConfigInvalid {
+                reason:
+                    "monitor.on_usb_removed = \"hook\" requires monitor.on_usb_removed_hook_path"
+                        .to_string(),
+            }
+        })?;
+        if !path.is_absolute() {
+            return Err(Error::ConfigInvalid {
+                reason: format!(
+                    "monitor.on_usb_removed_hook_path must be absolute (got {})",
+                    path.display()
+                ),
+            });
+        }
+        Some(path)
+    } else {
+        // Reject the field if it is set in a non-hook mode — it would
+        // be silently ignored at runtime, which is a footgun.
+        if raw.on_usb_removed_hook_path.is_some() {
+            return Err(Error::ConfigInvalid {
+                reason:
+                    "monitor.on_usb_removed_hook_path is only valid when on_usb_removed = \"hook\""
+                        .to_string(),
+            });
+        }
+        None
+    };
+
+    let usb_removed_grace_seconds = raw
+        .usb_removed_grace_seconds
+        .unwrap_or(raw_top.usb_removed_grace_seconds);
+    if usb_removed_grace_seconds > MONITORD_USB_REMOVED_GRACE_MAX {
+        return Err(Error::ConfigInvalid {
+            reason: format!(
+                "monitor.usb_removed_grace_seconds must be <= {MONITORD_USB_REMOVED_GRACE_MAX} (got {usb_removed_grace_seconds})"
+            ),
+        });
+    }
+    let suspend_grace_seconds = raw
+        .suspend_grace_seconds
+        .unwrap_or(raw_top.suspend_grace_seconds);
+    if suspend_grace_seconds > MONITORD_SUSPEND_GRACE_MAX {
+        return Err(Error::ConfigInvalid {
+            reason: format!(
+                "monitor.suspend_grace_seconds must be <= {MONITORD_SUSPEND_GRACE_MAX} (got {suspend_grace_seconds})"
+            ),
+        });
+    }
+
+    let idle_timeout_seconds = raw
+        .idle_timeout_seconds
+        .unwrap_or(DEFAULT_MONITORD_IDLE_TIMEOUT_SECS);
+    if !(MONITORD_IDLE_TIMEOUT_MIN..=MONITORD_IDLE_TIMEOUT_MAX).contains(&idle_timeout_seconds) {
+        return Err(Error::ConfigInvalid {
+            reason: format!(
+                "monitor.idle_timeout_seconds must be in {MONITORD_IDLE_TIMEOUT_MIN}..={MONITORD_IDLE_TIMEOUT_MAX} (got {idle_timeout_seconds})"
+            ),
+        });
+    }
+    let max_concurrent_connections = raw
+        .max_concurrent_connections
+        .unwrap_or(DEFAULT_MONITORD_MAX_CONNS);
+    if max_concurrent_connections == 0 || max_concurrent_connections > MONITORD_MAX_CONNS_CAP {
+        return Err(Error::ConfigInvalid {
+            reason: format!(
+                "monitor.max_concurrent_connections must be in 1..={MONITORD_MAX_CONNS_CAP} (got {max_concurrent_connections})"
+            ),
+        });
+    }
+
+    Ok(MonitorSection {
+        socket_path,
+        timeout: Duration::from_millis(timeout_ms),
+        fail_mode,
+        state_file_path,
+        on_usb_removed,
+        usb_removed_grace: Duration::from_secs(usb_removed_grace_seconds),
+        suspend_grace: Duration::from_secs(suspend_grace_seconds),
+        on_usb_removed_hook_path,
+        idle_timeout: Duration::from_secs(idle_timeout_seconds),
+        max_concurrent_connections,
+    })
+}
+
+fn validate_gost_engine_path(
+    raw: &RawConfig,
+    crypto_backend: CryptoBackend,
+) -> Result<Option<PathBuf>, Error> {
+    let Some(path) = raw.gost_engine_path.as_ref() else {
+        return Ok(None);
+    };
+    if !matches!(crypto_backend, CryptoBackend::Openssl) {
+        return Err(Error::GostEnginePathRequiresOpenssl);
+    }
+    let metadata = std::fs::metadata(path).map_err(|source| Error::GostEnginePathUnreadable {
+        path: path.clone(),
+        source,
+    })?;
+    if !metadata.is_file() {
+        return Err(Error::GostEnginePathUnreadable {
+            path: path.clone(),
+            source: std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "gost_engine_path is not a regular file",
+            ),
+        });
+    }
+    Ok(Some(path.clone()))
+}

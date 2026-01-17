@@ -1,0 +1,354 @@
+//! Central state-manager task.
+//!
+//! Owns the [`SessionRegistry`], the [`RegistryStore`], the suspend-tracking
+//! state, and the per-serial grace-token map. Receives every external
+//! stimulus through a single `mpsc::UnboundedReceiver<Event>`. Emits action
+//! requests for the action-runner task.
+
+use std::collections::HashMap;
+use std::sync::Arc;
+use std::time::{Duration, Instant, SystemTime};
+
+use tokio::sync::{mpsc, oneshot};
+use tokio::task::JoinHandle;
+use tokio_util::sync::CancellationToken;
+use uuid::Uuid;
+
+use pam_certauth_proto::ServerMessage;
+
+use crate::logind::LogindSignal;
+use crate::registry::{ActiveSession, RegistryStore, SessionRegistry};
+use crate::udev_monitor::{UdevAction, UdevEvent};
+use crate::udev_query::UdevQuery;
+
+/// What the daemon should do when a USB device is removed past the grace
+/// window. Mirrors the validated config enum but lives here so that the
+/// monitord crate does not need to depend on the full validated config.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum OnUsbRemoved {
+    /// Lock the logind session.
+    Lock,
+    /// Terminate the logind session.
+    Logout,
+    /// Run a hook script.
+    Hook {
+        /// Path to the hook executable.
+        path: std::path::PathBuf,
+    },
+    /// Power off the host.
+    Shutdown,
+}
+
+/// Suspend tracking — separate from [`OnUsbRemoved`] because suspend is
+/// orthogonal to which action a removal triggers.
+#[derive(Debug, Clone, Copy)]
+pub enum SuspendState {
+    /// Awake.
+    Awake,
+    /// Logind announced an imminent suspend at this instant.
+    SuspendingAt(Instant),
+    /// Logind reported a resume at this instant.
+    ResumedAt(Instant),
+}
+
+impl SuspendState {
+    /// Are we currently inside the suspend grace window?
+    #[must_use]
+    pub fn is_in_grace_window(&self, secs: u64) -> bool {
+        match self {
+            SuspendState::Awake => false,
+            SuspendState::SuspendingAt(_) => true,
+            SuspendState::ResumedAt(t) => t.elapsed() < Duration::from_secs(secs),
+        }
+    }
+}
+
+/// Configuration for [`spawn_state_manager`].
+#[derive(Debug, Clone)]
+pub struct StateConfig {
+    /// Grace seconds between USB removal and the configured action.
+    pub grace_seconds: u64,
+    /// Suspend grace seconds: removals seen during/just after suspend are
+    /// ignored.
+    pub suspend_grace_seconds: u64,
+    /// Action to take on a confirmed USB removal.
+    pub on_usb_removed: OnUsbRemoved,
+    /// Persistence backend.
+    pub registry_store: RegistryStore,
+}
+
+impl StateConfig {
+    /// Sensible defaults for unit tests.
+    #[must_use]
+    pub fn test_defaults(store: RegistryStore) -> Self {
+        Self {
+            grace_seconds: 5,
+            suspend_grace_seconds: 30,
+            on_usb_removed: OnUsbRemoved::Lock,
+            registry_store: store,
+        }
+    }
+}
+
+/// IPC requests fed into the state manager.
+#[derive(Debug)]
+pub enum IpcRequest {
+    /// Hello acknowledgement (no-op for state, but we accept it for
+    /// completeness).
+    Hello {
+        /// Reply channel.
+        reply: oneshot::Sender<ServerMessage>,
+    },
+    /// Open session.
+    SessionOpen {
+        /// Session struct that we should add to the registry.
+        session: Box<ActiveSession>,
+        /// Reply channel.
+        reply: oneshot::Sender<ServerMessage>,
+    },
+    /// Close session.
+    SessionClose {
+        /// Session id.
+        session_id: Uuid,
+        /// Closed at.
+        closed_at: SystemTime,
+        /// Reply channel.
+        reply: oneshot::Sender<ServerMessage>,
+    },
+    /// Ping.
+    Ping {
+        /// Reply channel.
+        reply: oneshot::Sender<ServerMessage>,
+    },
+}
+
+/// Top-level event accepted by the state manager.
+#[derive(Debug)]
+pub enum Event {
+    /// IPC request.
+    Ipc(IpcRequest),
+    /// Udev event.
+    Udev(UdevEvent),
+    /// Logind signal.
+    Logind(LogindSignal),
+}
+
+/// Action requests dispatched to the action-runner task.
+#[derive(Debug, Clone)]
+pub enum ActionRequest {
+    /// USB device was removed past the grace window — execute the configured
+    /// action against this session.
+    HandleUsbRemoved {
+        /// Session.
+        session: ActiveSession,
+        /// Action.
+        action: OnUsbRemoved,
+    },
+}
+
+/// Spawn the state-manager task.
+#[must_use]
+pub fn spawn_state_manager(
+    cfg: StateConfig,
+    registry: SessionRegistry,
+    mut rx: mpsc::UnboundedReceiver<Event>,
+    action_tx: mpsc::UnboundedSender<ActionRequest>,
+    udev_query: Arc<dyn UdevQuery>,
+    shutdown: CancellationToken,
+) -> JoinHandle<()> {
+    tokio::spawn(async move {
+        let mut grace_tokens: HashMap<String, CancellationToken> = HashMap::new();
+        let mut suspend_state = SuspendState::Awake;
+        loop {
+            tokio::select! {
+                _ = shutdown.cancelled() => break,
+                ev = rx.recv() => {
+                    let Some(ev) = ev else { break };
+                    match ev {
+                        Event::Ipc(req) => handle_ipc(&cfg, &registry, udev_query.as_ref(), req).await,
+                        Event::Udev(u) => handle_udev(&cfg, &registry, &mut grace_tokens, &suspend_state, &action_tx, u),
+                        Event::Logind(s) => handle_logind(&cfg, &mut suspend_state, &registry, &mut grace_tokens, s).await,
+                    }
+                }
+            }
+        }
+        // Cancel any outstanding grace timers on shutdown.
+        for (_serial, tok) in grace_tokens.drain() {
+            tok.cancel();
+        }
+    })
+}
+
+/// Persist `snapshot` on a blocking thread-pool worker so the JSON
+/// serialise + rename + fsync path does not stall a tokio runtime worker
+/// (P1-K). Logs a warning on failure — registry persistence is best-effort.
+async fn persist_async(store: &RegistryStore, snapshot: Vec<ActiveSession>) {
+    let store = store.clone();
+    let res = tokio::task::spawn_blocking(move || store.persist(&snapshot)).await;
+    match res {
+        Ok(Ok(())) => {}
+        Ok(Err(e)) => {
+            tracing::warn!(target: "pam_certauth.monitord", error = %e, "registry persist failed");
+        }
+        Err(join_err) => {
+            tracing::warn!(
+                target: "pam_certauth.monitord",
+                error = %join_err,
+                "registry persist task join failed"
+            );
+        }
+    }
+}
+
+async fn handle_ipc(
+    cfg: &StateConfig,
+    registry: &SessionRegistry,
+    udev_query: &dyn UdevQuery,
+    req: IpcRequest,
+) {
+    match req {
+        IpcRequest::Hello { reply } => {
+            let _ = reply.send(ServerMessage::HelloAck {
+                server_version: env!("CARGO_PKG_VERSION").to_string(),
+                protocol_version: pam_certauth_proto::PROTOCOL_VERSION,
+            });
+        }
+        IpcRequest::Ping { reply } => {
+            let _ = reply.send(ServerMessage::Pong);
+        }
+        IpcRequest::SessionOpen { session, reply } => {
+            // SessionOpen vs Remove race (T19): if the device was already
+            // unplugged between PAM completing and us receiving, refuse.
+            if let Some(serial) = session.usb_serial.as_deref() {
+                if !udev_query.is_serial_present(serial) {
+                    let _ = reply.send(ServerMessage::Error {
+                        code: pam_certauth_proto::error_codes::DEVICE_GONE,
+                        message: format!("usb serial {serial} not present"),
+                    });
+                    return;
+                }
+            }
+            let s = *session;
+            registry.add(s);
+            persist_async(&cfg.registry_store, registry.snapshot()).await;
+            let _ = reply.send(ServerMessage::Ack);
+        }
+        IpcRequest::SessionClose {
+            session_id,
+            closed_at: _,
+            reply,
+        } => {
+            let removed = registry.remove(session_id);
+            if let Some(s) = &removed {
+                if let Some(serial) = s.usb_serial.as_deref() {
+                    // If this was the only session bound to that serial, we
+                    // can drop the active grace timer (handled in
+                    // handle_udev when checked next; here we just persist).
+                    let _ = serial;
+                }
+            }
+            persist_async(&cfg.registry_store, registry.snapshot()).await;
+            let _ = reply.send(ServerMessage::Ack);
+        }
+    }
+}
+
+fn handle_udev(
+    cfg: &StateConfig,
+    registry: &SessionRegistry,
+    grace_tokens: &mut HashMap<String, CancellationToken>,
+    suspend_state: &SuspendState,
+    action_tx: &mpsc::UnboundedSender<ActionRequest>,
+    event: UdevEvent,
+) {
+    match (event.action, event.serial) {
+        (UdevAction::Remove, Some(serial)) => {
+            if suspend_state.is_in_grace_window(cfg.suspend_grace_seconds) {
+                tracing::info!(
+                    target: "pam_certauth.monitord",
+                    serial,
+                    "udev remove suppressed by suspend grace"
+                );
+                return;
+            }
+            let sessions = registry.find_by_serial(&serial);
+            if sessions.is_empty() {
+                return;
+            }
+            if grace_tokens.contains_key(&serial) {
+                // Hub-disconnect dedup.
+                return;
+            }
+            let token = CancellationToken::new();
+            grace_tokens.insert(serial.clone(), token.clone());
+            let action_tx = action_tx.clone();
+            let action = cfg.on_usb_removed.clone();
+            let grace = Duration::from_secs(cfg.grace_seconds);
+            let serial_for_log = serial.clone();
+            tokio::spawn(async move {
+                tokio::select! {
+                    _ = tokio::time::sleep(grace) => {
+                        tracing::info!(target: "pam_certauth.monitord", serial = serial_for_log, "grace window expired, dispatching action");
+                        for s in sessions {
+                            let _ = action_tx.send(ActionRequest::HandleUsbRemoved {
+                                session: s,
+                                action: action.clone(),
+                            });
+                        }
+                    }
+                    _ = token.cancelled() => {
+                        tracing::info!(target: "pam_certauth.monitord", serial = serial_for_log, "grace cancelled");
+                    }
+                }
+            });
+        }
+        (UdevAction::Add, Some(serial)) => {
+            if let Some(t) = grace_tokens.remove(&serial) {
+                t.cancel();
+            }
+        }
+        _ => {}
+    }
+}
+
+async fn handle_logind(
+    cfg: &StateConfig,
+    suspend_state: &mut SuspendState,
+    registry: &SessionRegistry,
+    grace_tokens: &mut HashMap<String, CancellationToken>,
+    sig: LogindSignal,
+) {
+    match sig {
+        LogindSignal::PrepareForSleep(true) => {
+            *suspend_state = SuspendState::SuspendingAt(Instant::now());
+            // Cancel any pending grace timers — the suspend may legitimately
+            // explain the removal.
+            for (_serial, tok) in grace_tokens.drain() {
+                tok.cancel();
+            }
+        }
+        LogindSignal::PrepareForSleep(false) => {
+            *suspend_state = SuspendState::ResumedAt(Instant::now());
+        }
+        LogindSignal::SessionRemoved { id, .. } => {
+            // Drop any active session whose target matches this logind id.
+            let to_remove: Vec<Uuid> = registry
+                .all()
+                .into_iter()
+                .filter(|s| s.target.logind_id() == Some(id.as_str()))
+                .map(|s| s.session_id)
+                .collect();
+            if to_remove.is_empty() {
+                return;
+            }
+            for uuid in to_remove {
+                let _ = registry.remove(uuid);
+            }
+            // Persist after removals so a daemon restart does not
+            // resurrect sessions that logind has already torn down.
+            // Mirrors the SessionOpen / SessionClose persistence policy:
+            // best-effort, log a warning on failure.
+            persist_async(&cfg.registry_store, registry.snapshot()).await;
+        }
+    }
+}

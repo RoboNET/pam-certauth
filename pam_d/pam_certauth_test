@@ -1,0 +1,3 @@
+auth     required  /tmp/pam_certauth_smoke/libpam_certauth.so config=/tmp/pam_certauth_smoke/config.toml
+account  required  /tmp/pam_certauth_smoke/libpam_certauth.so
+session  required  /tmp/pam_certauth_smoke/libpam_certauth.so

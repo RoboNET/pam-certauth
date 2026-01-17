@@ -1,0 +1,23 @@
+# /etc/pam.d/certauth — STRICT mode (default).
+#
+# pam_certauth stack snippet. Include from a host PAM config like:
+#     @include certauth
+# in /etc/pam.d/sudo BEFORE the `pam_unix.so` line. The `required` control
+# below means: USB cert auth MUST succeed; password fallback is denied.
+# This is the safe default for production deployments where the operator
+# has already issued tokens to every authorised user.
+#
+# To allow password fallback (e.g. during phased rollout) install
+# `certauth-optional` instead — that file uses `sufficient` and falls
+# through to pam_unix.so when the token is absent or fails.
+#
+# Account: required — denial here propagates regardless of subsequent
+# modules.
+#
+# Session: required — session bookkeeping (registry open/close); a failure
+# means PAM rejects the session, which is what we want when the daemon
+# can't track it.
+
+auth        required     pam_certauth.so
+account     required     pam_certauth.so
+session     required     pam_certauth.so

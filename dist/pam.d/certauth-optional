@@ -1,0 +1,16 @@
+# /etc/pam.d/certauth-optional — OPTIONAL mode.
+#
+# Same module, looser policy: USB cert auth is `sufficient` — if it
+# succeeds, accept and stop; if the token is absent or auth fails, fall
+# through to whatever follows (typically pam_unix.so prompting for a
+# password). Use this during phased rollouts where not every user has
+# been issued a token yet.
+#
+# Account stays `required` (denial propagates) and session stays
+# `required` so the registry/audit handlers run for every session.
+#
+# Switch to `certauth` (strict) once token coverage is universal.
+
+auth        sufficient   pam_certauth.so
+account     required     pam_certauth.so
+session     required     pam_certauth.so
