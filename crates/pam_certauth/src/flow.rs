@@ -452,16 +452,26 @@ where
     // Step 8 — trust verification (path build, signatures, CRLs, pinning).
     let _verified = deps.trust.verify(&loaded.end_entity, &presented)?;
 
-    // Step 9 — pam_user ↔ subject mapping.
-    let _matched: MatchedMapping = match_user(&loaded.end_entity, pam_user, deps.user_mappings)?;
-
-    // Step 10 — cert scope (cert authorises this host AND this user).
+    // Step 9 — cert scope (cert authorises this host AND this user).
     //
     // The cert's `pam_cert_host_binding` and `pam_cert_user_binding`
     // X.509 extensions are the SOLE source of authorisation. The
     // certificate alone decides "which user on which host"; there is
-    // no central ACL, no roles, no signed body file.
+    // no central ACL, no roles, no signed body file. Runs BEFORE the
+    // legacy TOML mapping so that cert-extension errors (e.g. a missing
+    // `pam_cert_host_binding`) surface as the real cause instead of
+    // being masked by a stale `[[user_mapping]]` lookup.
     verify_cert_scope(loaded.end_entity.x509(), deps.host_id_hash, pam_user)?;
+
+    // Step 10 — subject mapping (LEGACY fallback for certs without a
+    // `pam_cert_user_binding` extension). When the cert carries that
+    // extension, Step 9 above already authorised this user, so the
+    // `[[user_mapping]]` list is bypassed entirely (cert wins). Only
+    // certs missing the extension fall through to the TOML mapping.
+    if pam_certauth_core::x509::user_binding_ext::parse(loaded.end_entity.x509()).is_err() {
+        let _matched: MatchedMapping =
+            match_user(&loaded.end_entity, pam_user, deps.user_mappings)?;
+    }
 
     // Step 11 — assemble AuthContext.
     let cert_cn = loaded.end_entity.subject_cn().ok();
@@ -772,11 +782,18 @@ where
     let presented_chain: Vec<Certificate> = Vec::new();
     let _verified = deps.trust.verify(&cert.certificate, &presented_chain)?;
 
-    // Step 9 — subject mapping (cert ↔ pam_user).
-    let _matched: MatchedMapping = match_user(&cert.certificate, pam_user, deps.user_mappings)?;
-
-    // Step 10 — cert scope (cert authorises this host AND this user).
+    // Step 9 — cert scope (cert authorises this host AND this user).
+    // Runs BEFORE the legacy TOML mapping so cert-extension errors
+    // (e.g. missing `pam_cert_host_binding`) surface as the real cause.
     verify_cert_scope(cert.certificate.x509(), deps.host_id_hash, pam_user)?;
+
+    // Step 10 — subject mapping (LEGACY fallback). Skipped when the
+    // cert carries `pam_cert_user_binding` — Step 9 already authorised
+    // the user; the cert wins over `[[user_mapping]]`.
+    if pam_certauth_core::x509::user_binding_ext::parse(cert.certificate.x509()).is_err() {
+        let _matched: MatchedMapping =
+            match_user(&cert.certificate, pam_user, deps.user_mappings)?;
+    }
 
     // Step 11 — assemble AuthContext.  The token serial replaces the
     // USB serial in this mode (monitord uses the same field).
