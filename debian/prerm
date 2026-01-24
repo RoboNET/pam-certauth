@@ -8,13 +8,19 @@
 # #DEBHELPER# token expands to dh_installsystemd's deferred restart logic,
 # which honors `--no-restart-on-upgrade` from debian/rules. Disable+mask is
 # reserved for `purge`, handled in postrm per Debian convention.
+#
+# Service stop goes through deb-systemd-invoke rather than a direct
+# systemctl call: deb-systemd-invoke is the Debian-policy-blessed wrapper
+# that handles the systemd-vs-non-systemd dispatch (no-op when systemd is
+# not the active init), keeps lintian happy (avoids
+# maintainer-script-calls-systemctl), and respects policy-rc.d in chroots.
 
 set -e
 
 case "$1" in
     remove|deconfigure)
-        if [ -d /run/systemd/system ]; then
-            systemctl stop pam-certauth-monitord.service >/dev/null 2>&1 || true
+        if [ -x /usr/bin/deb-systemd-invoke ]; then
+            deb-systemd-invoke stop pam-certauth-monitord.service >/dev/null 2>&1 || true
         fi
         ;;
     upgrade|failed-upgrade)
