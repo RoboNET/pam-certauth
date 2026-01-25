@@ -23,8 +23,8 @@ gost-tests = ["pam_certauth_core/gost-tests"]
 pkcs11-tests = ["pam_certauth_core/pkcs11-tests"]
 
 [dependencies]
-pam_certauth_core = { path = "../pam_certauth_core", version = "0.1.0" }
-pam_certauth_proto = { path = "../pam_certauth_proto", version = "0.1.0" }
+pam_certauth_core = { path = "../pam_certauth_core", version = "0.1.1" }
+pam_certauth_proto = { path = "../pam_certauth_proto", version = "0.1.1" }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 syslog = { workspace = true }

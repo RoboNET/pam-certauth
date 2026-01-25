@@ -1,3 +1,38 @@
+pam-certauth (0.1.1-1) unstable; urgency=medium
+
+  * fix(pam): wire syslog backend for tracing subscriber. Auth-flow
+    errors now land in /var/log/auth.log under syslog ident
+    "pam_certauth" (LOG_AUTH facility). Production diagnosis no longer
+    blind.
+  * fix(pam): cert-binding X.509 extensions take precedence over
+    [[user_mapping]]. pam_cert_user_binding / pam_cert_host_binding
+    are the sole source of authorisation when present; the TOML
+    mapping list is a legacy fallback for certs without the
+    user_binding extension.
+  * feat(deb): ship SysV init script (/etc/init.d/pam-certauth-monitord)
+    via dh_installinit so non-systemd hosts are supported. Adds
+    lsb-base dependency.
+  * feat(deb): ship man(8) for pam-certauth-monitord.
+  * feat(deb): three PAM-stack snippets (certauth / certauth-optional /
+    certauth-only) and integrate-pam.sh --mode=2fa|optional|cert-only.
+    Cert-only mode bypasses password chain entirely (lockout-strict).
+  * docs: USBGuard / Astra ЗПС interop, USB-lockout pre-deploy
+    checklist, on_usb_removed mode reference, three operational auth
+    modes.
+  * test: add leaf_no_user_binding fixture + un-ignore the legacy
+    [[user_mapping]] regression test.
+  * security: pam-certauth-monitord no longer runs as root. A dedicated
+    `pamcertauth` system user is created in postinst; the systemd unit
+    runs under this user with CAP_DAC_READ_SEARCH only. Privileged
+    logind methods (LockSession, TerminateSession, PowerOff) are gated
+    by an explicit polkit allowlist shipped at
+    /usr/share/polkit-1/rules.d/49-pam-certauth.rules. Adds adduser and
+    polkitd to package Depends. pam_certauth.so itself still runs in
+    PAM-caller context (root for sudo/login) — that is an architectural
+    constraint of Linux PAM and outside this change.
+
+ -- pam_certauth maintainers <maintainers@example.org>  Wed, 06 May 2026 19:30:00 +0000
+
 pam-certauth (0.1.0-1) unstable; urgency=medium
 
   * Initial release.
