@@ -1,10 +1,18 @@
 #!/usr/bin/env bash
-# integrate-pam.sh — insert "@include certauth" (or "@include certauth-optional"
-# with --optional) into a PAM service file.
+# integrate-pam.sh — insert "@include <snippet>" into a PAM service file.
 #
 # Usage:
-#   sudo integrate-pam.sh /etc/pam.d/sudo
-#   sudo integrate-pam.sh --optional /etc/pam.d/sudo
+#   sudo integrate-pam.sh [--mode=2fa|optional|cert-only] <pam.d-file>
+#   sudo integrate-pam.sh --unintegrate <pam.d-file>
+#
+# Modes (canonical interface, --mode=...):
+#   2fa        snippet=certauth          (default; cert + password, classic 2FA)
+#   optional   snippet=certauth-optional (cert OR password; phased rollout)
+#   cert-only  snippet=certauth-only     (cert is sole factor — LOCKOUT-STRICT)
+#
+# Deprecated aliases (still accepted for BC, emit deprecation note on stderr):
+#   --strict     ≡ --mode=2fa
+#   --optional   ≡ --mode=optional
 #
 # Behaviour:
 #   1. Refuses to run if the target file does not exist.
@@ -16,20 +24,46 @@
 set -euo pipefail
 
 snippet="certauth"
-mode="integrate"
+mode_op="integrate"
+
+mode_to_snippet() {
+    case "$1" in
+        2fa)        echo "certauth" ;;
+        optional)   echo "certauth-optional" ;;
+        cert-only)  echo "certauth-only" ;;
+        *)
+            echo "error: unknown --mode value: $1 (expected 2fa|optional|cert-only)" >&2
+            exit 64
+            ;;
+    esac
+}
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
+        --mode=*)
+            snippet="$(mode_to_snippet "${1#--mode=}")"
+            shift
+            ;;
+        --mode)
+            if [[ $# -lt 2 ]]; then
+                echo "error: --mode requires an argument (2fa|optional|cert-only)" >&2
+                exit 64
+            fi
+            snippet="$(mode_to_snippet "$2")"
+            shift 2
+            ;;
         --optional)
+            echo "warning: --optional is deprecated, use --mode=optional" >&2
             snippet="certauth-optional"
             shift
             ;;
         --strict)
+            echo "warning: --strict is deprecated, use --mode=2fa" >&2
             snippet="certauth"
             shift
             ;;
         --unintegrate)
-            mode="unintegrate"
+            mode_op="unintegrate"
             shift
             ;;
         --)
@@ -47,7 +81,8 @@ while [[ $# -gt 0 ]]; do
 done
 
 if [[ $# -ne 1 ]]; then
-    echo "usage: $0 [--optional|--strict|--unintegrate] <pam.d-file>" >&2
+    echo "usage: $0 [--mode=2fa|optional|cert-only|--unintegrate] <pam.d-file>" >&2
+    echo "       --mode=cert-only is the lockout-strict mode (no password fallback)" >&2
     exit 64
 fi
 
@@ -55,14 +90,15 @@ target="$1"
 include_line="@include ${snippet}"
 
 # P1-M: --unintegrate removes any "@include certauth" / "@include certauth-optional"
-# line from <target>. Idempotent: missing file or missing line ⇒ exit 0.
-if [[ "$mode" == "unintegrate" ]]; then
+# / "@include certauth-only" line from <target>. Idempotent: missing file or
+# missing line ⇒ exit 0.
+if [[ "$mode_op" == "unintegrate" ]]; then
     if [[ ! -f "$target" ]]; then
         echo "info: $target does not exist (no-op)"
         exit 0
     fi
-    # Match either flavour regardless of which one was requested.
-    if ! grep -qE '^[[:space:]]*@include[[:space:]]+certauth(-optional)?[[:space:]]*$' "$target"; then
+    # Match any flavour regardless of which one was requested.
+    if ! grep -qE '^[[:space:]]*@include[[:space:]]+certauth(-optional|-only)?[[:space:]]*$' "$target"; then
         echo "info: $target has no certauth @include line (no-op)"
         exit 0
     fi
@@ -71,7 +107,7 @@ if [[ "$mode" == "unintegrate" ]]; then
     cp -p "$target" "$backup"
     echo "info: backup written to $backup"
     tmpfile="$(mktemp "${target}.XXXXXX")"
-    sed -E '/^[[:space:]]*@include[[:space:]]+certauth(-optional)?[[:space:]]*$/d' \
+    sed -E '/^[[:space:]]*@include[[:space:]]+certauth(-optional|-only)?[[:space:]]*$/d' \
         "$target" > "$tmpfile"
     if chmod --reference="$target" "$tmpfile" 2>/dev/null; then
         :

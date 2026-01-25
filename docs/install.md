@@ -381,19 +381,56 @@ auth        required    pam_env.so
 успешно аутентифицировал — пропустить пользователя; если нет —
 попробовать следующие модули (как правило, `pam_unix.so`).
 
-### 8.2 sudo
+### 8.2 Режимы аутентификации
+
+`pam_certauth` поддерживает три эксплуатационных режима, переключаемых
+выбором PAM-сниппета. Каждый сниппет — отдельный файл, который
+`integrate-pam.sh --mode=...` подключит через `@include` в выбранный
+сервис.
+
+| Режим | snippet | Сценарий | Вход без USB |
+|---|---|---|---|
+| `2fa` (default) | `/etc/pam.d/certauth` | Cert + пароль (классический 2FA) | пароль работает, но без USB не зайти |
+| `optional` | `/etc/pam.d/certauth-optional` | Cert ИЛИ пароль (миграция) | да, по паролю |
+| `cert-only` | `/etc/pam.d/certauth-only` | Cert как единственный фактор | НЕТ, полная блокировка |
+
+Активация:
+
+```bash
+# 2FA на sudo (по умолчанию):
+sudo /usr/share/pam-certauth/integrate-pam.sh --mode=2fa /etc/pam.d/sudo
+
+# Миграционный режим:
+sudo /usr/share/pam-certauth/integrate-pam.sh --mode=optional /etc/pam.d/sudo
+
+# Cert-only (потеря флэшки = lockout!):
+sudo /usr/share/pam-certauth/integrate-pam.sh --mode=cert-only /etc/pam.d/sudo
+```
+
+Откат — для всех режимов одинаковый:
+
+```bash
+sudo /usr/share/pam-certauth/integrate-pam.sh --unintegrate /etc/pam.d/sudo
+```
+
+> ⚠️ Перед включением `cert-only` обязательно прочитать
+> `docs/operations.md` § 3.6 (потеря USB = lockout) и держать
+> резервный канал доступа (root-shell в другом терминале или SSH-key-only
+> auth-стек, минуя pam_certauth, до полной валидации).
+
+### 8.3 sudo
 
 ```bash
 sudo /usr/share/pam-certauth/integrate-pam.sh /etc/pam.d/sudo
 ```
 
-### 8.3 login
+### 8.4 login
 
 ```bash
 sudo /usr/share/pam-certauth/integrate-pam.sh /etc/pam.d/login
 ```
 
-### 8.4 Безопасность правки
+### 8.5 Безопасность правки
 
 - Перед правкой убедиться, что есть второй открытый рут-shell.
 - Проверять каждое изменение командой `pamtester` сразу после правки
