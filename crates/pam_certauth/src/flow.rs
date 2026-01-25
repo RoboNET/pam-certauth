@@ -27,7 +27,9 @@ use pam_certauth_core::challenge::{challenge_response, CryptoError};
 use pam_certauth_core::config::ValidatedConfig;
 use pam_certauth_core::discovery::{discover_credentials, DiscoveredCreds, DiscoveryError};
 use pam_certauth_core::hooks::{run_hooks_for_stage, HookError, HookExecutor, HookStage, HookVars};
-use pam_certauth_core::host_binding::{verify_cert_scope, HostBindingError};
+use pam_certauth_core::host_binding::{
+    verify_host_binding, verify_user_binding, HostBindingError,
+};
 use pam_certauth_core::host_identity::HostIdSourceKind;
 use pam_certauth_core::ipc::{MonitorClient, OpenSessionInfo};
 use pam_certauth_core::mapping::{match_user, MappingError, MatchedMapping};
@@ -452,23 +454,22 @@ where
     // Step 8 — trust verification (path build, signatures, CRLs, pinning).
     let _verified = deps.trust.verify(&loaded.end_entity, &presented)?;
 
-    // Step 9 — cert scope (cert authorises this host AND this user).
+    // Step 9 — cert scope (cert authorises this host).
     //
-    // The cert's `pam_cert_host_binding` and `pam_cert_user_binding`
-    // X.509 extensions are the SOLE source of authorisation. The
-    // certificate alone decides "which user on which host"; there is
-    // no central ACL, no roles, no signed body file. Runs BEFORE the
-    // legacy TOML mapping so that cert-extension errors (e.g. a missing
-    // `pam_cert_host_binding`) surface as the real cause instead of
-    // being masked by a stale `[[user_mapping]]` lookup.
-    verify_cert_scope(loaded.end_entity.x509(), deps.host_id_hash, pam_user)?;
+    // `pam_cert_host_binding` is mandatory: the cert MUST authorise the
+    // running host. `pam_cert_user_binding`, if present, also takes
+    // precedence over the legacy TOML mapping; if absent, Step 10 falls
+    // back to `[[user_mapping]]`. Runs BEFORE Step 10 so that cert-
+    // extension errors (e.g. missing `pam_cert_host_binding`) surface
+    // as the real cause instead of being masked by a stale mapping.
+    verify_host_binding(loaded.end_entity.x509(), deps.host_id_hash)?;
 
-    // Step 10 — subject mapping (LEGACY fallback for certs without a
-    // `pam_cert_user_binding` extension). When the cert carries that
-    // extension, Step 9 above already authorised this user, so the
-    // `[[user_mapping]]` list is bypassed entirely (cert wins). Only
-    // certs missing the extension fall through to the TOML mapping.
-    if pam_certauth_core::x509::user_binding_ext::parse(loaded.end_entity.x509()).is_err() {
+    // Step 10 — user authorisation. Cert-driven path (user_binding
+    // extension present) wins over the legacy `[[user_mapping]]`. Only
+    // certs without `pam_cert_user_binding` fall through to TOML.
+    if pam_certauth_core::x509::user_binding_ext::parse(loaded.end_entity.x509()).is_ok() {
+        verify_user_binding(loaded.end_entity.x509(), pam_user)?;
+    } else {
         let _matched: MatchedMapping =
             match_user(&loaded.end_entity, pam_user, deps.user_mappings)?;
     }
@@ -782,15 +783,18 @@ where
     let presented_chain: Vec<Certificate> = Vec::new();
     let _verified = deps.trust.verify(&cert.certificate, &presented_chain)?;
 
-    // Step 9 — cert scope (cert authorises this host AND this user).
-    // Runs BEFORE the legacy TOML mapping so cert-extension errors
-    // (e.g. missing `pam_cert_host_binding`) surface as the real cause.
-    verify_cert_scope(cert.certificate.x509(), deps.host_id_hash, pam_user)?;
+    // Step 9 — cert scope (cert authorises this host).
+    // `pam_cert_host_binding` is mandatory; user_binding is checked in
+    // Step 10. Runs BEFORE the legacy TOML mapping so cert-extension
+    // errors (e.g. missing `pam_cert_host_binding`) surface as the real
+    // cause.
+    verify_host_binding(cert.certificate.x509(), deps.host_id_hash)?;
 
-    // Step 10 — subject mapping (LEGACY fallback). Skipped when the
-    // cert carries `pam_cert_user_binding` — Step 9 already authorised
-    // the user; the cert wins over `[[user_mapping]]`.
-    if pam_certauth_core::x509::user_binding_ext::parse(cert.certificate.x509()).is_err() {
+    // Step 10 — user authorisation. Cert path (user_binding present)
+    // wins over `[[user_mapping]]`; legacy path used when ext absent.
+    if pam_certauth_core::x509::user_binding_ext::parse(cert.certificate.x509()).is_ok() {
+        verify_user_binding(cert.certificate.x509(), pam_user)?;
+    } else {
         let _matched: MatchedMapping =
             match_user(&cert.certificate, pam_user, deps.user_mappings)?;
     }
@@ -1255,16 +1259,10 @@ journald_priority = false
         assert_eq!(err.pam_code(), 9); // PAM_AUTHINFO_UNAVAIL
     }
 
-    // TODO: regenerate a fixture cert WITHOUT pam_cert_user_binding to
-    // exercise the legacy [[user_mapping]] fallback. After the cert-driven
-    // refactor, leaf_rsa.p12 carries a wildcard user_binding extension, so
-    // Step 10 (subject mapping) is skipped and FlowError::Mapping(_) no
-    // longer fires. The legacy path itself is still wired.
     #[test]
-    #[ignore = "leaf_rsa.p12 has user_binding ext; mapping skipped under cert-driven flow. Needs a no-user-binding fixture."]
     fn subject_mismatch_is_perm_denied() {
-        let tmp = stage_p12_mount("leaf_rsa.p12", false);
-        let leaf = Certificate::from_pem(&fixture_bytes("leaf_rsa.pem")).unwrap();
+        let tmp = stage_p12_mount("leaf_no_user_binding.p12", false);
+        let leaf = Certificate::from_pem(&fixture_bytes("leaf_no_user_binding.pem")).unwrap();
         let _serial = leaf.serial_hex().to_lowercase();
 
         let verifier = build_verifier();

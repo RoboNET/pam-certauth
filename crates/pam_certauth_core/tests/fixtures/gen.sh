@@ -80,6 +80,29 @@ e0 = UTF8String:*
 EOF
 ) -out leaf_ecdsa.pem
 
+# Leaf RSA without pam_cert_user_binding (legacy mapping fallback fixture).
+# Used by tests that need to exercise the legacy [[user_mapping]] path:
+# the cert carries host_binding (so cert-scope passes) but no user_binding,
+# so flow.rs Step 10 (subject mapping) runs instead of being skipped.
+openssl genrsa -out leaf_no_user_binding.key 2048
+openssl req -new -key leaf_no_user_binding.key -subj "/CN=alice" \
+    -addext "subjectAltName=email:alice@example.org" -out leaf_no_user_binding.csr
+openssl x509 -req -in leaf_no_user_binding.csr -CA int.pem -CAkey int.key -CAcreateserial \
+    -days 365 -sha256 \
+    -extfile <(cat <<'EOF'
+basicConstraints = critical,CA:FALSE
+keyUsage = critical,digitalSignature
+extendedKeyUsage = clientAuth
+subjectKeyIdentifier = hash
+authorityKeyIdentifier = keyid:always
+subjectAltName = email:alice@example.org
+2.25.183976554325829274683049824615098 = ASN1:SEQUENCE:hb_any
+
+[hb_any]
+e0 = UTF8String:*
+EOF
+) -out leaf_no_user_binding.pem
+
 # Revoked leaf RSA (signed by Intermediate, with a known serial 0x99)
 openssl genrsa -out revoked_leaf.key 2048
 openssl req -new -key revoked_leaf.key -subj "/CN=mallory" \
@@ -217,6 +240,15 @@ openssl pkcs12 -export \
     -keypbe AES-256-CBC -certpbe AES-256-CBC -macalg sha256 \
     -passout pass:correct-pin \
     -out leaf_ecdsa.p12
+
+openssl pkcs12 -export \
+    -inkey leaf_no_user_binding.key \
+    -in leaf_no_user_binding.pem \
+    -certfile int.pem \
+    -name "alice" \
+    -keypbe AES-256-CBC -certpbe AES-256-CBC -macalg sha256 \
+    -passout pass:correct-pin \
+    -out leaf_no_user_binding.p12
 
 # PKCS#12 bundle for the revoked leaf (CN=mallory, serial 0x99).
 # The matching CRL `crl_valid.pem` lists this serial as revoked.
