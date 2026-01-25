@@ -72,8 +72,8 @@ PKCS#11-тесты добавляют дополнительный набор и
 
 ```bash
 # В отдельной VM Astra SE 1.7.5:
-sudo apt install ./target/release/pam-certauth_0.1.0-1_amd64.deb
-sudo /usr/share/pam-certauth/integrate-pam.sh /etc/pam.d/sudo
+sudo apt install ./target/release/pam-certauth_0.1.1-1_amd64.deb
+sudo /usr/share/pam-certauth/integrate-pam.sh --mode=2fa /etc/pam.d/sudo
 pamtester sudo alice authenticate
 ```
 

@@ -1,5 +1,29 @@
 # Changelog
 
+## [0.1.1] — 2026-01-25
+
+- Cert-binding extensions take precedence over the legacy
+  `[[user_mapping]]` TOML list. `pam_cert_user_binding` /
+  `pam_cert_host_binding` are the sole source of authorisation when
+  present; `[[user_mapping]]` is consulted only for certificates
+  without `pam_cert_user_binding`.
+- PAM cdylib syslog backend wired into the `tracing` subscriber:
+  every `error!` / `warn!` emitted from `libpam_certauth.so` lands
+  in `/var/log/auth.log` (LOG_AUTH facility, ident `pam_certauth`,
+  `pam_certauth[<pid>]:` prefix). Production diagnosis no longer
+  blind.
+- Three PAM-stack snippets shipped alongside the module:
+  `/etc/pam.d/certauth` (2FA, default), `/etc/pam.d/certauth-optional`
+  (phased rollout), `/etc/pam.d/certauth-only` (cert-only,
+  lockout-strict). `integrate-pam.sh --mode=2fa|optional|cert-only`
+  selects which one to wire in. The deprecated `--strict` /
+  `--optional` flags still work as aliases.
+- SysV init script (`/etc/init.d/pam-certauth-monitord`) shipped for
+  hosts without systemd; adds `lsb-base` dependency to the `.deb`.
+- Manpage `pam-certauth-monitord(8)` shipped.
+- Docs: USBGuard interop, Astra ЗПС (DIGSIG) caveat, USB-lockout
+  pre-deploy checklist, full `on_usb_removed` mode reference.
+
 ## [0.1.0] — 2026-01-17
 
 Initial public release.

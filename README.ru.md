@@ -68,12 +68,60 @@ flowchart LR
 Установка из `.deb` на Astra Linux SE:
 
 ```bash
-sudo apt install ./pam-certauth_0.1.0-1_amd64.deb
+sudo apt install ./pam-certauth_0.1.1-1_amd64.deb
 ```
 
-Зависимости (`gost-engine`, `pcsc-lite`, `libssl3`) подтягиваются APT'ом
-автоматически. Полный пошаговый сценарий — в
-[docs/install.md](docs/install.md).
+Зависимости (`gost-engine`, `pcsc-lite`, `libssl3`, `lsb-base` —
+для SysV init на хостах без systemd) подтягиваются APT'ом автоматически.
+Полный пошаговый сценарий — в [docs/install.md](docs/install.md).
+
+## Модель авторизации
+
+Авторизация «какой пользователь на каком хосте» живёт в самом
+end-entity сертификате — в двух X.509 v3 расширениях:
+
+| Расширение              | OID                                            | Кодирование             |
+|-------------------------|------------------------------------------------|-------------------------|
+| `pam_cert_host_binding` | `2.25.183976554325829274683049824615098`        | `SEQUENCE OF UTF8String` |
+| `pam_cert_user_binding` | `2.25.215438916728501023845629178354627`        | `SEQUENCE OF UTF8String` |
+
+Когда оба расширения присутствуют — они и только они определяют, на
+каких хостах и под каким PAM-пользователем сертификат может работать.
+Список `[[user_mapping]]` в `config.toml` оставлен как
+**legacy fallback** для сертификатов, выпущенных без расширения
+`pam_cert_user_binding`. Подробности и готовые рецепты `openssl.cnf`
+— в [docs/cert-issuance.md](docs/cert-issuance.md).
+
+## Режимы аутентификации
+
+Поставляются три PAM-сниппета; режим выбирается через
+`integrate-pam.sh --mode=...`:
+
+| Режим        | Сниппет (`/etc/pam.d/`)   | Control                              | Поведение                                |
+|--------------|---------------------------|--------------------------------------|-------------------------------------------|
+| `2fa`        | `certauth` (по умолчанию) | `auth required`                      | Cert И пароль (классический 2FA).         |
+| `optional`   | `certauth-optional`       | `auth sufficient`                    | Cert ИЛИ пароль — миграционный режим.     |
+| `cert-only`  | `certauth-only`           | `auth [success=done default=die]`    | Cert — единственный фактор, **lockout-strict**. |
+
+```bash
+sudo /usr/share/pam-certauth/integrate-pam.sh --mode=2fa       /etc/pam.d/sudo
+sudo /usr/share/pam-certauth/integrate-pam.sh --mode=optional  /etc/pam.d/sudo
+sudo /usr/share/pam-certauth/integrate-pam.sh --mode=cert-only /etc/pam.d/sudo
+```
+
+Старые флаги `--strict` / `--optional` сохранены как deprecated-aliases
+для `--mode=2fa` / `--mode=optional`. Перед включением `cert-only`
+прочитать [docs/install.md §8](docs/install.md) и
+[docs/operations.md §3.6](docs/operations.md) — потеря или блокировка
+токена в этом режиме означает полную потерю доступа.
+
+## Журналирование
+
+PAM-cdylib `pam_certauth.so` пишет события `tracing` в syslog
+(facility `LOG_AUTH`, ident `pam_certauth`) — они появляются в
+`/var/log/auth.log` (классический syslog) или в journald с префиксом
+`pam_certauth[<pid>]:`. Демон `monitord` пишет в journald через
+`Type=notify`.
 
 ## Быстрый старт за 10 минут (тестовый стенд)
 
@@ -84,7 +132,7 @@ sudo apt install ./pam-certauth_0.1.0-1_amd64.deb
 1. Установить пакет:
 
    ```bash
-   sudo apt install ./pam-certauth_0.1.0-1_amd64.deb
+   sudo apt install ./pam-certauth_0.1.1-1_amd64.deb
    ```
 
 2. Сгенерировать тестовый CA (пример под ГОСТ; полные RSA/ECDSA-варианты —
@@ -140,14 +188,17 @@ sudo apt install ./pam-certauth_0.1.0-1_amd64.deb
    sudo systemctl status pam-certauth-monitord
    ```
 
-9. Подключить модуль к `sudo` через включаемый сниппет:
+9. Подключить модуль к `sudo` в режиме 2FA (по умолчанию):
 
    ```bash
-   sudo /usr/share/pam-certauth/integrate-pam.sh /etc/pam.d/sudo
+   sudo /usr/share/pam-certauth/integrate-pam.sh --mode=2fa /etc/pam.d/sudo
    ```
 
    Скрипт делает резервную копию `/etc/pam.d/sudo.bak.<UTC-timestamp>`
    и вставляет строку `@include certauth` перед первой `auth`-строкой.
+   Альтернативные режимы — `--mode=optional` (миграция) и
+   `--mode=cert-only` (lockout-strict; см. предупреждение в
+   `docs/install.md §8` и `docs/operations.md §3.6`).
 
 10. Smoke-тест:
 

@@ -128,6 +128,25 @@ mitigation → evidence (код, конфиг, тест).
   - тесты suspend/resume —
     [`suspend_grace.rs`](../crates/pam_certauth_monitord/tests/suspend_grace.rs).
 
+### 3.6.1 Astra ЗПС (DIGSIG) и подпись бинарей
+
+- **Описание:** атакующий с file-write правами заменяет `pam_certauth.so`
+  или `pam-certauth-monitord` подделанным бинарём.
+- **STRIDE:** Tampering.
+- **Mitigation:**
+  - На Astra Linux SE production-режим — `astra-digsig-control` в
+    `enforce`. ELF-файлы из пакета `pam-certauth` должны быть
+    подписаны через сборочный CI Astra-партнёра (`bsign` GPG-ключом
+    из доверенной связки `/etc/digsig/keys/`); подмена бинаря без
+    соответствующей подписи отвергается ядром на `execve(2)` /
+    `mmap(2)`.
+  - Если ЗПС переведён в `logging-only`, защита снижается до
+    `dpkg --verify` и прав `0755 root:root` на бинарь — этот режим
+    допустим только на dev-машинах. Production-deploy без подписи
+    запрещён регламентом эксплуатации.
+- **Evidence:** см. install.md §1.5 «Preflight: USBGuard и Astra ЗПС
+  (DIGSIG)» — там описан и режим проверки, и команды диагностики.
+
 ### 3.7 Утечка приватного ключа из памяти процесса
 
 - **Описание:** атакующий читает память процесса (через ptrace,
@@ -273,6 +292,43 @@ mitigation → evidence (код, конфиг, тест).
 | 5.5 | IPC-сокет `/run/pam_certauth/monitord.sock` | `SO_PEERCRED uid=0` + права `0660`. Если root уже компрометирован — модуль уже бесполезен. |
 | 5.6 | Хуки в `[[hooks]]`                     | Whitelist placeholder'ов, fork+execve, таймауты. Сам хук — ответственность администратора. |
 | 5.7 | Конфигурационные файлы `/etc/pam_certauth/config.toml` и trust-anchors | Права `0640 root:root`. Ручное управление. |
+
+## 5.1 Модель привилегий процессов
+
+| Процесс              | Контекст / UID                                              | Hardening                                                                                                  | Известный остаточный риск                       |
+|----------------------|-------------------------------------------------------------|------------------------------------------------------------------------------------------------------------|--------------------------------------------------|
+| `pam_certauth.so`    | UID PAM-вызывателя (`sudo`/`login`/`fly-dm` — обычно `root` на этапе `auth`); архитектурное требование PAM. | `#![forbid(unsafe_code)]` на `pam_certauth_proto`; `panic_guard` на каждой C-границе → `PAM_AUTHINFO_UNAVAIL`; `Secret<T: Zeroize>` для PIN. | Загрузка в адресное пространство rooted-процесса — компрометация хоста compromisит и модуль (вне TOE, см. 4.1). |
+| `pam-certauth-monitord` | `User=pamcertauth` / `Group=pamcertauth` — выделенный системный аккаунт без shell, создаётся `debian/postinst`. | `ProtectSystem=strict` + `ReadWritePaths=…`, `ProtectHome=yes`, `PrivateTmp=yes`, `NoNewPrivileges=yes`, `ProtectKernelTunables/Modules/ControlGroups=yes`, `RestrictNamespaces=yes`, `RestrictRealtime=yes`, `LockPersonality=yes`, `CapabilityBoundingSet=CAP_DAC_READ_SEARCH`, `AmbientCapabilities=CAP_DAC_READ_SEARCH`. Привилегированные D-Bus вызовы к logind гейтятся polkit-правилом. | `MemoryDenyWriteExecute=no` (оставлен off из-за W^X-релаксации в OpenSSL/`gost-engine`); полная W^X-сэндбоксизация — задача после benchmarking-стадии (см. systemd-юнит и backlog к 0.1.2). |
+
+`pam_certauth.so` исполняется в контексте PAM-вызывателя — это
+архитектурное ограничение PAM-стека, не выбор реализации; снизить
+привилегии cdylib без перепроектирования PAM-протокола нельзя.
+`pam-certauth-monitord` начиная с 0.1.1 уже разделён на отдельный
+системный аккаунт — root-привилегии для D-Bus-действий на logind
+выдаются точечно через polkit-правило, поставляемое пакетом.
+
+## 5.2 Модель lockout-устойчивости
+
+PAM-стек, в который интегрирован `pam_certauth`, превращает USB-токен
+в **жёсткий** второй (или единственный, см. `cert-only`) фактор. Это
+сознательный security-выбор; цена выбора — устойчивость к потере
+токена ложится на эксплуатацию, а не на сам модуль:
+
+| Режим      | Потеря токена                              | USBGuard блокирует токен                  | Astra ЗПС в `enforce` без подписи бинаря |
+|------------|--------------------------------------------|-------------------------------------------|-------------------------------------------|
+| `2fa`      | Можно войти по паролю.                      | То же — пароль работает.                   | PAM-модуль не загрузится → fallback на пароль (`auth required` сорвёт логин). |
+| `optional` | Можно войти по паролю.                      | То же.                                     | То же.                                    |
+| `cert-only`| **Lockout.** Локальный root тоже не зайдёт. | **Lockout.**                              | **Lockout** — `auth [success=done default=die]`. |
+
+Компенсирующие контроли для `cert-only` (обязательные перед deploy'ом):
+
+- резервный канал доступа без `pam_certauth` (см. install.md §8) —
+  отдельный sshd-stack `UsePAM=no` или sudoers-правило для
+  emergency-аккаунта;
+- запасной токен с тем же `pam_cert_user_binding` для каждого
+  привилегированного пользователя;
+- задокументированная процедура rescue-recovery (см. install.md §10
+  «Замок-аут после неудачной правки PAM»).
 
 ## 6. Модель нарушителя
 

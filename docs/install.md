@@ -75,32 +75,81 @@ openssl dgst -engine gost -md_gost12_256 /etc/hostname
 пошло не так с алгоритмом; вероятно, версия `gost-engine` рассинхронна
 с системным OpenSSL. См. раздел «Что делать, если…».
 
+### 1.5 Preflight: USBGuard и Astra ЗПС (DIGSIG)
+
+Перед установкой полезно убедиться, что окружение не заблокирует ни
+сам токен на USB-шине, ни запуск `pam_certauth.so` /
+`pam-certauth-monitord` через ЭЦП-контроль.
+
+#### USBGuard
+
+Если на хосте установлен USBGuard в режиме `block`, USB-токен должен
+быть в allowlist — иначе ядро не отдаст устройство `udev`'у, и
+`pam_certauth` не увидит его.
+
+```bash
+sudo systemctl is-active usbguard          # active / inactive / not-found
+sudo usbguard list-devices 2>/dev/null     # столбец "block" → токен заблокирован
+```
+
+Разрешить конкретный токен (по vid:pid или по hash) — отдельным
+правилом в `/etc/usbguard/rules.conf`:
+
+```
+allow id 0aca:0030 name "Rutoken ECP" hash "ABC..."
+```
+
+После правки правил — `sudo systemctl reload usbguard`. Подробности
+по runtime-аспекту (порядок старта `monitord` относительно USBGuard)
+— в [docs/operations.md §3.5](operations.md).
+
+#### Astra ЗПС / DIGSIG (`astra-digsig-control`)
+
+В production-развёртывании на Astra SE требуется одно из двух:
+
+1. **`astra-digsig-control`** переведён в `logging-only`-режим
+   (модуль не блокирует выполнение неподписанных ELF, но шумит в
+   `/var/log/syslog` сообщениями `DIGSIG: NOT_ELF_SIGNED`); либо
+2. бинари `pam_certauth.so` и `pam-certauth-monitord` подписаны
+   через сервис подписи Astra-партнёра (`bsign` GPG-ключом из
+   доверенной связки в `/etc/digsig/keys/`) — обычно это шаг сборки
+   `.deb` в Astra-CI.
+
+```bash
+sudo astra-digsig-control status     # ВКЛЮЧЕНО / НЕАКТИВНО / logging-only
+sudo dmesg | grep -i digsig | tail   # видны ли отказы по подписи
+```
+
+В режиме `enforce` без валидной подписи PAM-аутентификация не
+проходит — `pam_certauth.so` просто не загружается. См. также
+[docs/threat-model.md §3.7](threat-model.md).
+
 ## 2. Установка `.deb`
 
 ### 2.1 Скачивание
 
 ```bash
 # Ссылка на релиз — placeholder; заменить на реальный URL после
-# публикации v1.0.0 (обычно — GitHub Releases или внутренний репозиторий
+# публикации v0.1.1 (обычно — GitHub Releases или внутренний репозиторий
 # Astra Linux).
-wget https://example.test/releases/pam-certauth_0.1.0-1_amd64.deb
-wget https://example.test/releases/pam-certauth_0.1.0-1_amd64.deb.sha256
-wget https://example.test/releases/pam-certauth_0.1.0-1_amd64.deb.streebog256
+wget https://example.test/releases/pam-certauth_0.1.1-1_amd64.deb
+wget https://example.test/releases/pam-certauth_0.1.1-1_amd64.deb.sha256
+wget https://example.test/releases/pam-certauth_0.1.1-1_amd64.deb.streebog256
 ```
 
 ### 2.2 Проверка SHA-256
 
 ```bash
-sha256sum -c pam-certauth_0.1.0-1_amd64.deb.sha256
+sha256sum -c pam-certauth_0.1.1-1_amd64.deb.sha256
 ```
 
-Ожидание: `pam-certauth_0.1.0-1_amd64.deb: OK`.
+Ожидание: `pam-certauth_0.1.1-1_amd64.deb: OK`.
 
 ### 2.3 Проверка Streebog-256
 
 ```bash
 ./scripts/verify-checksums.sh \
-    pam-certauth_0.1.0-1_amd64.deb \
+    pam-certauth_0.1.1-1_amd64.deb \
     checksums/checksums.txt
 ```
 
@@ -111,7 +160,7 @@ sha256sum -c pam-certauth_0.1.0-1_amd64.deb.sha256
 ### 2.4 Установка
 
 ```bash
-sudo apt install ./pam-certauth_0.1.0-1_amd64.deb
+sudo apt install ./pam-certauth_0.1.1-1_amd64.deb
 ```
 
 `apt` подтянет недостающие зависимости (`libgost-engine | gost-engine`,
@@ -138,7 +187,7 @@ test -d /run/pam_certauth && echo "runtime dir OK"
 test -S /run/pam_certauth/monitord.sock && echo "socket OK"
 ```
 
-Ожидание: версия `1.0.0`, обе строки `OK`.
+Ожидание: версия `0.1.1`, обе строки `OK`.
 
 ## 3. Создание тестового CA (ГОСТ)
 
@@ -324,9 +373,8 @@ pkcs11-tool --module /usr/lib/librtpkcs11ecp.so \
 
 ## 7. Авторизация: расширения сертификата
 
-Привязка «какой пользователь на каком хосте» начиная с 1.0.2 живёт
-в самом сертификате — отдельный подписанный TOML-файл больше не
-нужен. PAM-модуль читает два X.509 v3 расширения leaf-сертификата:
+Привязка «какой пользователь на каком хосте» живёт в самом
+сертификате. PAM-модуль читает два X.509 v3 расширения leaf-сертификата:
 
 - `pam_cert_host_binding` (OID `2.25.183976554325829274683049824615098`)
   — список разрешённых хостов;
@@ -413,10 +461,24 @@ sudo /usr/share/pam-certauth/integrate-pam.sh --mode=cert-only /etc/pam.d/sudo
 sudo /usr/share/pam-certauth/integrate-pam.sh --unintegrate /etc/pam.d/sudo
 ```
 
-> ⚠️ Перед включением `cert-only` обязательно прочитать
-> `docs/operations.md` § 3.6 (потеря USB = lockout) и держать
-> резервный канал доступа (root-shell в другом терминале или SSH-key-only
-> auth-стек, минуя pam_certauth, до полной валидации).
+> ⚠️ **Lockout-warning для `cert-only`.** Перед переключением сервиса
+> в `cert-only` админ обязан иметь резервный канал доступа:
+>
+> 1. Открытый root-shell в другом терминале (TTY/SSH) **на всё время
+>    проверки**, минимум до того, как убедились, что cert-only auth
+>    работает на тестовом аккаунте на этой машине.
+> 2. Альтернативный путь логина, который НЕ проходит через
+>    `pam_certauth` — например, отдельный sshd-stack с
+>    `PubkeyAuthentication=yes` + `UsePAM=no`, или sudoers-правило для
+>    админ-аккаунта без `@include certauth`. Иначе потеря или блокировка
+>    единственного токена (USBGuard, ЗПС, физическая утрата) выведет
+>    хост из строя — никто не сможет залогиниться, включая локальный
+>    root.
+>
+> Откат — `integrate-pam.sh --unintegrate` из живого root-shell или
+> через rescue-target (см. § 10 «Замок-аут после неудачной правки»).
+> Тот же runbook продублирован в
+> [docs/operations.md § 3.6](operations.md).
 
 ### 8.3 sudo
 
@@ -615,6 +677,30 @@ Recovery:
 
 См. также [docs/operations.md](operations.md) — раздел «Действия при
 инцидентах».
+
+## 11. Хосты без systemd: SysV init
+
+Пакет `pam-certauth` ставит **оба** init-варианта:
+
+- systemd-юнит `pam-certauth-monitord.service` — основной, на хостах с
+  systemd активируется автоматически через `dh_installsystemd`;
+- SysV init-скрипт `/etc/init.d/pam-certauth-monitord` — для
+  non-systemd окружений (чистый sysvinit, OpenRC). Включается через
+  `update-rc.d` или вручную:
+
+  ```bash
+  sudo update-rc.d pam-certauth-monitord defaults
+  sudo service pam-certauth-monitord start
+  sudo service pam-certauth-monitord status
+  ```
+
+Скрипт оборачивает запуск `/usr/sbin/pam-certauth-monitord` через
+`start-stop-daemon`, кладёт PID-файл в `/run/pam_certauth/pam-certauth-monitord.pid`
+и читает `/etc/pam_certauth/config.toml`. На хостах без systemd
+hardening-сэндбокса (cgroups, ProtectSystem) — нет, оператор
+принимает этот компромисс осознанно. На systemd-хостах править
+SysV-скрипт не требуется — авторитативный источник конфигурации
+службы — `pam-certauth-monitord.service`.
 
 ## Дальнейшие шаги
 
