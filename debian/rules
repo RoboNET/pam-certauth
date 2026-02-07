@@ -40,10 +40,11 @@ override_dh_auto_install:
 	# debhelper auto-renaming surprises and keeps the rule explicit.
 	install -D -m 0644 target/release/libpam_certauth.so \
 		debian/pam-certauth/lib/security/pam_certauth.so
-	# The monitord binary goes to /usr/sbin and gets stripped later by
-	# dh_strip.
-	install -D -m 0755 target/release/pam-certauth-monitord \
-		debian/pam-certauth/usr/sbin/pam-certauth-monitord
+	# The pam-certauth CLI binary (with `daemon` subcommand replacing the
+	# legacy monitord entry point) goes to /usr/bin and gets stripped later
+	# by dh_strip.
+	install -D -m 0755 target/release/pam-certauth \
+		debian/pam-certauth/usr/bin/pam-certauth
 
 override_dh_auto_test:
 	# We rely on `cargo test` having been run before invoking
@@ -55,12 +56,12 @@ override_dh_strip:
 	dh_strip --no-automatic-dbgsym
 
 override_dh_installsystemd:
-	dh_installsystemd --no-enable --no-start --no-restart-on-upgrade pam-certauth-monitord.service
+	dh_installsystemd --no-enable --no-start --no-restart-on-upgrade pam-certauth.service
 
 override_dh_installinit:
 	# SysV init script for hosts without systemd. --name selects the
-	# basename inside /etc/init.d so we get /etc/init.d/pam-certauth-monitord
-	# (matching the systemd unit), not /etc/init.d/pam-certauth.
+	# basename inside /etc/init.d so we get /etc/init.d/pam-certauth
+	# (matching the systemd unit).
 	# --no-enable + --no-start mirrors the systemd policy: admin must
 	# drop a config file before bringing the service up.
-	dh_installinit --name=pam-certauth-monitord --no-enable --no-start
+	dh_installinit --name=pam-certauth --no-enable --no-start

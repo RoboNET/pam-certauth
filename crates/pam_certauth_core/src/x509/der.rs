@@ -94,33 +94,34 @@ pub(crate) fn oid_to_dotted(content: &[u8]) -> Result<String, TrustError> {
         return Err(TrustError::CertParse("der: empty oid".into()));
     }
     let first = content[0];
-    let arc1 = u32::from(first / 40);
-    let arc2 = u32::from(first % 40);
-    let mut parts: Vec<u32> = Vec::with_capacity(8);
+    let arc1 = u128::from(first / 40);
+    let arc2 = u128::from(first % 40);
+    let mut parts: Vec<u128> = Vec::with_capacity(8);
     parts.push(arc1);
     parts.push(arc2);
 
     let mut i = 1usize;
+    // Arc bound: the project's UUID-derived OIDs (`2.25.<128-bit UUID>`)
+    // fit in 128 bits, so a single arc may be up to ~128 bits.  The
+    // accumulator is u128; reject anything that would overflow it.
     while i < content.len() {
-        let mut value: u64 = 0;
+        let mut value: u128 = 0;
         loop {
             if i >= content.len() {
                 return Err(TrustError::CertParse("der: truncated oid arc".into()));
             }
             let b = content[i];
             i += 1;
-            value = (value << 7) | u64::from(b & 0x7F);
-            if value > u64::from(u32::MAX) {
+            // Detect overflow before the shift would lose high bits.
+            if value > (u128::MAX >> 7) {
                 return Err(TrustError::CertParse("der: oid arc overflow".into()));
             }
+            value = (value << 7) | u128::from(b & 0x7F);
             if b & 0x80 == 0 {
                 break;
             }
         }
-        // value fits into u32 because of the check above.
-        let casted = u32::try_from(value)
-            .map_err(|_| TrustError::CertParse("der: oid arc overflow".into()))?;
-        parts.push(casted);
+        parts.push(value);
     }
 
     let mut out = String::with_capacity(parts.len() * 4);

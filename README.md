@@ -10,6 +10,30 @@ private key lives on a USB token (Rutoken EDS 2.0/3.0 via PKCS#11,
 JaCarta GOST-2 via PKCS#11) or, for development setups, in a
 passphrase-protected `.p12` on a USB filesystem.
 
+## What's new in 0.2.0
+
+0.2.0 adds **per-action M-of-N authorisation** on top of cert login.
+A new X.509 extension `pam_cert_scopes` declares which scopes (e.g.
+`bios.flash`, `cluster.drain`) a cert may invoke. The new
+`pam-certauth execute --scope=… --work-order=…` subcommand verifies a
+CMS SignedData "work order" co-signed by *N* approvers against a
+TOML policy at `/etc/pam_certauth/policy.toml`, then spawns the
+target command. The PAM module gains `require_scope=…` for
+scope-gated login. See [docs/index.md](docs/index.md) for the entry
+point and [docs/migration.md](docs/migration.md) for the upgrade
+path from 0.1.x.
+
+- **No interactive root on ATM.** Replaces traditional `sudo -i`
+  admin sessions with narrow-scope, M-of-N approved
+  `pam-certauth execute` calls. ATM accounts run as plain users —
+  no `wheel`, no `sudo` group, no broad `NOPASSWD: ALL`. The single
+  sudoers entry `%atm_engineers ALL=(root) NOPASSWD:
+  /usr/bin/pam-certauth execute *` is the only path to root, and
+  every privileged operation is signed by `N` independent operators
+  and attributable to engineer + ≥`M` approvers. See
+  [docs/threat-model.md §1.2](docs/threat-model.md) and
+  [docs/architecture.md §1.1.1](docs/architecture.md).
+
 ## Capabilities
 
 - X.509 certificate authentication via PKCS#11 token or PKCS#12 file.
@@ -50,9 +74,9 @@ flowchart LR
     flydm[fly-dm / sudo / login]
     libpam[libpam.so]
     cdylib[libpam_certauth.so]
-    monitord[pam-certauth-monitord]
+    daemon[pam-certauth daemon]
     user --> flydm --> libpam --> cdylib
-    cdylib -. NDJSON .-> monitord
+    cdylib -. NDJSON .-> daemon
 ```
 
 Detailed architecture: [docs/architecture.md](docs/architecture.md)
@@ -113,7 +137,7 @@ deploying `cert-only`, read the lockout warning in
 The PAM cdylib emits `tracing` records to syslog (facility `LOG_AUTH`,
 ident `pam_certauth`) — they land in `/var/log/auth.log` (classic
 syslog) or in journald with the `pam_certauth[<pid>]:` prefix. The
-monitord daemon logs to journald via `Type=notify`.
+`pam-certauth` daemon logs to journald via `Type=notify`.
 
 ## Quick start (10-minute test bench)
 
@@ -121,7 +145,7 @@ A 12-step quick-start scenario for a clean Astra Linux SE 1.7.5 VM is
 provided in [README.ru.md](README.ru.md#быстрый-старт-за-10-минут-тестовый-стенд).
 It covers test CA generation, issuing a test cert for
 `alice`, mounting it on a USB stick, configuring `/etc/pam_certauth/`,
-enabling the monitord service, integrating `/etc/pam.d/sudo`, and
+enabling the `pam-certauth` service, integrating `/etc/pam.d/sudo`, and
 validating with `pamtester`.
 
 ## Project structure
@@ -135,7 +159,7 @@ validating with `pamtester`.
 │   ├─ pam_certauth/          # cdylib libpam_certauth.so
 │   ├─ pam_certauth_core/     # synchronous core
 │   ├─ pam_certauth_proto/    # IPC wire protocol
-│   └─ pam_certauth_monitord/ # pam-certauth-monitord daemon
+│   └─ pam_certauth_cli/ # pam-certauth daemon
 ├─ debian/                    # Debian packaging
 ├─ dist/                      # example configs, systemd unit, integrate-pam.sh
 ├─ docs/                      # documentation (Russian)

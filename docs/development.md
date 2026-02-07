@@ -208,6 +208,30 @@ cargo test --workspace
 - `verify_cert_scope` — финальная сверка распарсенных записей с
   `host_id_hash` и `pam_user`. См. также
   [docs/cert-issuance.md](cert-issuance.md) для семантики записей.
+- `crates/pam_certauth_core/src/x509/scopes_ext.rs` — парсинг
+  расширения `pam_cert_scopes` (0.2.0).
+- `crates/pam_certauth_core/src/cms.rs` — CMS work order verifier.
+
+## 7.2 Крейт `pam_certauth_policy` (0.2.0)
+
+Отдельный workspace-крейт. Парсит `/etc/pam_certauth/policy.toml`,
+валидирует поля и резолвит правило для конкретного scope (exact →
+wildcard → defaults). См. [docs/policy.md](policy.md) для формата и
+[`crates/pam_certauth_policy/src/lib.rs`](../crates/pam_certauth_policy/src/lib.rs)
+для исходника.
+
+Тесты живут inline в `lib.rs` (модули `rule_for_tests`,
+`validate_tests`).
+
+## 7.3 Новые интеграционные тесты (0.2.0)
+
+- `crates/pam_certauth_core/tests/cms_*.rs` — CMS verify (positive +
+  negative).
+- `crates/pam_certauth_cli/tests/execute_*.rs` — end-to-end
+  `pam-certauth execute` (включая sidecar `.pattern`, timeout,
+  exit codes).
+- `crates/pam_certauth_cli/tests/policy_*.rs` — subcommands
+  `policy validate|explain`.
 
 ## 8. Версионирование
 

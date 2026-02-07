@@ -1,0 +1,26 @@
+[Unit]
+Description=GC for pam_certauth retained work orders
+Documentation=man:pam-certauth(8)
+After=pam-certauth.service
+
+[Service]
+Type=oneshot
+# Run as root, in contrast to the main pam-certauth.service which runs
+# as the unprivileged 'pamcertauth' user. The work_orders directory is
+# root:root 0750 (see debian/postinst) so root is the only identity that
+# can read in-flight approvals — gc therefore must be root too. The
+# residual risk is bounded by the hardening directives below.
+User=root
+ExecStart=/usr/bin/pam-certauth gc --retention-days=90
+
+# Hardening — gc only touches /var/lib/pam_certauth/work_orders.
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+NoNewPrivileges=yes
+ReadWritePaths=/var/lib/pam_certauth/work_orders
+RestrictAddressFamilies=AF_UNIX
+RestrictNamespaces=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes

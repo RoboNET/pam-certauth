@@ -1,14 +1,14 @@
 Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/
 Upstream-Name: pam-certauth
-Upstream-Contact: pam_certauth maintainers <maintainers@example.org>
-Source: https://github.com/your-org/pam_certauth
+Upstream-Contact: Mikhail Korolev <mikhail@robonet.me>
+Source: https://github.com/RoboNET/pam-certauth
 
 Files: *
-Copyright: 2024-2025 pam_certauth maintainers
+Copyright: 2024-2025 Mikhail Korolev
 License: Apache-2.0
 
 Files: debian/*
-Copyright: 2025 pam_certauth maintainers
+Copyright: 2025 Mikhail Korolev
 License: Apache-2.0
 
 License: Apache-2.0

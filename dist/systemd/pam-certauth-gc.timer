@@ -1,0 +1,11 @@
+[Unit]
+Description=GC for pam_certauth retained work orders
+Documentation=man:pam-certauth(8)
+
+[Timer]
+OnCalendar=daily
+Persistent=true
+RandomizedDelaySec=15min
+
+[Install]
+WantedBy=timers.target

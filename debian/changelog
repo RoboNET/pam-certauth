@@ -1,3 +1,64 @@
+pam-certauth (0.2.1-1) unstable; urgency=medium
+
+  * Security: RFC 3161 TimeStampToken is now actually enforced when
+    scope policy sets `require_timestamp_token = true` (was a silent
+    no-op in 0.2.0). Both chain validation against the [tsa_trust]
+    store and RFC 3161 §2.4.1 messageImprint binding to the signer's
+    signature octets are checked (SHA-256/384/512).
+  * Fix(cms): argv_pattern is now read from the signed
+    encapContentInfo.eContent (breaking) rather than the
+    tamper-vulnerable sidecar; re-issue work orders with
+    `openssl cms -sign -nodetach`.
+  * Fix(cms): signing-time is paired with each signer by
+    SubjectKeyIdentifier / issuerAndSerialNumber rather than by
+    positional index.
+  * Fix(packaging): postinst enables pam-certauth-gc.timer and sets
+    0750 root:root on /var/lib/pam_certauth/work_orders/.
+  * Fix(misc): hooks docstring path corrected; scope-match dedup
+    stable; fail-closed host_id_hash; monitord runs non-root cleanly.
+
+ -- Mikhail Korolev <mikhail@robonet.me>  Sat, 07 Feb 2026 12:45:00 +0300
+
+pam-certauth (0.2.0-1) unstable; urgency=medium
+
+  * feat(x509): new `pam_cert_scopes` v3 extension. Certificates now
+    declare an explicit list of scopes (e.g. `bios.flash`,
+    `cluster.drain`). The PAM module gains a `require_scope=...`
+    parameter with `scope_match=any|all` to fail login unless the
+    cert's scopes satisfy the configured set.
+  * feat(execute): new `pam-certauth execute --scope=… --work-order=…
+    -- <cmd>` subcommand performs per-action M-of-N authorisation
+    against a CMS SignedData work order. Each signer must hold an
+    approver cert (separate trust anchor `[approver_trust]`) with
+    matching `pam_cert_scopes` and `pam_cert_host_binding`.
+  * feat(policy): new `pam_certauth_policy` crate + TOML schema at
+    `/etc/pam_certauth/policy.toml`. Scope rules declare `m_of_n`,
+    `require_argv_pattern`, `pre_hooks`, `audit_level`. CLI helpers:
+    `pam-certauth policy validate`, `pam-certauth policy explain`.
+  * feat(retention): CMS work-order artefacts are retained under
+    `/var/lib/pam_certauth/work_orders/` for forensic review.
+    `pam-certauth gc --retention-days=N` plus systemd timer
+    `pam-certauth-gc.timer` reap older entries.
+  * feat(audit): every audit event carries `policy_sha256` so a
+    sysadmin can detect post-deploy drift of `policy.toml`. Events
+    flow via structured journald fields with strict sanitisation.
+  * feat(hooks): hooks become a static enum keyed by name with one
+    bundled builtin (`audit_critical`). No more arbitrary
+    fork+execve from policy.
+  * refactor(cli): `pam-certauth-monitord` is gone — the binary is
+    now `/usr/bin/pam-certauth` with subcommands `daemon`,
+    `execute`, `policy`, `gc`. systemd unit is `pam-certauth.service`
+    `ExecStart=/usr/bin/pam-certauth daemon`.
+  * refactor(ipc): IPC protocol bumped 1 → 2. `SessionOpen` carries
+    `engineer_ski`, `engineer_cert_sha256`, `scopes`, `uid`. New
+    message `GetActiveSessionByUid` lets `execute` look up an
+    authenticated session by uid. v1 payloads still parse.
+  * refactor(config): new sections `[approver_trust]`, `[tsa_trust]`,
+    `[policy]`. Old configs still parse. See
+    `docs/migration.md` for upgrade.
+
+ -- Mikhail Korolev <mikhail@robonet.me>  Sat, 07 Feb 2026 12:30:00 +0300
+
 pam-certauth (0.1.1-1) unstable; urgency=medium
 
   * fix(pam): wire syslog backend for tracing subscriber. Auth-flow
@@ -31,10 +92,10 @@ pam-certauth (0.1.1-1) unstable; urgency=medium
     PAM-caller context (root for sudo/login) — that is an architectural
     constraint of Linux PAM and outside this change.
 
- -- pam_certauth maintainers <maintainers@example.org>  Wed, 06 May 2026 19:30:00 +0000
+ -- Mikhail Korolev <mikhail@robonet.me>  Sun, 25 Jan 2026 13:15:00 +0300
 
 pam-certauth (0.1.0-1) unstable; urgency=medium
 
   * Initial release.
 
- -- pam_certauth maintainers <maintainers@example.org>  Tue, 05 May 2026 00:00:00 +0000
+ -- Mikhail Korolev <mikhail@robonet.me>  Sat, 17 Jan 2026 11:05:00 +0300

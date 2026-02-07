@@ -1,23 +1,68 @@
 # -*- mode: ruby -*-
 # vi: set ft=ruby :
+#
+# Vagrantfile for pam-certauth E2E test boxes.
+#
+# Boxes:
+#   default     — original Astra-proxy box (Ubuntu 22.04, full toolchain). Used
+#                 for stage-1/stage-2 smoke fixtures and PKCS#12 flows.
+#   mof-n       — M-of-N E2E scenario box (Phase 13 of the scopes+M-of-N plan).
+#                 Provisioned via scripts/setup-mof-n-scenario.sh. Boots clean,
+#                 installs the .deb from /srv/source/target/release, generates
+#                 a self-contained CA hierarchy + 1 engineer cert + 2 approver
+#                 certs, signs a sample work order, and starts the daemon.
+#
+# Bring up a specific box:
+#   vagrant up default
+#   vagrant up mof-n
+#
+# The mof-n box assumes the host has already produced a pam-certauth .deb
+# under /srv/source/target/release/. Build via scripts/build-deb.sh before
+# `vagrant up mof-n`.
 
 Vagrant.configure("2") do |config|
   config.vm.box = "bento/ubuntu-22.04"
   config.vm.box_version = ">= 202307.0.0"
-  config.vm.hostname = "pam-certauth-test"
 
-  config.vm.network "private_network", type: "dhcp"
+  # ----------------------------------------------------------------------
+  # Default box — original full-stack provisioning (build toolchain + deps).
+  # ----------------------------------------------------------------------
+  config.vm.define "default", primary: true do |box|
+    box.vm.hostname = "pam-certauth-test"
+    box.vm.network "private_network", type: "dhcp"
 
-  config.vm.synced_folder "..", "/srv/source",
-    type: "rsync",
-    rsync__exclude: ["target/", ".git/", ".idea/"]
+    box.vm.synced_folder "..", "/srv/source",
+      type: "rsync",
+      rsync__exclude: ["target/", ".git/", ".idea/"]
 
-  config.vm.provider "virtualbox" do |vb|
-    vb.memory = 2048
-    vb.cpus = 2
-    vb.customize ["modifyvm", :id, "--usb", "on"]
-    vb.customize ["modifyvm", :id, "--usbehci", "on"]
+    box.vm.provider "virtualbox" do |vb|
+      vb.memory = 2048
+      vb.cpus = 2
+      vb.customize ["modifyvm", :id, "--usb", "on"]
+      vb.customize ["modifyvm", :id, "--usbehci", "on"]
+    end
+
+    box.vm.provision "shell", path: "provision.sh"
   end
 
-  config.vm.provision "shell", path: "provision.sh"
+  # ----------------------------------------------------------------------
+  # mof-n box — Phase 13 E2E scenario. Smaller footprint, runtime deps only,
+  # plus the scopes/M-of-N scenario provisioner.
+  # ----------------------------------------------------------------------
+  config.vm.define "mof-n", autostart: false do |box|
+    box.vm.hostname = "pam-certauth-mof-n"
+    box.vm.network "private_network", type: "dhcp"
+
+    box.vm.synced_folder "..", "/srv/source",
+      type: "rsync",
+      rsync__exclude: [".git/", ".idea/", "target/debug/", "target/doc/"]
+
+    box.vm.provider "virtualbox" do |vb|
+      vb.memory = 1024
+      vb.cpus = 2
+    end
+
+    # Stage 1: install runtime deps + the deb (must already exist on host).
+    box.vm.provision "shell", path: "scripts/setup-mof-n-scenario.sh"
+  end
 end

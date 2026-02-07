@@ -45,6 +45,15 @@ case "$1" in
         chmod 0750 "$STATE_DIR"
         chown pamcertauth:pamcertauth "$STATE_DIR"
 
+        # Work-order directory is root-owned (PAM module / execute runner
+        # writes via sudo or sets up the file under root), readable by the
+        # pamcertauth group via the gc service. Keep mode 0750 so other
+        # local users cannot enumerate in-flight approvals.
+        if [ -d "$STATE_DIR/work_orders" ]; then
+            chown root:root "$STATE_DIR/work_orders"
+            chmod 0750 "$STATE_DIR/work_orders"
+        fi
+
         # Marker for preinst to detect a clean prior install.
         touch "$STATE_DIR/.installed-by-deb"
         chmod 0640 "$STATE_DIR/.installed-by-deb"
@@ -54,6 +63,16 @@ case "$1" in
         if [ -d /run/systemd/system ]; then
             systemctl daemon-reload || true
             systemd-tmpfiles --create /usr/lib/tmpfiles.d/pam-certauth.conf || true
+
+            # Enable + start the GC timer on first install. Idempotent
+            # across upgrades: deb-systemd-helper records the unit's
+            # "debian-installed" state on its own.
+            if deb-systemd-helper debian-installed pam-certauth-gc.timer 2>/dev/null; then
+                : # already configured by a prior install
+            else
+                deb-systemd-helper enable pam-certauth-gc.timer >/dev/null || true
+            fi
+            deb-systemd-invoke start pam-certauth-gc.timer >/dev/null || true
         fi
 
         # Print one-time setup hint if no config has been deployed yet.
@@ -69,7 +88,7 @@ Next steps:
   3. Authorisation is cert-driven (X.509 v3 extensions on the leaf):
      pam_cert_host_binding + pam_cert_user_binding control which hosts
      and which local accounts a cert may sign in to. See README.
-  4. systemctl enable --now pam-certauth-monitord.service
+  4. systemctl enable --now pam-certauth.service
   5. Integrate the PAM stack:
         sudo /usr/share/pam-certauth/integrate-pam.sh /etc/pam.d/sudo
         sudo /usr/share/pam-certauth/integrate-pam.sh /etc/pam.d/fly-dm

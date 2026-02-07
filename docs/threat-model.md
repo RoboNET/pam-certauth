@@ -10,7 +10,7 @@
 Под `pam_certauth` понимается:
 
 - PAM-модуль `libpam_certauth.so` (cdylib);
-- демон `pam-certauth-monitord` (бинарь);
+- демон `pam-certauth` (бинарь);
 - крейты ядра `pam_certauth_core` и протокола `pam_certauth_proto`;
 - поставочные конфигурационные файлы `dist/config/*.example`;
 - systemd-юнит и tmpfiles-сниппет;
@@ -24,6 +24,48 @@
 - PKCS#11-модули вендоров токенов (отдельные СКЗИ ФСБ);
 - пользовательские хуки, прописанные в `[[hooks]]`;
 - Inkscape, fly-dm, gdm и прочие потребители PAM.
+
+### 1.2 Операционная модель: на банкомате нет интерактивного root
+
+Ключевое архитектурное свойство развёртывания: на ATM-машине **нет
+интерактивно доступного root-аккаунта** и **нет учётных записей с
+`sudo -i` / `sudo bash`**. Все привилегированные действия инженеров
+проходят через `pam-certauth execute`, защищённый M-of-N CMS work
+order.
+
+- Аккаунты инженеров на ATM — обычные пользователи. Они **не входят**
+  в группы `wheel`, `sudo`, `admin` и не имеют ни одного broad
+  sudoers-правила вида `NOPASSWD: ALL`.
+- В `/etc/sudoers.d/pam-certauth-execute` есть единственное узкое
+  правило:
+
+  ```text
+  %atm_engineers ALL=(root) NOPASSWD: /usr/bin/pam-certauth execute *
+  ```
+
+  Инженер может запустить **только** `pam-certauth execute` и ничего
+  больше — ни `sudo -i`, ни `sudo cat`, ни `sudo bash`.
+- Внутри `pam-certauth execute` повышение привилегий открывается
+  **только** после успешной валидации CMS-подписи M-of-N
+  одобряющих + проверки `scope` / `host` / `argv_pattern` против
+  `policy.toml`. См. [execute.md](execute.md) и [policy.md](policy.md).
+- Компрометация учётных данных инженера в одиночку
+  (украденный токен + подсмотренный PIN) даёт **только логин на ATM**
+  — никакого root-действия без `N` независимых подписей операторов
+  выполнить нельзя. Эта защита — **архитектурная**, не post-hoc
+  audit: вектор «получил токен → `sudo -i` → root» закрыт отсутствием
+  широкого sudoers-правила, а не только подписями в журнале.
+- Break-glass / recovery пути (Ansible push с bastion'а под отдельной
+  identity, оффлайн-сейф с root-паролем, recovery USB с подписанным
+  initramfs) — out-of-band и описаны отдельно: они **не** доступны с
+  обычной сессии инженера и требуют физического доступа либо
+  отдельной авторизации.
+
+Следствие для модели угроз: угроза «lateral root из скомпрометированной
+учётки инженера» (раздел 4 и атак-tree в §7) переходит из категории
+«mitigated by audit» в категорию **mitigated by architecture** — на
+машине просто нет команды, которую вор токена мог бы выполнить от
+root без согласия `N` других операторов.
 
 ## 2. Допущения о развёртывании
 
@@ -120,18 +162,18 @@ mitigation → evidence (код, конфиг, тест).
   — `LockSession` или `TerminateSession` через D-Bus к logind.
 - **Evidence:**
   - реализация —
-    [`crates/pam_certauth_monitord/src/udev_monitor.rs`](../crates/pam_certauth_monitord/src/udev_monitor.rs),
-    [`logind.rs`](../crates/pam_certauth_monitord/src/logind.rs),
-    [`actions.rs`](../crates/pam_certauth_monitord/src/actions.rs);
-  - тесты — [`udev_simulation.rs`](../crates/pam_certauth_monitord/tests/udev_simulation.rs),
-    [`udev_event_parse.rs`](../crates/pam_certauth_monitord/tests/udev_event_parse.rs);
+    [`crates/pam_certauth_cli/src/udev_monitor.rs`](../crates/pam_certauth_cli/src/udev_monitor.rs),
+    [`logind.rs`](../crates/pam_certauth_cli/src/logind.rs),
+    [`actions.rs`](../crates/pam_certauth_cli/src/actions.rs);
+  - тесты — [`udev_simulation.rs`](../crates/pam_certauth_cli/tests/udev_simulation.rs),
+    [`udev_event_parse.rs`](../crates/pam_certauth_cli/tests/udev_event_parse.rs);
   - тесты suspend/resume —
-    [`suspend_grace.rs`](../crates/pam_certauth_monitord/tests/suspend_grace.rs).
+    [`suspend_grace.rs`](../crates/pam_certauth_cli/tests/suspend_grace.rs).
 
 ### 3.6.1 Astra ЗПС (DIGSIG) и подпись бинарей
 
 - **Описание:** атакующий с file-write правами заменяет `pam_certauth.so`
-  или `pam-certauth-monitord` подделанным бинарём.
+  или `pam-certauth` подделанным бинарём.
 - **STRIDE:** Tampering.
 - **Mitigation:**
   - На Astra Linux SE production-режим — `astra-digsig-control` в
@@ -163,7 +205,7 @@ mitigation → evidence (код, конфиг, тест).
 - **Evidence:**
   - [`crates/pam_certauth_core/src/secret.rs`](../crates/pam_certauth_core/src/secret.rs)
     + Cargo.toml `zeroize = { version = "1.7", features = ["derive"] }`;
-  - [`dist/systemd/pam-certauth-monitord.service`](../dist/systemd/pam-certauth-monitord.service)
+  - [`dist/systemd/pam-certauth.service`](../dist/systemd/pam-certauth.service)
     — все hardening-директивы в наличии.
 
 ### 3.8 Сертификат без расширений или с подделанным расширением
@@ -218,9 +260,9 @@ mitigation → evidence (код, конфиг, тест).
   - monitord проверяет peer'а через `SO_PEERCRED` —
     `uid != 0` → `Error { code: 1003 (UNAUTHORIZED) }` + разрыв.
 - **Evidence:**
-  - [`crates/pam_certauth_monitord/src/peercred.rs`](../crates/pam_certauth_monitord/src/peercred.rs);
-  - тест [`crates/pam_certauth_monitord/tests/peercred.rs`](../crates/pam_certauth_monitord/tests/peercred.rs)
-    + [`ipc_auth.rs`](../crates/pam_certauth_monitord/tests/ipc_auth.rs).
+  - [`crates/pam_certauth_cli/src/peercred.rs`](../crates/pam_certauth_cli/src/peercred.rs);
+  - тест [`crates/pam_certauth_cli/tests/peercred.rs`](../crates/pam_certauth_cli/tests/peercred.rs)
+    + [`ipc_auth.rs`](../crates/pam_certauth_cli/tests/ipc_auth.rs).
 
 ### 3.11 Replay-атаки на challenge-response
 
@@ -267,6 +309,112 @@ mitigation → evidence (код, конфиг, тест).
   - тесты — [`chain_verify.rs`](../crates/pam_certauth_core/tests/chain_verify.rs),
     [`gost_chain_verify.rs`](../crates/pam_certauth_core/tests/gost_chain_verify.rs).
 
+### 3.14 Компрометация approver-токена в течение валидного окна (0.2.0)
+
+- **Описание:** атакующий получает контроль над approver-сертификатом
+  и его ключом. Сертификат ещё не отозван в CRL/OCSP.
+- **STRIDE:** Spoofing, Elevation of Privilege.
+- **Mitigation:**
+  - Short-lived approver-сертификаты (24–72 ч);
+  - `[approver_trust.revocation]` `mode = "crl"` или `"ocsp"` с
+    регулярным `krl_poll_interval_seconds` (минуты, не часы);
+  - `forbid_self_approval = true` в `policy.toml` гарантирует, что
+    одного компрометированного токена недостаточно (нужно `m_of_n`
+    подписей от **разных** SKI).
+- **Residual risk:** если `m` независимых approver-токенов
+  скомпрометированы одновременно, угроза реализуется. Принимается;
+  компенсирующий контроль — separation of duties в банке.
+- **Evidence:** `crates/pam_certauth_core/src/cms.rs` — отказ при
+  повторяющихся SKI; tests `cms_*.rs`.
+
+### 3.15 Стэшеный approver-токен + подделка `signing-time` (0.2.0)
+
+- **Описание:** атакующий с украденным approver-токеном подписывает
+  CMS «задним числом» — выставляет `signing-time` в прошлое, когда
+  approver был ещё активен (например, при истечении срока действия
+  cert'а).
+- **STRIDE:** Tampering.
+- **Mitigation:**
+  - `signing_time_skew_seconds` в `[policy]` (по умолчанию 300 сек):
+    `signing-time` должно быть в окне `now ± skew`.
+  - RFC 3161 TSA TimeStampToken — для критических scope
+    (`require_timestamp_token = true`).
+- **Residual risk:** **0.2.0 TSA НЕ валидируется** — известное
+  ограничение. Защита держится только на skew-окне + быстрой
+  revocation. Для scope с `require_timestamp_token = true` модуль
+  отклоняет CMS до phase 2 (fail-closed). Подробности —
+  [docs/changelog.md](changelog.md), [docs/work-order.md](work-order.md).
+
+### 3.16 Cross-role атака через общий trust-anchor (0.2.0)
+
+- **Описание:** инженерская CA и approver CA имеют один общий root.
+  Атакующий с инженерским токеном пытается подписать CMS work order,
+  выдав себя за approver.
+- **STRIDE:** Spoofing.
+- **Mitigation:**
+  - Разделённые секции `[trust]` (инженерская) и `[approver_trust]`
+    (approver) — разные anchors;
+  - `extendedKeyUsage` с OID `approver_eku` обязателен (`require_approver_eku = true`).
+    Инженерские leaf'ы выпускаются без `approver_eku`, поэтому
+    CMS verify падает с `DisallowedRole`.
+- **Residual risk:** если оператор оставит общий root и забудет EKU,
+  атака возможна. Защита: `pam-certauth policy validate` логирует
+  warning при отсутствии `[approver_trust]`. См.
+  [docs/x509-extensions.md](x509-extensions.md).
+
+### 3.17 Подмена `policy.toml` (0.2.0)
+
+- **Описание:** атакующий с временным root-доступом меняет
+  `policy.toml` — снижает `m_of_n`, отключает `forbid_self_approval`,
+  расширяет wildcard.
+- **STRIDE:** Tampering, Elevation of Privilege.
+- **Mitigation:**
+  - Hardening АРМ: нет интерактивного root, AppArmor-профиль для
+    `pam-certauth`, IMA на `/etc/pam_certauth/`;
+  - **Audit drift detection:** каждое audit-событие `execute` пишет
+    `policy_sha256`. Внешняя система мониторинга должна alert'ить
+    при изменении этого хеша без сопровождающего change-window.
+- **Residual risk:** root, имеющий время изменить файл и подделать
+  audit-логи (compromise journald), — вне TOE. Defense-in-depth:
+  cryptographic signing of `policy.toml` — phase 2.
+- **Evidence:** `crates/pam_certauth_cli/src/execute/audit.rs` —
+  `policy_sha256` пишется всегда; [docs/operations.md §8.2](operations.md).
+
+### 3.18 TOCTOU на файле work order (0.2.0)
+
+- **Описание:** атакующий подменяет содержимое `work_order.cms`
+  между моментом чтения и моментом валидации CMS (race).
+- **STRIDE:** Tampering.
+- **Mitigation:**
+  - `open(O_NOFOLLOW)` блокирует подмену через symlink-flip;
+  - **Hash-before/hash-after invariance:** содержимое читается в
+    буфер, считается SHA-256, перечитывается, считается снова —
+    если совпало, дальше работаем с буфером в памяти.
+- **Evidence:** `crates/pam_certauth_cli/src/execute/work_order.rs`.
+
+### 3.19 Log-injection через `cert_cn` / argv (0.2.0)
+
+- **Описание:** атакующий вшивает `\n`, ANSI-escape или JSON-control
+  bytes в CN сертификата или в argv команды, чтобы исказить
+  журнальное поле и спрятать audit-событие.
+- **STRIDE:** Tampering.
+- **Mitigation:** sanitizer удаляет control bytes (`\x00`..`\x1F`,
+  кроме `\t`) и ASCII-escape sequences перед записью в journald
+  payload. Тег события (`pam_certauth.execute.*`) — статический,
+  не зависит от пользовательских данных.
+- **Evidence:** unit-тесты в
+  `crates/pam_certauth_cli/src/execute/audit.rs`.
+
+### 3.20 Argv `--` smuggling в sudo (0.2.0)
+
+- **Описание:** атакующий передаёт литерал `--` среди args, чтобы
+  sudo / последующий парсер argv воспринял остаток как новые опции.
+- **STRIDE:** Elevation of Privilege.
+- **Mitigation:** argv-canonicalize отклоняет `--` среди args
+  (`EXIT_DENIED`). Также отвергаются NUL и любые control bytes.
+- **Evidence:** `crates/pam_certauth_cli/src/execute/argv.rs` +
+  `crates/pam_certauth_cli/tests/execute_argv.rs`.
+
 ## 4. Угрозы, ОТ КОТОРЫХ модуль НЕ защищает
 
 | #   | Угроза                                                                                       | Рекомендуемый компенсирующий контроль                          |
@@ -298,12 +446,12 @@ mitigation → evidence (код, конфиг, тест).
 | Процесс              | Контекст / UID                                              | Hardening                                                                                                  | Известный остаточный риск                       |
 |----------------------|-------------------------------------------------------------|------------------------------------------------------------------------------------------------------------|--------------------------------------------------|
 | `pam_certauth.so`    | UID PAM-вызывателя (`sudo`/`login`/`fly-dm` — обычно `root` на этапе `auth`); архитектурное требование PAM. | `#![forbid(unsafe_code)]` на `pam_certauth_proto`; `panic_guard` на каждой C-границе → `PAM_AUTHINFO_UNAVAIL`; `Secret<T: Zeroize>` для PIN. | Загрузка в адресное пространство rooted-процесса — компрометация хоста compromisит и модуль (вне TOE, см. 4.1). |
-| `pam-certauth-monitord` | `User=pamcertauth` / `Group=pamcertauth` — выделенный системный аккаунт без shell, создаётся `debian/postinst`. | `ProtectSystem=strict` + `ReadWritePaths=…`, `ProtectHome=yes`, `PrivateTmp=yes`, `NoNewPrivileges=yes`, `ProtectKernelTunables/Modules/ControlGroups=yes`, `RestrictNamespaces=yes`, `RestrictRealtime=yes`, `LockPersonality=yes`, `CapabilityBoundingSet=CAP_DAC_READ_SEARCH`, `AmbientCapabilities=CAP_DAC_READ_SEARCH`. Привилегированные D-Bus вызовы к logind гейтятся polkit-правилом. | `MemoryDenyWriteExecute=no` (оставлен off из-за W^X-релаксации в OpenSSL/`gost-engine`); полная W^X-сэндбоксизация — задача после benchmarking-стадии (см. systemd-юнит и backlog к 0.1.2). |
+| `pam-certauth` | `User=pamcertauth` / `Group=pamcertauth` — выделенный системный аккаунт без shell, создаётся `debian/postinst`. | `ProtectSystem=strict` + `ReadWritePaths=…`, `ProtectHome=yes`, `PrivateTmp=yes`, `NoNewPrivileges=yes`, `ProtectKernelTunables/Modules/ControlGroups=yes`, `RestrictNamespaces=yes`, `RestrictRealtime=yes`, `LockPersonality=yes`, `CapabilityBoundingSet=CAP_DAC_READ_SEARCH`, `AmbientCapabilities=CAP_DAC_READ_SEARCH`. Привилегированные D-Bus вызовы к logind гейтятся polkit-правилом. | `MemoryDenyWriteExecute=no` (оставлен off из-за W^X-релаксации в OpenSSL/`gost-engine`); полная W^X-сэндбоксизация — задача после benchmarking-стадии (см. systemd-юнит и backlog к 0.1.2). |
 
 `pam_certauth.so` исполняется в контексте PAM-вызывателя — это
 архитектурное ограничение PAM-стека, не выбор реализации; снизить
 привилегии cdylib без перепроектирования PAM-протокола нельзя.
-`pam-certauth-monitord` начиная с 0.1.1 уже разделён на отдельный
+`pam-certauth` начиная с 0.1.1 уже разделён на отдельный
 системный аккаунт — root-привилегии для D-Bus-действий на logind
 выдаются точечно через polkit-правило, поставляемое пакетом.
 
@@ -381,11 +529,11 @@ graph TD
 | 3.4    | PIN attempt limit                                       | `crates/pam_certauth_core/tests/pin_loop.rs`                              |
 | 3.5    | host_binding mismatch (sha256-запись не совпала)        | `crates/pam_certauth_core/tests/verify_cert_scope.rs`                     |
 | 3.5    | end-to-end auth с расширениями host/user binding         | `crates/pam_certauth/tests/auth_e2e_p12.rs`                               |
-| 3.6    | USB removal → grace → lock                              | `crates/pam_certauth_monitord/tests/udev_simulation.rs`                  |
-| 3.6    | suspend/resume игнорирует transient REMOVE              | `crates/pam_certauth_monitord/tests/suspend_grace.rs`                    |
+| 3.6    | USB removal → grace → lock                              | `crates/pam_certauth_cli/tests/udev_simulation.rs`                  |
+| 3.6    | suspend/resume игнорирует transient REMOVE              | `crates/pam_certauth_cli/tests/suspend_grace.rs`                    |
 | 3.7    | Secret zeroization в Drop                                | юнит-тесты в `crates/pam_certauth_core/src/secret.rs`                    |
 | 3.8    | сертификат без расширений → отказ                        | `crates/pam_certauth_core/tests/verify_cert_scope.rs` (negative-кейсы)   |
-| 3.10   | uid≠0 peer отвергается                                  | `crates/pam_certauth_monitord/tests/peercred.rs` + `ipc_auth.rs`         |
+| 3.10   | uid≠0 peer отвергается                                  | `crates/pam_certauth_cli/tests/peercred.rs` + `ipc_auth.rs`         |
 | 3.11   | challenge не повторяется                                 | `crates/pam_certauth_core/tests/challenge_dispatch.rs`                   |
 | 3.12   | argv-injection невозможен                                | `crates/pam_certauth_core/tests/hook_security_integration.rs`            |
 | 3.13   | weak signature → DisallowedSignatureAlgorithm           | `crates/pam_certauth_core/tests/chain_verify.rs`                          |

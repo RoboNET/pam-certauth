@@ -15,6 +15,26 @@ pub enum ServerMessage {
     Ack,
     /// Pong (response to Ping).
     Pong,
+    /// Reply to a [`crate::ClientMessage::GetActiveSessionByUid`] lookup.
+    ///
+    /// Carries the engineer cert metadata that PAM recorded when the
+    /// session was opened, so the consumer (typically
+    /// `pam-certauth execute`) can verify scopes without re-reading the
+    /// cert from the USB token.
+    ActiveSession {
+        /// Session id recorded at `SessionOpen` time.
+        session_id: String,
+        /// Common-Name from the engineer's leaf cert.
+        cert_cn: String,
+        /// Lowercase hex of the engineer cert's `SubjectKeyIdentifier`.
+        engineer_ski: String,
+        /// Lowercase hex of `SHA-256(cert DER)` of the engineer leaf.
+        engineer_cert_sha256: String,
+        /// Scopes recorded for this session (`"*"` for wildcard).
+        scopes: Vec<String>,
+        /// Hex-encoded host id hash recorded at session open time.
+        host_id_hash: String,
+    },
     /// Error response.
     Error {
         /// Numeric error code (see [`error_codes`]).
@@ -40,6 +60,12 @@ pub mod error_codes {
     pub const PROTOCOL_VIOLATION: u32 = 1101;
     /// Internal server error.
     pub const INTERNAL: u32 = 1500;
+    /// No active session matches the requested uid.
+    ///
+    /// Returned by a v2 daemon in response to
+    /// `GetActiveSessionByUid` when no session is currently tracked
+    /// for the supplied uid.
+    pub const NO_ACTIVE_SESSION: u32 = 1200;
 }
 
 /// Legacy enum-style code preserved for backwards-compat with stage-1 callers.

@@ -10,4 +10,4 @@
 # so the lintian fortify check has no symbols to detect. Not actionable
 # without rewriting the relevant Rust crates in C.
 pam-certauth: hardening-no-fortify-functions [lib/security/pam_certauth.so]
-pam-certauth: hardening-no-fortify-functions [usr/sbin/pam-certauth-monitord]
+pam-certauth: hardening-no-fortify-functions [usr/bin/pam-certauth]

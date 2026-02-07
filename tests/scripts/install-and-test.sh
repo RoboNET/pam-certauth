@@ -34,8 +34,8 @@ echo "==> Verifying file layout"
 run_remote 'dpkg -L pam-certauth' | tee /tmp/dpkg-L.out
 for expected in \
     /lib/security/pam_certauth.so \
-    /usr/sbin/pam-certauth-monitord \
-    /lib/systemd/system/pam-certauth-monitord.service \
+    /usr/bin/pam-certauth \
+    /lib/systemd/system/pam-certauth.service \
     /usr/lib/tmpfiles.d/pam-certauth.conf \
     /etc/pam_certauth/config.toml.example \
     /etc/pam_certauth/host_acl.toml.example \
@@ -46,7 +46,7 @@ done
 echo "ok: layout"
 
 echo "==> Confirming service is inactive (no config yet)"
-status=$(run_remote 'systemctl is-active pam-certauth-monitord || true')
+status=$(run_remote 'systemctl is-active pam-certauth || true')
 test "$status" = "inactive" || { echo "FAIL: expected inactive, got $status" >&2; exit 1; }
 
 echo "==> Deploying test config + CA"
@@ -57,9 +57,9 @@ run_remote 'sudo cp ~/pam-certauth-fixtures/ca.pem           /etc/pam_certauth/c
 run_remote 'sudo chmod 0640 /etc/pam_certauth/config.toml /etc/pam_certauth/host_acl.toml /etc/pam_certauth/host_acl.toml.sig /etc/pam_certauth/ca/bundle.pem'
 
 echo "==> Enabling and starting monitord"
-run_remote 'sudo systemctl enable --now pam-certauth-monitord'
+run_remote 'sudo systemctl enable --now pam-certauth'
 sleep 2
-status=$(run_remote 'systemctl is-active pam-certauth-monitord')
+status=$(run_remote 'systemctl is-active pam-certauth')
 test "$status" = "active" || { echo "FAIL: monitord not active: $status" >&2; exit 1; }
 echo "ok: monitord active"
 

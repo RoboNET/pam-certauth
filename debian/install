@@ -1,4 +1,6 @@
-dist/systemd/pam-certauth-monitord.service  lib/systemd/system
+dist/systemd/pam-certauth.service           lib/systemd/system
+dist/systemd/pam-certauth-gc.service        lib/systemd/system
+dist/systemd/pam-certauth-gc.timer          lib/systemd/system
 dist/tmpfiles/pam-certauth.conf             usr/lib/tmpfiles.d
 dist/config/config.toml.example             etc/pam_certauth
 dist/pam.d/certauth                         etc/pam.d
