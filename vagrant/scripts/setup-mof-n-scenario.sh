@@ -271,7 +271,7 @@ suspend_grace_seconds = 30
 monitor_fail_mode = "permissive"
 
 [monitor]
-ipc_socket_path = "/run/pam_certauth/monitor.sock"
+socket_path = "/run/pam_certauth/monitord.sock"
 
 [trust]
 anchors = ["$CA_DIR/engineer-ca.pem"]
@@ -304,8 +304,8 @@ crl_paths = []
 [policy]
 path = "/etc/pam_certauth/policy.toml"
 require_approver_eku = true
-forbid_self_approval = true
-retention_days = 7
+signing_time_skew_seconds = 300
+krl_poll_interval_seconds = 300
 
 [host_identity]
 sources = ["machine_id"]
@@ -313,8 +313,9 @@ fallback = "deny"
 custom_command_timeout_seconds = 5
 
 [logging]
-journald = true
-syslog = false
+level = "info"
+syslog_facility = "auth"
+journald_priority = true
 EOF
 chmod 0640 /etc/pam_certauth/config.toml
 chown root:root /etc/pam_certauth/config.toml
