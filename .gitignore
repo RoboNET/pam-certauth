@@ -16,3 +16,4 @@ Cargo.lock.bak
 # committed `.keep` placeholder.
 crates/pam_certauth_core/tests/fixtures/gost/*
 !crates/pam_certauth_core/tests/fixtures/gost/.keep
+.claude/scheduled_tasks.lock
