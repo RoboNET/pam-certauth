@@ -47,17 +47,13 @@ pub struct OpenSessionInfo<'a> {
     pub cert_serial: &'a str,
     /// Lowercase hex of the engineer cert's `SubjectKeyIdentifier`.
     ///
-    /// v2 IPC field — empty string when the PAM module did not extract
-    /// `CertClaims` (e.g. legacy callers).
+    /// v2 IPC field — empty string when the PAM module could not extract
+    /// the extension.
     pub engineer_ski: &'a str,
     /// Lowercase hex of `SHA-256(cert DER)` of the engineer leaf cert.
     ///
     /// v2 IPC field — see [`Self::engineer_ski`].
     pub engineer_cert_sha256: &'a str,
-    /// Engineer-cert scopes (`"*"` for wildcard, exact strings otherwise).
-    ///
-    /// Empty when the cert had no `pam_cert_scopes` extension.
-    pub scopes: &'a [&'a str],
     /// Unix uid the PAM module authenticated (used by monitord to index
     /// the active-session registry).
     pub uid: u32,

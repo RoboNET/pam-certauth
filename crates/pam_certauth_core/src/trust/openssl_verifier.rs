@@ -29,6 +29,16 @@ pub struct Stage2VerifiedChain {
     pub anchor: Certificate,
 }
 
+impl Stage2VerifiedChain {
+    /// Wrap the verified leaf as a [`crate::x509::VerifiedX509`].  Safe
+    /// because the chain succeeded validation before this struct could
+    /// be constructed.
+    #[must_use]
+    pub fn verified_leaf(&self) -> crate::x509::VerifiedX509 {
+        crate::x509::VerifiedX509::new(self.end_entity.x509().clone())
+    }
+}
+
 /// Stage-2 trust verifier interface.
 ///
 /// Distinct from [`crate::trust::TrustVerifier`] (stage 1) — they will be

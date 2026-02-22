@@ -25,7 +25,6 @@ fn make(id: u128, serial: Option<&str>) -> ActiveSession {
         cert_serial: "01".into(),
         engineer_ski: String::new(),
         engineer_cert_sha256: String::new(),
-        scopes: Vec::new(),
         uid: 0,
     }
 }
@@ -43,7 +42,6 @@ fn make_with_uid(id: u128, uid: u32, engineer_ski: &str) -> ActiveSession {
         cert_serial: "01".into(),
         engineer_ski: engineer_ski.into(),
         engineer_cert_sha256: "1234".into(),
-        scopes: vec!["bios.flash".into()],
         uid,
     }
 }
@@ -83,7 +81,6 @@ fn lookup_by_uid_returns_engineer_ski() {
     let found = r.find_by_uid(1000).expect("session present");
     assert_eq!(found.engineer_ski, "abcd");
     assert_eq!(found.uid, 1000);
-    assert_eq!(found.scopes, vec!["bios.flash".to_string()]);
 }
 
 #[test]

@@ -68,7 +68,9 @@ impl Write for &SyslogWriter {
         }
         Ok(buf.len())
     }
-    fn flush(&mut self) -> io::Result<()> { Ok(()) }
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
 }
 
 impl<'a> MakeWriter<'a> for SyslogWriter {

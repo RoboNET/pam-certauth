@@ -291,26 +291,29 @@ mod tests {
             .with_pam_user("u")
             .with_cert_cn("alice\nFOO=evil");
         let r = build_env_vector(&hook, &vars, None);
-        assert!(matches!(
-            r,
-            Err(HookError::EnvValueRejected { ref var, .. }) if var == "PAM_CERTAUTH_CERT_CN"
-        ), "got {r:?}");
+        assert!(
+            matches!(
+                r,
+                Err(HookError::EnvValueRejected { ref var, .. }) if var == "PAM_CERTAUTH_CERT_CN"
+            ),
+            "got {r:?}"
+        );
     }
 
     #[test]
     fn carriage_return_in_custom_env_is_rejected() {
         let mut env = BTreeMap::new();
-        env.insert(
-            "MY_VAR".into(),
-            Template::parse("line1\rline2").unwrap(),
-        );
+        env.insert("MY_VAR".into(), Template::parse("line1\rline2").unwrap());
         let hook = dummy_hook(HookStage::PreAuth, env);
         let vars = HookVars::empty().with_pam_user("u");
         let r = build_env_vector(&hook, &vars, None);
-        assert!(matches!(
-            r,
-            Err(HookError::EnvValueRejected { ref var, .. }) if var == "MY_VAR"
-        ), "got {r:?}");
+        assert!(
+            matches!(
+                r,
+                Err(HookError::EnvValueRejected { ref var, .. }) if var == "MY_VAR"
+            ),
+            "got {r:?}"
+        );
     }
 
     #[test]

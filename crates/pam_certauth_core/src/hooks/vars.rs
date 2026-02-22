@@ -322,6 +322,9 @@ mod tests {
             host_id_source: HostIdSourceKind::Override,
             authenticated_at: std::time::SystemTime::UNIX_EPOCH,
             cert_not_after: None,
+            cert_max_integrity: None,
+            cert_ident: None,
+            home_dir: None,
         };
         let v = HookVars::for_session_open("alice", &ctx);
         assert_eq!(v.stage, HookStage::SessionOpen);

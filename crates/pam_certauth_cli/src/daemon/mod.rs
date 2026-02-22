@@ -19,9 +19,9 @@ use tokio_util::sync::CancellationToken;
 
 use pam_certauth_core::config::validated::OnUsbRemoved as CoreOnUsbRemoved;
 
-use crate::logind::{LogindActionsTrait, NoopActions};
 #[cfg(target_os = "linux")]
 use crate::logind::LogindActions;
+use crate::logind::{LogindActionsTrait, NoopActions};
 use crate::registry::{RegistryStore, SessionRegistry};
 use crate::state::{spawn_state_manager, OnUsbRemoved, StateConfig};
 use crate::udev_query::{AlwaysPresent, UdevQuery};
@@ -110,12 +110,13 @@ async fn run_async(args: DaemonArgs) -> anyhow::Result<()> {
     // Operators previously had to edit the systemd unit's CLI flags AND
     // config.toml in lockstep; with this change the daemon reads the same
     // file as PAM and CLI flags only act as overrides.
-    let validated = pam_certauth_core::config::load_validated_config(&args.config).map_err(|e| {
-        anyhow::anyhow!(
-            "failed to load monitord config from {}: {e}",
-            args.config.display()
-        )
-    })?;
+    let validated =
+        pam_certauth_core::config::load_validated_config(&args.config).map_err(|e| {
+            anyhow::anyhow!(
+                "failed to load monitord config from {}: {e}",
+                args.config.display()
+            )
+        })?;
     let monitor_cfg = &validated.monitor;
 
     let socket_path = args
@@ -167,12 +168,15 @@ async fn run_async(args: DaemonArgs) -> anyhow::Result<()> {
         CoreOnUsbRemoved::Logout => OnUsbRemoved::Logout,
         CoreOnUsbRemoved::Shutdown => OnUsbRemoved::Shutdown,
         CoreOnUsbRemoved::Hook => {
-            let path = monitor_cfg.on_usb_removed_hook_path.clone().ok_or_else(|| {
-                anyhow::anyhow!(
+            let path = monitor_cfg
+                .on_usb_removed_hook_path
+                .clone()
+                .ok_or_else(|| {
+                    anyhow::anyhow!(
                     "monitor.on_usb_removed = \"hook\" requires monitor.on_usb_removed_hook_path; \
                      validator should have rejected this config"
                 )
-            })?;
+                })?;
             OnUsbRemoved::Hook { path }
         }
     };
@@ -296,7 +300,6 @@ async fn run_async(args: DaemonArgs) -> anyhow::Result<()> {
         cert_serial: String::new(),
         engineer_ski: String::new(),
         engineer_cert_sha256: String::new(),
-        scopes: Vec::new(),
         uid: 0,
     };
     Ok(())

@@ -69,19 +69,6 @@ pub struct RawConfig {
     pub monitor: RawMonitor,
     /// Trust.
     pub trust: RawTrust,
-    /// Optional approver-CA trust section (m-of-n approver chains).
-    /// Same shape as [`RawTrust`]; when absent the validated layer
-    /// resolves it to `None`.
-    #[serde(default)]
-    pub approver_trust: Option<RawTrust>,
-    /// Optional TSA trust section for RFC 3161 `TimestampToken`
-    /// verification.  Same shape as [`RawTrust`]; when absent the
-    /// validated layer resolves it to `None`.
-    #[serde(default)]
-    pub tsa_trust: Option<RawTrust>,
-    /// Policy section: external policy file path and runtime knobs.
-    #[serde(default)]
-    pub policy: RawPolicySection,
     /// Trust overrides.
     #[serde(default)]
     pub trust_override: Vec<RawTrustOverride>,
@@ -95,6 +82,11 @@ pub struct RawConfig {
     /// Hooks.
     #[serde(default)]
     pub hooks: Vec<RawHook>,
+    /// MAC integrity policy section (spec §2.4 / phase 2). Optional; when
+    /// absent the validated layer applies defaults (`cert_integrity` = optional,
+    /// no fallback, `warn_on_homedir_label_mismatch` = true).
+    #[serde(default)]
+    pub mac: RawMacPolicy,
 }
 
 const fn default_usb_wait_seconds() -> u64 {
@@ -183,8 +175,12 @@ pub struct RawMonitor {
     /// falls back to the top-level `monitor_fail_mode`.
     #[serde(default)]
     pub fail_mode: Option<String>,
-    /// Path to the persisted session-registry JSON. Default
-    /// `/var/lib/pam_certauth/sessions.json`. Read by `pam-certauth`.
+    /// Path to the session-registry JSON. Default
+    /// `/run/pam_certauth/sessions.json` (tmpfs, volatile across reboot).
+    /// The registry only needs to survive daemon restarts within a boot —
+    /// all userspace processes holding these sessions die on reboot, so
+    /// persisting across boots would only leave stale entries. Read by
+    /// `pam-certauth`.
     #[serde(default)]
     pub state_file_path: Option<PathBuf>,
     /// Action to take when the bound USB token is removed past the
@@ -414,39 +410,52 @@ const fn default_hook_timeout() -> u64 {
     10
 }
 
-/// Raw `[policy]` section.  All fields optional; the validated layer
-/// applies defaults per spec §5.4.
+/// Raw `[mac]` policy block (spec §2.4). All fields optional so existing
+/// configs deserialize unchanged; the validated layer applies defaults.
+///
+/// Uses `deny_unknown_fields` so that legacy keys like `require_mac` or
+/// `cert_mac_level` are rejected at parse time (the spec deliberately
+/// replaced them with the trinary `cert_integrity` model).
+#[derive(Debug, Clone, Default, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RawMacPolicy {
+    /// Trinary policy for the X.509 `MAX_INTEGRITY` extension on the
+    /// authenticating certificate (`required` | `optional` | `ignore`).
+    #[serde(default)]
+    pub cert_integrity: Option<RawCertIntegrityMode>,
+    /// Fallback upper bound applied when the cert carries no extension and
+    /// policy is `optional`. Ignored when `required` (no extension is a
+    /// hard failure) or `ignore` (extension is not consulted).
+    #[serde(default)]
+    pub fallback_max_integrity: Option<RawIntegrityLabel>,
+    /// Whether to emit a warning when the resolved process label disagrees
+    /// with the user's `$HOME` label at session-open time. Default `true`.
+    #[serde(default)]
+    pub warn_on_homedir_label_mismatch: Option<bool>,
+}
+
+/// Trinary mode for the `[mac].cert_integrity` knob.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum RawCertIntegrityMode {
+    /// Extension MUST be present; missing extension fails authentication.
+    Required,
+    /// Extension is consulted when present; absent extension falls back to
+    /// `fallback_max_integrity` (when set) or admin-default.
+    Optional,
+    /// Extension is not consulted; integrity comes from admin policy only.
+    Ignore,
+}
+
+/// Raw `[mac.fallback_max_integrity]` block. `level` is an int8 enforced by
+/// serde; `categories` is a hex string up to 16 chars (u64) — empty means 0.
 #[derive(Debug, Clone, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct RawPolicySection {
-    /// Path to the external policy TOML.  Default
-    /// `/etc/pam_certauth/policy.toml` (applied in validated layer).
+pub struct RawIntegrityLabel {
+    /// Linear integrity level in `i8` (-128..=127).
+    pub level: i8,
+    /// Hex-encoded categories bitmap (up to 16 hex chars = 64 bits). Empty
+    /// string is accepted and means "no categories" (0).
     #[serde(default)]
-    pub path: Option<PathBuf>,
-    /// How often to re-poll the KRL for changes (seconds).  Default 300.
-    #[serde(default)]
-    pub krl_poll_interval_seconds: Option<u64>,
-    /// Whether approver certificates must carry the approver-EKU.
-    /// Default `true`.
-    #[serde(default = "default_require_approver_eku")]
-    pub require_approver_eku: bool,
-    /// Allowed skew between approval signing time and verification
-    /// time (seconds).  Default 300.
-    #[serde(default)]
-    pub signing_time_skew_seconds: Option<u64>,
-}
-
-impl Default for RawPolicySection {
-    fn default() -> Self {
-        Self {
-            path: None,
-            krl_poll_interval_seconds: None,
-            require_approver_eku: default_require_approver_eku(),
-            signing_time_skew_seconds: None,
-        }
-    }
-}
-
-const fn default_require_approver_eku() -> bool {
-    true
+    pub categories: String,
 }

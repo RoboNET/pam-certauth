@@ -45,13 +45,10 @@ case "$1" in
         chmod 0750 "$STATE_DIR"
         chown pamcertauth:pamcertauth "$STATE_DIR"
 
-        # Work-order directory is root-owned (PAM module / execute runner
-        # writes via sudo or sets up the file under root), readable by the
-        # pamcertauth group via the gc service. Keep mode 0750 so other
-        # local users cannot enumerate in-flight approvals.
-        if [ -d "$STATE_DIR/work_orders" ]; then
-            chown root:root "$STATE_DIR/work_orders"
-            chmod 0750 "$STATE_DIR/work_orders"
+        # 0.3.0 migration: sessions registry moved from /var/lib to /run tmpfs.
+        # Remove stale file from previous installs if present.
+        if [ -e "$STATE_DIR/sessions.json" ]; then
+            rm -f "$STATE_DIR/sessions.json" || true
         fi
 
         # Marker for preinst to detect a clean prior install.
@@ -63,16 +60,73 @@ case "$1" in
         if [ -d /run/systemd/system ]; then
             systemctl daemon-reload || true
             systemd-tmpfiles --create /usr/lib/tmpfiles.d/pam-certauth.conf || true
+        fi
 
-            # Enable + start the GC timer on first install. Idempotent
-            # across upgrades: deb-systemd-helper records the unit's
-            # "debian-installed" state on its own.
-            if deb-systemd-helper debian-installed pam-certauth-gc.timer 2>/dev/null; then
-                : # already configured by a prior install
-            else
-                deb-systemd-helper enable pam-certauth-gc.timer >/dev/null || true
+        # ------------------------------------------------------------------
+        # МКЦ (MAC integrity) integration — Astra SE strict mode only.
+        # Skip gracefully on non-Astra hosts / when strict mode is disabled.
+        # `pdpl-file` ships with Astra's parsec userspace; absence => non-Astra
+        # build target (Debian/Ubuntu CI), so we simply skip.
+        if command -v pdpl-file >/dev/null 2>&1 \
+           && command -v astra-strictmode-control >/dev/null 2>&1 \
+           && astra-strictmode-control is-enabled >/dev/null 2>&1; then
+            # Allow root (level 0+) to read config directory regardless of the
+            # caller's hierarchical clearance — config has no secrets, only
+            # CA pins, policy, runtime knobs.
+            pdpl-file ":::iinh" "$CONFIG_DIR" || true
+            pdpl-file -R ":::iinh" "$CONFIG_DIR/ca" || true
+            pdpl-file -R ":::iinh" "$CONFIG_DIR/crl" || true
+
+            # Raise ilevel to 63 (Высокий) on configuration files: any
+            # subject at ilevel<63 (including ordinary root without
+            # CAP_MAC_ADMIN/PARSEC_CAP_SETMAC) cannot WRITE these files
+            # (no write-up in Biba). Read-down is allowed, so the daemon
+            # at default ilevel=0 still reads them fine. Editing the
+            # config requires a high-integrity admin session — see
+            # docs/install.md §«Защита конфига через МКЦ».
+            #
+            # Format: level:ilevel:cat:flags = 0:63::iinh
+            # The iinh flag on directories ensures newly-created children
+            # inherit the level.
+            if [ -f "$CONFIG_DIR/config.toml" ]; then
+                pdpl-file -v "0:63::iinh" "$CONFIG_DIR/config.toml" || true
             fi
-            deb-systemd-invoke start pam-certauth-gc.timer >/dev/null || true
+            pdpl-file -R -v "0:63::iinh" "$CONFIG_DIR/ca" || true
+            pdpl-file -R -v "0:63::iinh" "$CONFIG_DIR/crl" || true
+            if [ -f "$CONFIG_DIR/host_acl.toml" ]; then
+                pdpl-file -v "0:63::iinh" "$CONFIG_DIR/host_acl.toml" || true
+            fi
+            if [ -f "$CONFIG_DIR/host_acl.toml.sig" ]; then
+                pdpl-file -v "0:63::iinh" "$CONFIG_DIR/host_acl.toml.sig" || true
+            fi
+            echo "  - integrity ilevel raised to 63 on config files (write requires CAP_MAC_ADMIN)" >&2
+
+            # State dir (host_id, caches) must be MAC-readable by
+            # the pamcertauth daemon at any clearance the active user holds.
+            # NOTE: sessions.json now lives in /run/pam_certauth/ (tmpfs);
+            # the RuntimeDirectory= unit setting creates the parent at boot
+            # with `iinh` inherited via systemd's runtime-dir handling.
+            # daemon.lock in $STATE_DIR is the daemon's write target — keep
+            # its ilevel at default (0), only the dir gets `iinh`.
+            pdpl-file ":::iinh" "$STATE_DIR" || true
+            pdpl-file ":::iinh" "$CACHE_DIR" || true
+
+            # host_id is rebind-protected: once written by host_identity probe
+            # we set the immutable bit so a tampered admin cannot silently
+            # repoint a deployed host's identity to a different binding.
+            if [ -f "$STATE_DIR/host_id" ]; then
+                chattr +i "$STATE_DIR/host_id" 2>/dev/null || true
+            fi
+        fi
+
+        # On Astra hosts, remind operators that МКЦ-label enforcement is
+        # opt-in. The daemon runs as `pamcertauth` without CAP_MAC_ADMIN /
+        # PARSEC_CAP_CHMAC by default; activation requires the shipped
+        # drop-in. See docs/install.md for the full procedure.
+        if [ -f /etc/astra_version ]; then
+            echo "Note: МКЦ (MAC integrity) support is opt-in." >&2
+            echo "      See /usr/share/pam-certauth/systemd/mac-integrity.conf.example" >&2
+            echo "      and docs/install.md for the activation procedure." >&2
         fi
 
         # Print one-time setup hint if no config has been deployed yet.

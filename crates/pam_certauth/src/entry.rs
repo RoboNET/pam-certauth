@@ -64,34 +64,6 @@ pub unsafe fn collect_args(
     args
 }
 
-/// Collect the raw `key=value` strings from the PAM C `argv` so we can
-/// hand them to [`crate::pam_args::parse_pam_args`] without re-parsing.
-/// Lossy UTF-8 conversion is acceptable: every real-world PAM arg is
-/// ASCII, and the parser ignores values it cannot match.
-///
-/// # Safety
-///
-/// `argv` must point to `argc` valid C string pointers, as provided by PAM.
-#[cfg(target_os = "linux")]
-pub unsafe fn collect_args_raw(
-    argc: i32,
-    argv: *const *const std::ffi::c_char,
-) -> Vec<String> {
-    let mut out = Vec::new();
-    if argc <= 0 || argv.is_null() {
-        return out;
-    }
-    for i in 0..argc {
-        let ptr = unsafe { *argv.add(i as usize) };
-        if ptr.is_null() {
-            continue;
-        }
-        let s = unsafe { std::ffi::CStr::from_ptr(ptr) }.to_string_lossy();
-        out.push(s.into_owned());
-    }
-    out
-}
-
 #[cfg(target_os = "linux")]
 fn config_path_from_args(args: &BTreeMap<String, String>) -> PathBuf {
     args.get("config").map_or_else(
@@ -154,9 +126,6 @@ pub unsafe extern "C" fn pam_sm_authenticate(
         crate::logging::init_once();
         // 1. Args + config.
         let args = unsafe { collect_args(argc, argv) };
-        let raw_args = unsafe { collect_args_raw(argc, argv) };
-        let raw_arg_refs: Vec<&str> = raw_args.iter().map(String::as_str).collect();
-        let parsed_args = crate::pam_args::parse_pam_args(&raw_arg_refs);
         let cfg_path = config_path_from_args(&args);
         let cfg = match pam_certauth_core::config::load_validated_config(&cfg_path) {
             Ok(c) => c,
@@ -183,8 +152,8 @@ pub unsafe extern "C" fn pam_sm_authenticate(
                 tracing::warn!(target: "pam_certauth.auth", error = %err, "pam_get_item(PAM_SERVICE) failed; using 'unknown'");
                 "unknown".to_string()
             });
-        let pam_tty_value = unsafe { crate::pam_helpers::pam_get_tty_string(pamh) }
-            .unwrap_or_else(|err| {
+        let pam_tty_value =
+            unsafe { crate::pam_helpers::pam_get_tty_string(pamh) }.unwrap_or_else(|err| {
                 tracing::debug!(
                     target: "pam_certauth.auth",
                     error = %err,
@@ -266,33 +235,7 @@ pub unsafe extern "C" fn pam_sm_authenticate(
         // 9. Map outcome → PAM rc.
         match outcome {
             Ok(out) => {
-                let crate::flow::FlowOutcome { auth_ctx, mount, cert_scopes } = out;
-                // 9a. require_scope check (Phase 10). Runs AFTER cert
-                // validation succeeded so a denial here is structurally a
-                // policy decision, not an auth failure. Empty
-                // `required_scopes` skips the check entirely.
-                if !parsed_args.required_scopes.is_empty()
-                    && !crate::pam_args::satisfies_required_scopes(
-                        &cert_scopes,
-                        &parsed_args.required_scopes,
-                        parsed_args.scope_match,
-                    )
-                {
-                    tracing::warn!(
-                        target: "pam_certauth.auth.require_scope",
-                        required = ?parsed_args.required_scopes,
-                        scope_match = ?parsed_args.scope_match,
-                        claimed = ?cert_scopes,
-                        session_id = %auth_ctx.session_id,
-                        cert_cn = ?auth_ctx.cert_cn,
-                        "require_scope_violation"
-                    );
-                    // Drop the mount guard explicitly so /run/.../mounts
-                    // is unmounted before we return — leaving it would
-                    // surface as a stray bind-mount after a denied login.
-                    drop(mount);
-                    return PAM_AUTH_ERR;
-                }
+                let crate::flow::FlowOutcome { auth_ctx, mount } = out;
                 // For PKCS#11 mode `mount` is `None`; for PKCS#12 it
                 // owns the USB mountpoint.
                 if let Err(err) = unsafe { crate::data_handle::set_auth_context(pamh, auth_ctx) } {
@@ -403,6 +346,14 @@ pub unsafe extern "C" fn pam_sm_open_session(
         // PAM user (best-effort: fall back to cert_cn if PAM_USER is gone).
         let pam_user = unsafe { crate::pam_helpers::pam_get_user_string(pamh) }
             .unwrap_or_else(|_| ctx.cert_cn.clone().unwrap_or_default());
+
+        // MAC integrity — orchestrator decides whether to apply a label,
+        // skip (runtime inactive / policy ignore), or fail closed.  We
+        // always invoke it; the orchestrator honours the policy.
+        match crate::session::run_open_session_pipeline(&cfg, ctx, &pam_user) {
+            Ok(()) => {}
+            Err(rc) => return rc,
+        }
 
         let vars = pam_certauth_core::hooks::HookVars::for_session_open(&pam_user, ctx);
         let executor = pam_certauth_core::hooks::ForkExecExecutor::new();

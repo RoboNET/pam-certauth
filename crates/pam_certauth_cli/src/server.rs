@@ -5,6 +5,9 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
+use pam_certauth_core::mac::audit as mac_audit;
+use pam_certauth_core::mac::backend::MacBackend;
+use pam_certauth_core::mac::IntegrityLabel;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{UnixListener, UnixStream};
 use tokio::sync::{mpsc, oneshot, Semaphore};
@@ -59,25 +62,70 @@ pub enum ServerError {
 /// briefly expose the socket with world-accessible permissions between
 /// `bind` and `set_permissions`.
 pub async fn bind_listener(path: &Path) -> io::Result<UnixListener> {
-    use std::os::unix::fs::PermissionsExt;
-
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
 
-    let tmp_path = build_tmp_socket_path(path);
+    #[cfg(feature = "astra-mac")]
+    let backend = pam_certauth_core::mac::backend::ParsecBackend::new();
+    #[cfg(not(feature = "astra-mac"))]
+    let backend = pam_certauth_core::mac::backend::StubBackend::new();
+
+    // Single labeled-bind code path: bind on per-PID temp, set 0660
+    // perms, label via fd (TOCTOU-safe), then atomic rename into place.
+    let std_listener = bind_with_label(path, &backend)?;
+    std_listener.set_nonblocking(true)?;
+    UnixListener::from_std(std_listener)
+}
+
+/// Bind a Unix-domain socket at `final_path` with МКЦ irelax label
+/// applied atomically: bind on `.tmp.$PID`, set mode `0660`, label via
+/// [`MacBackend::set_fd_label`] on the listener's fd (`level=0`,
+/// `irelax=true`) — closes the bind/label TOCTOU window that a path-based
+/// labeler would leave open — emit `mac_socket_label_set`, then rename
+/// into place. Returns the standard-library listener so callers may
+/// adopt it into any async runtime.
+///
+/// # Errors
+/// Returns I/O error on bind/permissions/rename, or a wrapped `MacError`
+/// when the label set fails.
+pub fn bind_with_label<B: MacBackend>(
+    final_path: &Path,
+    backend: &B,
+) -> io::Result<std::os::unix::net::UnixListener> {
+    use std::os::unix::fs::PermissionsExt;
+    use std::os::unix::io::AsRawFd;
+
+    let tmp_path = build_tmp_socket_path(final_path);
     // Safe: tmp_path embeds our PID, so any leftover here is from a
     // prior aborted run of THIS process — never from a concurrent
     // observer. We deliberately drop the `if path.exists()` race.
     let _ = std::fs::remove_file(&tmp_path);
 
-    let listener = UnixListener::bind(&tmp_path)?;
-    let mut perms = std::fs::metadata(&tmp_path)?.permissions();
-    perms.set_mode(0o660);
-    std::fs::set_permissions(&tmp_path, perms)?;
-    // Atomic publish: from this instant on, the socket at `path` is
-    // guaranteed to have 0660 mode for any peer that connects.
-    std::fs::rename(&tmp_path, path)?;
+    let listener = std::os::unix::net::UnixListener::bind(&tmp_path)?;
+    // DAC: 0660 before publish so peers never observe a world-accessible
+    // socket. Path is still per-PID temp, not yet renamed.
+    std::fs::set_permissions(&tmp_path, std::fs::Permissions::from_mode(0o660))?;
+    // MAC: label by fd to close the bind→label TOCTOU window that a
+    // same-uid attacker could exploit by swapping the path for a symlink.
+    let label = IntegrityLabel {
+        level: 0,
+        categories: 0,
+    };
+    // Best-effort labeling: on hosts without an active МКЦ kernel (containers,
+    // dev boxes, non-Astra), `pdp_set_fd` returns rc=-1. We log a warning
+    // and continue — DAC `0660` + parent-dir `iinh` carry the security
+    // properties on those hosts; on real Astra strict mode the label sticks.
+    match backend.set_fd_label(listener.as_raw_fd(), label, true) {
+        Ok(()) => mac_audit::emit_socket_label(&tmp_path.to_string_lossy()),
+        Err(e) => mac_audit::emit_sessions_file_warn(
+            &tmp_path.to_string_lossy(),
+            Some(&format!("set_fd_label on monitord.sock: {e}")),
+        ),
+    }
+    // Atomic publish: from this instant on, peers connecting at
+    // `final_path` see a socket that is already 0660 and labeled.
+    std::fs::rename(&tmp_path, final_path)?;
     Ok(listener)
 }
 
@@ -417,7 +465,6 @@ async fn dispatch(msg: ClientMessage, event_tx: &mpsc::UnboundedSender<Event>) -
             cert_serial,
             engineer_ski,
             engineer_cert_sha256,
-            scopes,
             uid,
         } => {
             let session = ActiveSession {
@@ -432,7 +479,6 @@ async fn dispatch(msg: ClientMessage, event_tx: &mpsc::UnboundedSender<Event>) -
                 cert_serial,
                 engineer_ski,
                 engineer_cert_sha256,
-                scopes,
                 uid,
             };
             let (tx, rx) = oneshot::channel();

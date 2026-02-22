@@ -26,7 +26,6 @@ fn s(i: u128) -> ActiveSession {
         cert_serial: "01".into(),
         engineer_ski: String::new(),
         engineer_cert_sha256: String::new(),
-        scopes: Vec::new(),
         uid: 0,
     }
 }

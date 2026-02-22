@@ -9,6 +9,7 @@ pub mod flow;
 pub mod logging;
 pub mod pam_args;
 pub mod panic_guard;
+pub mod session;
 
 #[cfg(target_os = "linux")]
 pub mod data_handle;
@@ -130,6 +131,9 @@ mod tests {
             host_id_source: HostIdSourceKind::Override,
             authenticated_at: SystemTime::UNIX_EPOCH,
             cert_not_after: not_after,
+            cert_max_integrity: None,
+            cert_ident: None,
+            home_dir: None,
         }
     }
 

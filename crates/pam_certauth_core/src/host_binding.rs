@@ -105,10 +105,7 @@ pub fn sha256_hex(input: &str) -> String {
 /// - [`HostBindingError::HostExtensionMalformed`] — extension malformed.
 /// - [`HostBindingError::HostNotAllowed`] — extension present and well
 ///   formed but no descriptor matches.
-pub fn verify_host_binding(
-    cert: &X509Ref,
-    host_id_hash: &str,
-) -> Result<(), HostBindingError> {
+pub fn verify_host_binding(cert: &X509Ref, host_id_hash: &str) -> Result<(), HostBindingError> {
     let descriptors = host_binding_ext::parse(cert)?;
     for d in &descriptors {
         let matched = match d {
@@ -140,10 +137,7 @@ pub fn verify_host_binding(
 /// - [`HostBindingError::UserExtensionMalformed`] — extension malformed.
 /// - [`HostBindingError::UserNotAllowed`] — extension present and well
 ///   formed but no descriptor matches `pam_user`.
-pub fn verify_user_binding(
-    cert: &X509Ref,
-    pam_user: &str,
-) -> Result<(), HostBindingError> {
+pub fn verify_user_binding(cert: &X509Ref, pam_user: &str) -> Result<(), HostBindingError> {
     let descriptors = user_binding_ext::parse(cert)?;
     for d in &descriptors {
         let matched = match d {
@@ -278,7 +272,10 @@ mod tests {
     #[test]
     fn sha256_hex_descriptor_matches_case_insensitively() {
         let host_hash = sha256_hex("zzz");
-        let cert = cert_with(&[&format!("sha256:{}", host_hash.to_uppercase())], &["alice"]);
+        let cert = cert_with(
+            &[&format!("sha256:{}", host_hash.to_uppercase())],
+            &["alice"],
+        );
         verify_cert_scope(&cert, &host_hash, "alice").unwrap();
     }
 

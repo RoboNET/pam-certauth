@@ -10,29 +10,19 @@ private key lives on a USB token (Rutoken EDS 2.0/3.0 via PKCS#11,
 JaCarta GOST-2 via PKCS#11) or, for development setups, in a
 passphrase-protected `.p12` on a USB filesystem.
 
-## What's new in 0.2.0
+## What's new in 0.3.0
 
-0.2.0 adds **per-action M-of-N authorisation** on top of cert login.
-A new X.509 extension `pam_cert_scopes` declares which scopes (e.g.
-`bios.flash`, `cluster.drain`) a cert may invoke. The new
-`pam-certauth execute --scope=… --work-order=…` subcommand verifies a
-CMS SignedData "work order" co-signed by *N* approvers against a
-TOML policy at `/etc/pam_certauth/policy.toml`, then spawns the
-target command. The PAM module gains `require_scope=…` for
-scope-gated login. See [docs/index.md](docs/index.md) for the entry
-point and [docs/migration.md](docs/migration.md) for the upgrade
-path from 0.1.x.
+0.3.0 adds **MAC integrity (МКЦ)** integration for Astra SE strict
+mode. New X.509 extension `pam_cert_max_integrity` declares the
+ceiling clearance for an engineer session; the resolved label is
+applied to the process tree via libpdp/libparsec and audited.
+Configuration lives in the new `[mac]` section. See
+[docs/install.md](docs/install.md) and
+[docs/configuration.md](docs/configuration.md).
 
-- **No interactive root on ATM.** Replaces traditional `sudo -i`
-  admin sessions with narrow-scope, M-of-N approved
-  `pam-certauth execute` calls. ATM accounts run as plain users —
-  no `wheel`, no `sudo` group, no broad `NOPASSWD: ALL`. The single
-  sudoers entry `%atm_engineers ALL=(root) NOPASSWD:
-  /usr/bin/pam-certauth execute *` is the only path to root, and
-  every privileged operation is signed by `N` independent operators
-  and attributable to engineer + ≥`M` approvers. See
-  [docs/threat-model.md §1.2](docs/threat-model.md) and
-  [docs/architecture.md §1.1.1](docs/architecture.md).
+The 0.2.x scopes / M-of-N work-order / approver-EKU experiment was
+rolled back; the surface area is back to the 0.1.x cert-auth baseline
+plus MAC integrity.
 
 ## Capabilities
 
@@ -85,7 +75,7 @@ Detailed architecture: [docs/architecture.md](docs/architecture.md)
 ## Install
 
 ```bash
-sudo apt install ./pam-certauth_0.1.1-1_amd64.deb
+sudo apt install ./pam-certauth_0.3.0-1_amd64.deb
 ```
 
 Dependencies (`gost-engine`, `pcsc-lite`, `libssl3`, `lsb-base` for the

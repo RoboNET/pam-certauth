@@ -31,8 +31,6 @@ pub struct ActiveSessionReply {
     pub engineer_ski: String,
     /// Lowercase hex SHA-256 of the engineer cert DER.
     pub engineer_cert_sha256: String,
-    /// Scopes from the engineer cert (`"*"` allowed for wildcard).
-    pub scopes: Vec<String>,
     /// Host id hash recorded at session open time.
     pub host_id_hash: String,
 }
@@ -118,7 +116,6 @@ impl MonitordClient {
             cert_serial: payload.cert_serial.clone(),
             engineer_ski: payload.engineer_ski.clone(),
             engineer_cert_sha256: payload.engineer_cert_sha256.clone(),
-            scopes: payload.scopes.clone(),
             uid: payload.uid,
         };
         self.send(&msg)?;
@@ -142,14 +139,12 @@ impl MonitordClient {
                 cert_cn,
                 engineer_ski,
                 engineer_cert_sha256,
-                scopes,
                 host_id_hash,
             } => Ok(ActiveSessionReply {
                 session_id,
                 cert_cn,
                 engineer_ski,
                 engineer_cert_sha256,
-                scopes,
                 host_id_hash,
             }),
             ServerMessage::Error { code, message } => Err(map_server_error(code, message)),
@@ -259,7 +254,6 @@ impl MonitorClient for ConnectPerCall {
             cert_serial: info.cert_serial.to_string(),
             engineer_ski: info.engineer_ski.to_string(),
             engineer_cert_sha256: info.engineer_cert_sha256.to_string(),
-            scopes: info.scopes.iter().map(|s| (*s).to_string()).collect(),
             uid: info.uid,
         };
         c.send_session_open(&payload)

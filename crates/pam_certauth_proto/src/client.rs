@@ -42,14 +42,6 @@ pub struct SessionOpenPayload {
     /// v2 field — see [`Self::engineer_ski`].
     #[serde(default)]
     pub engineer_cert_sha256: String,
-    /// Scopes parsed from the engineer cert's `pam_cert_scopes` extension.
-    ///
-    /// Empty when the extension was absent. `"*"` represents the wildcard
-    /// scope; everything else is an exact scope string.
-    ///
-    /// v2 field.
-    #[serde(default)]
-    pub scopes: Vec<String>,
     /// Unix uid the PAM module authenticated.
     ///
     /// v2 field; `0` when omitted by a v1 client.
@@ -102,18 +94,14 @@ pub enum ClientMessage {
         /// Lowercase hex of `SHA-256(cert DER)` of the engineer leaf. v2.
         #[serde(default)]
         engineer_cert_sha256: String,
-        /// Scopes parsed from the engineer cert (`"*"` for wildcard). v2.
-        #[serde(default)]
-        scopes: Vec<String>,
         /// Unix uid the PAM module authenticated. v2.
         #[serde(default)]
         uid: u32,
     },
     /// Look up the active session for a given Unix uid.
     ///
-    /// Used by `pam-certauth execute` to find the engineer cert SKI / scopes
-    /// recorded by the daemon at PAM authentication time, without re-prompting
-    /// for the USB token.
+    /// Returns the engineer cert metadata recorded by the daemon at PAM
+    /// authentication time.
     GetActiveSessionByUid {
         /// Unix uid of the engineer's active session.
         uid: u32,

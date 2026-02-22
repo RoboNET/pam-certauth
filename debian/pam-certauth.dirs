@@ -3,5 +3,6 @@ etc/pam_certauth/ca
 etc/pam_certauth/crl
 var/cache/pam_certauth/ocsp
 var/lib/pam_certauth
-var/lib/pam_certauth/work_orders
 usr/share/pam-certauth
+usr/share/pam-certauth/pam.d
+usr/share/pam-certauth/systemd

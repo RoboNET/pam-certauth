@@ -24,7 +24,6 @@ fn sample_open() -> ClientMessage {
         cert_serial: "01:02:03".into(),
         engineer_ski: String::new(),
         engineer_cert_sha256: String::new(),
-        scopes: Vec::new(),
         uid: 0,
     }
 }

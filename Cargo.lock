@@ -1145,9 +1145,9 @@ dependencies = [
 
 [[package]]
 name = "openssl-sys"
-version = "0.9.114"
+version = "0.9.115"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "13ce1245cd07fcc4cfdb438f7507b0c7e4f3849a69fd84d52374c66d83741bb6"
+checksum = "158fe5b292746440aa6e7a7e690e55aeb72d41505e2804c23c6973ad0e9c9781"
 dependencies = [
  "cc",
  "libc",
@@ -1177,7 +1177,7 @@ dependencies = [
 
 [[package]]
 name = "pam_certauth"
-version = "0.2.1"
+version = "0.3.0"
 dependencies = [
  "hex",
  "nix 0.31.2",
@@ -1198,7 +1198,7 @@ dependencies = [
 
 [[package]]
 name = "pam_certauth_cli"
-version = "0.2.1"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1210,7 +1210,6 @@ dependencies = [
  "once_cell",
  "openssl",
  "pam_certauth_core",
- "pam_certauth_policy",
  "pam_certauth_proto",
  "parking_lot",
  "rustix 0.38.44",
@@ -1228,15 +1227,13 @@ dependencies = [
  "tracing-journald",
  "tracing-subscriber",
  "udev",
- "unicode-normalization",
  "uuid",
- "wildmatch",
  "zbus",
 ]
 
 [[package]]
 name = "pam_certauth_core"
-version = "0.2.1"
+version = "0.3.0"
 dependencies = [
  "chrono",
  "cryptoki",
@@ -1263,26 +1260,15 @@ dependencies = [
  "thiserror",
  "toml",
  "tracing",
+ "tracing-subscriber",
  "udev",
  "uuid",
  "zeroize",
 ]
 
 [[package]]
-name = "pam_certauth_policy"
-version = "0.2.1"
-dependencies = [
- "hex",
- "serde",
- "sha2",
- "tempfile",
- "thiserror",
- "toml",
-]
-
-[[package]]
 name = "pam_certauth_proto"
-version = "0.2.1"
+version = "0.3.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -1945,21 +1931,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "tinyvec"
-version = "1.11.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3e61e67053d25a4e82c844e8424039d9745781b3fc4f32b8d55ed50f5f667ef3"
-dependencies = [
- "tinyvec_macros",
-]
-
-[[package]]
-name = "tinyvec_macros"
-version = "0.1.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1f3ccbac311fea05f86f61904b462b55fb3df8837a366dfc601a0161d0532f20"
-
-[[package]]
 name = "tokio"
 version = "1.52.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2166,15 +2137,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e6e4313cd5fcd3dad5cafa179702e2b244f760991f45397d14d4ebf38247da75"
 
 [[package]]
-name = "unicode-normalization"
-version = "0.1.25"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5fd4f6878c9cb28d874b009da9e8d183b5abc80117c40bbd187a1fde336be6e8"
-dependencies = [
- "tinyvec",
-]
-
-[[package]]
 name = "unicode-xid"
 version = "0.2.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2328,12 +2290,6 @@ dependencies = [
  "indexmap",
  "semver",
 ]
-
-[[package]]
-name = "wildmatch"
-version = "2.6.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "29333c3ea1ba8b17211763463ff24ee84e41c78224c16b001cd907e663a38c68"
 
 [[package]]
 name = "windows-core"

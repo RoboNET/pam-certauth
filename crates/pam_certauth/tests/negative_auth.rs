@@ -108,7 +108,6 @@ fn subject_mismatch_returns_perm_denied() {
 // `["*"]` for both extensions so end-to-end mismatch tests would need
 // new restrictive fixtures and are deferred.
 
-
 #[test]
 fn revoked_cert_returns_perm_denied() {
     // The fixture pile ships `crl_valid.pem` which revokes `revoked_leaf`.

@@ -47,7 +47,10 @@ fn connect_handshake(path: &std::path::Path) -> (UnixStream, BufReader<UnixStrea
     let mut line = String::new();
     reader.read_line(&mut line).expect("read ack");
     let ack: ServerMessage = decode_line(&line).expect("decode ack");
-    assert!(matches!(ack, ServerMessage::HelloAck { .. }), "ack: {ack:?}");
+    assert!(
+        matches!(ack, ServerMessage::HelloAck { .. }),
+        "ack: {ack:?}"
+    );
     (writer, reader)
 }
 
@@ -64,7 +67,6 @@ fn seeded_session(uid: u32, ski: &str) -> ActiveSession {
         cert_serial: "01".into(),
         engineer_ski: ski.into(),
         engineer_cert_sha256: "1234".into(),
-        scopes: vec!["bios.flash".into()],
         uid,
     }
 }
@@ -96,13 +98,11 @@ async fn get_active_session_by_uid_returns_active_session_for_known_uid() {
         ServerMessage::ActiveSession {
             session_id,
             engineer_ski,
-            scopes,
             cert_cn,
             ..
         } => {
             assert_eq!(engineer_ski, "abcd");
             assert_eq!(cert_cn, "Alice");
-            assert_eq!(scopes, vec!["bios.flash".to_string()]);
             assert!(!session_id.is_empty());
         }
         other => panic!("expected ActiveSession, got {other:?}"),
@@ -136,7 +136,10 @@ async fn get_active_session_by_uid_returns_1200_for_unknown_uid() {
     match reply {
         ServerMessage::Error { code, message } => {
             assert_eq!(code, error_codes::NO_ACTIVE_SESSION);
-            assert!(message.contains("999"), "message should reference uid: {message}");
+            assert!(
+                message.contains("999"),
+                "message should reference uid: {message}"
+            );
         }
         other => panic!("expected Error 1200, got {other:?}"),
     }

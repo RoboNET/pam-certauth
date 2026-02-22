@@ -13,7 +13,9 @@ use std::time::Duration;
 
 use pam_certauth_cli::server::{self, AcceptConfig};
 use pam_certauth_proto::wire::encode_message;
-use pam_certauth_proto::{error_codes, ClientMessage, ServerMessage, MAX_FRAME_BYTES, PROTOCOL_VERSION};
+use pam_certauth_proto::{
+    error_codes, ClientMessage, ServerMessage, MAX_FRAME_BYTES, PROTOCOL_VERSION,
+};
 use tempfile::TempDir;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixStream;
@@ -78,11 +80,7 @@ async fn bind_listener_publishes_socket_with_mode_660() {
     let tmp_glob = std::fs::read_dir(dir.path())
         .unwrap()
         .filter_map(Result::ok)
-        .filter(|e| {
-            e.file_name()
-                .to_string_lossy()
-                .contains(".tmp.")
-        })
+        .filter(|e| e.file_name().to_string_lossy().contains(".tmp."))
         .count();
     assert_eq!(tmp_glob, 0, "leftover .tmp.<pid> socket present");
 }

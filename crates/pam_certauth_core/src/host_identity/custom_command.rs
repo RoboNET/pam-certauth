@@ -156,4 +156,3 @@ mod tests {
         assert_eq!(result, "host-xyz");
     }
 }
-

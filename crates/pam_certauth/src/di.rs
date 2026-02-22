@@ -234,8 +234,7 @@ syslog_facility = "auth"
         let mut cfg = load_validated_config(&cfg_path).unwrap();
         // Override socket to a guaranteed-missing path so `connect(2)` fails.
         cfg.monitor.socket_path = tmp.path().join("nope.sock");
-        cfg.monitor.fail_mode =
-            pam_certauth_core::config::validated::MonitorFailMode::Strict;
+        cfg.monitor.fail_mode = pam_certauth_core::config::validated::MonitorFailMode::Strict;
 
         let wired = wire(cfg).unwrap();
         // In Strict + missing socket, `ping()` must surface
@@ -245,10 +244,7 @@ syslog_facility = "auth"
             .ping()
             .expect_err("strict mode + missing socket must error");
         assert!(
-            matches!(
-                err,
-                pam_certauth_core::error::IpcError::Unavailable
-            ),
+            matches!(err, pam_certauth_core::error::IpcError::Unavailable),
             "expected Unavailable, got {err:?}"
         );
     }
@@ -260,10 +256,12 @@ syslog_facility = "auth"
         let cfg = load_validated_config(&cfg_path).unwrap();
         let mut cfg = cfg;
         cfg.monitor.socket_path = tmp.path().join("nope.sock");
-        cfg.monitor.fail_mode =
-            pam_certauth_core::config::validated::MonitorFailMode::Permissive;
+        cfg.monitor.fail_mode = pam_certauth_core::config::validated::MonitorFailMode::Permissive;
         let wired = wire(cfg).unwrap();
         // Permissive mode swallows transport errors → Ok.
-        wired.monitor.ping().expect("permissive mode swallows IO errors");
+        wired
+            .monitor
+            .ping()
+            .expect("permissive mode swallows IO errors");
     }
 }

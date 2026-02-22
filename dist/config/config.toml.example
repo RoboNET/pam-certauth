@@ -89,9 +89,10 @@ monitor_fail_mode = "strict"
 # Per-section fail-mode override. When unset, falls back to the top-level
 # `monitor_fail_mode` above. One of "strict" | "permissive" | "degraded".
 # fail_mode = "strict"
-# Path to the persisted session-registry JSON written by the daemon. Default
-# `/var/lib/pam_certauth/sessions.json`.
-# state_file_path = "/var/lib/pam_certauth/sessions.json"
+# Path to the session-registry JSON written by the daemon. Default
+# `/run/pam_certauth/sessions.json` (tmpfs, volatile across reboot — the
+# registry only needs to survive daemon restart within a boot).
+# state_file_path = "/run/pam_certauth/sessions.json"
 # Action the daemon takes after a confirmed USB removal past the grace
 # window. One of "lock" | "logout" | "shutdown" | "hook". Default "lock".
 # When unset, falls back to the top-level `on_usb_removed`.

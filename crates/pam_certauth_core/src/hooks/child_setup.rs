@@ -304,8 +304,7 @@ pub unsafe fn child_setup(
                 let rc = libc::setgroups(groups_len as libc::size_t, groups_ptr);
                 #[cfg(not(target_os = "linux"))]
                 let rc = {
-                    let len_int =
-                        libc::c_int::try_from(groups_len).unwrap_or(libc::c_int::MAX);
+                    let len_int = libc::c_int::try_from(groups_len).unwrap_or(libc::c_int::MAX);
                     libc::setgroups(len_int, groups_ptr)
                 };
 

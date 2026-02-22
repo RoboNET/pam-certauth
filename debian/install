@@ -1,10 +1,10 @@
 dist/systemd/pam-certauth.service           lib/systemd/system
-dist/systemd/pam-certauth-gc.service        lib/systemd/system
-dist/systemd/pam-certauth-gc.timer          lib/systemd/system
 dist/tmpfiles/pam-certauth.conf             usr/lib/tmpfiles.d
 dist/config/config.toml.example             etc/pam_certauth
 dist/pam.d/certauth                         etc/pam.d
 dist/pam.d/certauth-optional                etc/pam.d
 dist/pam.d/certauth-only                    etc/pam.d
+dist/pam.d/pam-certauth.example             usr/share/pam-certauth/pam.d
 dist/polkit/49-pam-certauth.rules           usr/share/polkit-1/rules.d
 dist/scripts/integrate-pam.sh               usr/share/pam-certauth
+dist/systemd/pam-certauth.service.d/mac-integrity.conf.example  usr/share/pam-certauth/systemd
