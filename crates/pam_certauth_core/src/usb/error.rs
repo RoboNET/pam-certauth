@@ -1,5 +1,6 @@
 //! Errors raised by USB discovery and enumeration.
 
+use std::path::PathBuf;
 use thiserror::Error;
 
 /// Errors returned by [`crate::usb::wait_for_usb`] and the underlying
@@ -36,4 +37,15 @@ pub enum UsbError {
     /// USB discovery is not available on the current platform.
     #[error("USB discovery is not supported on this platform")]
     UnsupportedPlatform,
+
+    /// Whole-device has no filesystem and more than one of its partitions
+    /// matches the PAMCERT label + allow-listed FS.  Fail-closed: we refuse
+    /// to guess which partition the operator meant.
+    #[error("multiple PAMCERT partitions on {devnode}: {count} (expected exactly 1)")]
+    AmbiguousPartition {
+        /// Parent whole-device devnode (e.g. `/dev/sdb`).
+        devnode: PathBuf,
+        /// Number of matching child partitions found.
+        count: usize,
+    },
 }

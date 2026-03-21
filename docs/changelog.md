@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.3.2] — unreleased
+
+### Added
+
+- Поддержка USB-флешек с partition table: если на whole-device нет FS,
+  pam_certauth ищет среди разделов один с label=PAMCERT и FS из allowlist.
+  Несколько подходящих разделов → отказ (fail-closed). Обратная
+  совместимость: установки с FS на whole-device работают как раньше.
+
 ## [0.3.0] — 2026-02-22
 
 ### Added
