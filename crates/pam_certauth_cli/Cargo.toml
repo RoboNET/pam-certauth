@@ -24,8 +24,8 @@ astra-mac = ["pam_certauth_core/astra-mac"]
 mac-tests = ["pam_certauth_core/mac-tests"]
 
 [dependencies]
-pam_certauth_core = { path = "../pam_certauth_core", version = "0.3.4" }
-pam_certauth_proto = { path = "../pam_certauth_proto", version = "0.3.4" }
+pam_certauth_core = { path = "../pam_certauth_core", version = "0.3.5" }
+pam_certauth_proto = { path = "../pam_certauth_proto", version = "0.3.5" }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "signal", "io-util", "time", "sync", "process"] }
 tokio-util = { workspace = true, features = ["rt"] }
 tracing = { workspace = true }

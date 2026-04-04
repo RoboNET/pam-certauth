@@ -11,7 +11,7 @@
 
 pub mod error;
 
-pub use error::{AcquireError, Pkcs12Error};
+pub use error::{AcquireError, P12EnvelopeError, Pkcs12Error};
 
 use openssl::pkcs12::Pkcs12;
 use openssl::pkey::{PKey, Private};
@@ -130,6 +130,55 @@ fn classify_parse_error(e: &openssl::error::ErrorStack) -> Pkcs12Error {
     } else {
         Pkcs12Error::Corrupt(raw)
     }
+}
+
+/// Pre-parse the outer ASN.1 envelope of a PKCS#12 buffer **without**
+/// using the password.
+///
+/// Used to detect the "this is not actually a PKCS#12 file" case — for
+/// example a foreign file on a multi-partition USB device whose name
+/// happens to match `pkcs12_path_pattern` (a common collision on
+/// Apple-formatted media).  When this succeeds the caller may still fail
+/// later in [`LoadedKeyMaterial::from_p12`] (wrong PIN, MAC verify, ...)
+/// — those failures are the password-dependent boundary and must remain
+/// fail-closed.  When *this* fails, however, no password has been touched
+/// yet, so the caller can safely try the next USB partition without
+/// creating a PIN-oracle.
+///
+/// # Errors
+///
+/// Returns [`P12EnvelopeError::Asn1`] when the bytes do not decode as a
+/// valid PKCS#12 ASN.1 envelope (random data, truncated bundle, empty
+/// buffer, foreign file with a coincidentally matching name).
+pub fn validate_p12_envelope(bytes: &[u8]) -> Result<(), P12EnvelopeError> {
+    // `Pkcs12::from_der` runs `d2i_PKCS12` which validates the outer
+    // ASN.1 structure but does NOT verify the MAC nor try to decrypt
+    // anything — exactly the boundary we want.
+    Pkcs12::from_der(bytes)
+        .map(|_| ())
+        .map_err(|e| P12EnvelopeError::Asn1(e.to_string()))
+}
+
+/// Attempt to extract the end-entity certificate from a PKCS#12 buffer
+/// **without** a password.
+///
+/// Newer issuance tooling (`issue-bfs-service-cert.sh` v2 and later)
+/// places the leaf certificate in an unencrypted `SafeBag` so an admin
+/// can inspect host/user bindings without the PIN. When that layout is
+/// present this returns `Some(Certificate)`; when the cert is encrypted
+/// (legacy bundles) or the bundle is malformed it returns `None`.
+///
+/// Used by the PAM flow to enrich the "wrong PIN" diagnostic with the
+/// host/user the cert was issued for — strictly best-effort. The cert
+/// is NOT validated against any trust anchor; it is only parsed enough
+/// to read its extensions for display.
+#[must_use]
+pub fn try_extract_cert_without_pin(bytes: &[u8]) -> Option<Certificate> {
+    let p12 = Pkcs12::from_der(bytes).ok()?;
+    let parsed = p12.parse2("").ok()?;
+    let cert = parsed.cert?;
+    let der = cert.to_der().ok()?;
+    Certificate::from_der(&der).ok()
 }
 
 /// Bounded PIN-retry loop.

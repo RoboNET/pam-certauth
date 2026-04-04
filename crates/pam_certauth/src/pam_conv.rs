@@ -30,6 +30,7 @@ use secrecy::SecretString;
 const PAM_SUCCESS: c_int = pam_sys::PAM_SUCCESS as c_int;
 const PAM_CONV: c_int = pam_sys::PAM_CONV as c_int;
 const PAM_PROMPT_ECHO_OFF: c_int = pam_sys::PAM_PROMPT_ECHO_OFF as c_int;
+const PAM_TEXT_INFO: c_int = pam_sys::PAM_TEXT_INFO as c_int;
 
 // ----- ABI-compatible struct shapes ------------------------------------------
 //
@@ -156,6 +157,56 @@ pub unsafe fn prompt_pin(
 
     let pin_str = pin_result.map_err(|_| PamConvError::NonUtf8)?;
     Ok(SecretString::from(pin_str))
+}
+
+/// Emit a `PAM_TEXT_INFO` message to the live PAM conversation handle.
+///
+/// Used by the flow to surface admin-actionable diagnostics on auth
+/// failures (e.g. the host_id_hash of the running machine when the cert
+/// is bound to a different host) directly on the lock screen / terminal.
+///
+/// Returns the conv response code if non-success; the caller treats this
+/// as best-effort (a failed info message MUST NOT change the auth verdict).
+///
+/// # Safety
+///
+/// Same contract as [`prompt_pin`]: `pamh` must be the live handle from a
+/// `pam_sm_*` callback. Multi-line messages are passed verbatim — PAM
+/// modules / display managers handle wrapping.
+pub unsafe fn show_info(pamh: *mut pam_sys::pam_handle_t, msg: &str) -> Result<(), PamConvError> {
+    let mut conv_ptr: *const c_void = std::ptr::null();
+    let rc = pam_get_item(pamh, PAM_CONV, &raw mut conv_ptr);
+    if rc != PAM_SUCCESS || conv_ptr.is_null() {
+        return Err(PamConvError::NoConv);
+    }
+    let conv: &PamConv = &*(conv_ptr.cast::<PamConv>());
+    let Some(conv_fn) = conv.conv else {
+        return Err(PamConvError::NoConv);
+    };
+
+    let c_msg = CString::new(msg).map_err(|_| PamConvError::ConvFailed)?;
+    let message = PamMessage {
+        msg_style: PAM_TEXT_INFO,
+        msg: c_msg.as_ptr(),
+    };
+    let msg_ptr: *const PamMessage = &raw const message;
+    let mut msg_arr: [*const PamMessage; 1] = [msg_ptr];
+    let mut resp_ptr: *mut PamResponse = std::ptr::null_mut();
+
+    let rc = conv_fn(1, msg_arr.as_mut_ptr(), &raw mut resp_ptr, conv.appdata_ptr);
+    // Some applications return a NULL response array for PAM_TEXT_INFO
+    // (since there is no reply); free only if non-null.
+    if !resp_ptr.is_null() {
+        let resp = &*resp_ptr;
+        if !resp.resp.is_null() {
+            free(resp.resp.cast::<c_void>());
+        }
+        free(resp_ptr.cast::<c_void>());
+    }
+    if rc != PAM_SUCCESS {
+        return Err(PamConvError::ConvFailed);
+    }
+    Ok(())
 }
 
 /// Build a closure that drives `prompt_pin` against a captured PAM handle.

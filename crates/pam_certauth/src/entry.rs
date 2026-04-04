@@ -208,7 +208,8 @@ pub unsafe extern "C" fn pam_sm_authenticate(
             wired.cfg.max_usb_partitions as usize,
             mountpoint_base,
             session_id.clone(),
-        );
+        )
+        .with_pamh(pamh);
 
         // 8. Drive the flow.
         // Stage 5: real fork+execve hook executor. The struct is stateless;
