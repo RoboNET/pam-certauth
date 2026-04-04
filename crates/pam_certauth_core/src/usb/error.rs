@@ -3,7 +3,7 @@
 use std::path::PathBuf;
 use thiserror::Error;
 
-/// Errors returned by [`crate::usb::wait_for_usb`] and the underlying
+/// Errors returned by [`crate::usb::wait_for_usb_devices`] and the underlying
 /// [`crate::usb::UsbEnumerator`] implementations.
 #[derive(Debug, Error)]
 pub enum UsbError {
@@ -38,14 +38,17 @@ pub enum UsbError {
     #[error("USB discovery is not supported on this platform")]
     UnsupportedPlatform,
 
-    /// Whole-device has no filesystem and more than one of its partitions
-    /// matches the PAMCERT label + allow-listed FS.  Fail-closed: we refuse
-    /// to guess which partition the operator meant.
-    #[error("multiple PAMCERT partitions on {devnode}: {count} (expected exactly 1)")]
-    AmbiguousPartition {
+    /// Whole-device has no filesystem and more child partitions with an
+    /// allow-listed FS were observed than `max_usb_partitions` permits.
+    /// Fail-closed against an attacker with physical access plumbing in a
+    /// huge multi-partition device.
+    #[error("too many USB partitions on {devnode}: {count} > limit {limit}")]
+    TooManyPartitions {
         /// Parent whole-device devnode (e.g. `/dev/sdb`).
         devnode: PathBuf,
-        /// Number of matching child partitions found.
+        /// Number of candidate child partitions observed.
         count: usize,
+        /// Configured upper bound (`max_usb_partitions`).
+        limit: usize,
     },
 }

@@ -10,19 +10,21 @@
 #![cfg(target_os = "linux")]
 #![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 
-use pam_certauth_core::usb::{wait_for_usb, UsbError};
+use pam_certauth_core::usb::{wait_for_usb_devices, UsbError};
 use std::time::Duration;
 
 #[test]
 #[ignore = "requires Linux + a real plugged-in USB block device"]
 fn waits_and_returns_device() {
-    let dev = wait_for_usb(Duration::from_secs(30), None).expect("device");
-    assert!(!dev.devnode.as_os_str().is_empty());
+    let devs = wait_for_usb_devices(Duration::from_secs(30), None, 8).expect("device");
+    assert!(!devs.is_empty());
+    assert!(!devs[0].devnode.as_os_str().is_empty());
 }
 
 #[test]
 #[ignore = "no device — short timeout exercises the timeout path"]
 fn timeouts_when_no_device() {
-    let err = wait_for_usb(Duration::from_millis(200), Some((0xDEAD, 0xBEEF))).unwrap_err();
+    let err =
+        wait_for_usb_devices(Duration::from_millis(200), Some((0xDEAD, 0xBEEF)), 8).unwrap_err();
     assert!(matches!(err, UsbError::Timeout));
 }

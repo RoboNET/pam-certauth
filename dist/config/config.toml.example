@@ -46,7 +46,15 @@ pkcs11_slot_wait_seconds = 10
 
 # --- PKCS#12 -----------------------------------------------------------------
 # Used only when mode = "pkcs12".
-# pkcs12_path_pattern = "/run/pam_certauth/usb/${user}.p12"
+#
+# Относительный путь к .p12 от точки монтирования USB-носителя.
+# Поддерживает плейсхолдер ${user} (имя PAM-пользователя).
+# Не должен начинаться с / и не должен содержать сегментов ../ или ./.
+# Default: "certs/user.p12".
+# pkcs12_path_pattern = "certs/user.p12"
+# альтернативные варианты:
+# pkcs12_path_pattern = "bfs_service.p12"
+# pkcs12_path_pattern = "${user}.p12"
 # pkcs12_pin_prompt   = "Пароль PKCS#12: "
 
 # --- gost-engine -------------------------------------------------------------
@@ -58,6 +66,10 @@ pkcs11_slot_wait_seconds = 10
 # --- USB monitor -------------------------------------------------------------
 # Maximum time to block waiting for the user's USB token at auth time.
 usb_wait_seconds = 10
+# Максимальное число USB-партиций, перебираемых при поиске .p12.
+# Защита от DoS: атакующий с физическим доступом не сможет заставить
+# модуль mount/unmount слишком много FS подряд. Range 1..=64.
+max_usb_partitions = 8
 # Action to take after a confirmed USB removal. One of:
 #   "lock"    — lock the user's session via logind.
 #   "logout"  — terminate the user's session via logind.

@@ -217,6 +217,11 @@ impl FlowError {
     }
 }
 
+/// Tuple capturing the USB candidate that won the `.p12` race during the
+/// per-partition retry loop in [`authenticate_pkcs12`]: the device record,
+/// its mountpoint, the live RAII guard, and the discovered credentials.
+type BoundUsb<O> = (UsbDevice, PathBuf, MountGuard<O>, DiscoveredCreds);
+
 /// Where credentials live on the mounted USB device.
 ///
 /// Holds the RAII mount guard so the mount stays alive until this struct
@@ -236,12 +241,17 @@ pub trait FlowIo {
     /// Mount-ops type used by the returned guard.
     type Ops: MountOps + 'static;
 
-    /// Wait for a USB device to appear, optionally filtered by `(vid, pid)`.
+    /// Wait for one or more USB devices to appear, optionally filtered by
+    /// `(vid, pid)`.  When the discovered whole-disk has a partition table,
+    /// the returned slice contains one [`UsbDevice`] per viable partition
+    /// (FS in the allow-list).  The caller iterates the slice until one of
+    /// the partitions yields a readable `.p12`.
     ///
     /// # Errors
     ///
-    /// Propagates [`UsbError::Timeout`] or any underlying udev/io failure.
-    fn wait_for_usb(&self) -> Result<UsbDevice, UsbError>;
+    /// Propagates [`UsbError::Timeout`] / [`UsbError::TooManyPartitions`]
+    /// or any underlying udev/io failure.
+    fn wait_for_usb(&self) -> Result<Vec<UsbDevice>, UsbError>;
 
     /// Mount `dev` at a freshly-created mountpoint and return a guard that
     /// cleans up on Drop.
@@ -253,13 +263,22 @@ pub trait FlowIo {
 
     /// Discover credentials under the mountpoint.
     ///
+    /// `pattern` is the validated `pkcs12_path_pattern` (relative path,
+    /// possibly with `${user}`); the caller resolves `pam_user` from
+    /// the PAM context.
+    ///
     /// Default impl delegates to [`discover_credentials`]; tests may override.
     ///
     /// # Errors
     ///
     /// Propagates [`DiscoveryError`].
-    fn discover(&self, mountpoint: &Path) -> Result<DiscoveredCreds, DiscoveryError> {
-        discover_credentials(mountpoint)
+    fn discover(
+        &self,
+        mountpoint: &Path,
+        pattern: &str,
+        pam_user: &str,
+    ) -> Result<DiscoveredCreds, DiscoveryError> {
+        discover_credentials(mountpoint, pattern, pam_user)
     }
 }
 
@@ -410,25 +429,67 @@ where
     )
     .map_err(FlowError::PreAuthHook)?;
 
-    // Step 2 — wait for a USB block device.
-    let dev = io.wait_for_usb()?;
+    // Step 2 — wait for one or more USB block devices.  On flashes with
+    // a partition table this can return multiple `UsbDevice`s (one per
+    // viable partition).  We try them in order until one of them yields
+    // a readable `.p12`.  The first hit "binds" — if its `.p12` decrypts
+    // or its chain doesn't validate we surface the failure as-is (we do
+    // NOT continue probing the remaining partitions, since that would
+    // turn auth into a guessing oracle).
+    let usb_devices = io.wait_for_usb()?;
     tracing::info!(
         target: "pam_certauth.flow",
-        devnode = ?dev.devnode,
-        vid = format!("{:04x}", dev.vid),
-        pid = format!("{:04x}", dev.pid),
-        "usb device found"
+        count = usb_devices.len(),
+        "usb devices/partitions enumerated"
     );
 
-    // Step 3 — mount with hardening flags (RAII).
-    let session = io.mount(&dev)?;
-    let MountSession {
-        mountpoint,
-        guard: mount,
-    } = session;
-
-    // Step 4 — find p12 + chain.pem.
-    let creds = io.discover(&mountpoint)?;
+    // Step 3+4 — mount each candidate and look for `.p12` until one matches.
+    let pkcs12_pattern = deps
+        .cfg
+        .pkcs12_path_pattern
+        .as_deref()
+        .unwrap_or(pam_certauth_core::discovery::DEFAULT_PKCS12_PATH_PATTERN);
+    let mut last_discovery_err: Option<DiscoveryError> = None;
+    let mut bound: Option<BoundUsb<I::Ops>> = None;
+    for candidate in usb_devices {
+        tracing::info!(
+            target: "pam_certauth.flow",
+            devnode = ?candidate.devnode,
+            vid = format!("{:04x}", candidate.vid),
+            pid = format!("{:04x}", candidate.pid),
+            fs_type = ?candidate.fs_type,
+            "trying USB candidate"
+        );
+        let MountSession {
+            mountpoint,
+            guard: mount,
+        } = io.mount(&candidate)?;
+        match io.discover(&mountpoint, pkcs12_pattern, pam_user) {
+            Ok(creds) => {
+                bound = Some((candidate, mountpoint, mount, creds));
+                break;
+            }
+            Err(DiscoveryError::P12NotFound { path }) => {
+                tracing::info!(
+                    target: "pam_certauth.flow",
+                    mountpoint = %mountpoint.display(),
+                    missing = %path.display(),
+                    "no .p12 on this partition, trying next",
+                );
+                // `mount` guard drops here → umount + rmdir.
+                drop(mount);
+                last_discovery_err = Some(DiscoveryError::P12NotFound { path });
+            }
+            Err(other) => return Err(FlowError::Discovery(other)),
+        }
+    }
+    let (dev, _mountpoint, mount, creds) = bound.ok_or_else(|| {
+        FlowError::Discovery(
+            last_discovery_err.unwrap_or_else(|| DiscoveryError::P12NotFound {
+                path: PathBuf::from(pkcs12_pattern),
+            }),
+        )
+    })?;
 
     // Step 5 — PIN-retry loop.
     let loaded: LoadedKeyMaterial =
@@ -1011,22 +1072,63 @@ pub struct RealFlowIo {
     pub timeout: std::time::Duration,
     /// Optional VID/PID filter (none → accept any USB block device).
     pub vid_pid_filter: Option<(u16, u16)>,
+    /// Maximum number of USB partitions inspected per whole-disk.
+    pub max_usb_partitions: usize,
     /// Base directory under which session-specific mountpoints are created.
     pub mountpoint_base: PathBuf,
     /// Session id used to derive the per-session mountpoint subdirectory.
     pub session_id: String,
+    /// Monotonically incrementing counter that disambiguates mountpoints
+    /// when the flow tries multiple partitions for the same session id.
+    /// `Cell` is fine — we run single-threaded inside `pam_sm_authenticate`.
+    mount_seq: std::cell::Cell<u32>,
+}
+
+#[cfg(target_os = "linux")]
+impl RealFlowIo {
+    /// Build a [`RealFlowIo`] with the standard `mount_seq` starting at 0.
+    #[must_use]
+    pub fn new(
+        timeout: std::time::Duration,
+        vid_pid_filter: Option<(u16, u16)>,
+        max_usb_partitions: usize,
+        mountpoint_base: PathBuf,
+        session_id: String,
+    ) -> Self {
+        Self {
+            timeout,
+            vid_pid_filter,
+            max_usb_partitions,
+            mountpoint_base,
+            session_id,
+            mount_seq: std::cell::Cell::new(0),
+        }
+    }
 }
 
 #[cfg(target_os = "linux")]
 impl FlowIo for RealFlowIo {
     type Ops = pam_certauth_core::mount_guard::RealMountOps;
 
-    fn wait_for_usb(&self) -> Result<UsbDevice, UsbError> {
-        pam_certauth_core::usb::wait_for_usb(self.timeout, self.vid_pid_filter)
+    fn wait_for_usb(&self) -> Result<Vec<UsbDevice>, UsbError> {
+        pam_certauth_core::usb::wait_for_usb_devices(
+            self.timeout,
+            self.vid_pid_filter,
+            self.max_usb_partitions,
+        )
     }
 
     fn mount(&self, dev: &UsbDevice) -> Result<MountSession<Self::Ops>, MountError> {
-        let target = self.mountpoint_base.join(&self.session_id);
+        // Derive a per-attempt mountpoint so retries across partitions do
+        // not collide on the same directory.
+        let seq = self.mount_seq.get();
+        self.mount_seq.set(seq.wrapping_add(1));
+        let subdir = if seq == 0 {
+            self.session_id.clone()
+        } else {
+            format!("{}-{seq}", self.session_id)
+        };
+        let target = self.mountpoint_base.join(subdir);
         // Caller must ensure `target.parent()` exists; we create the leaf.
         std::fs::create_dir_all(&target).map_err(MountError::MountSyscall)?;
         let guard = pam_certauth_core::mount::usb::mount_usb_device(dev, &target)?;
@@ -1106,7 +1208,7 @@ impl InMemoryFlowIo {
 impl FlowIo for InMemoryFlowIo {
     type Ops = NoopMountOps;
 
-    fn wait_for_usb(&self) -> Result<UsbDevice, UsbError> {
+    fn wait_for_usb(&self) -> Result<Vec<UsbDevice>, UsbError> {
         if let Some(e) = &self.usb_error {
             // UsbError doesn't implement Clone; rebuild the most useful variants.
             return Err(match e {
@@ -1116,13 +1218,18 @@ impl FlowIo for InMemoryFlowIo {
                 UsbError::MissingProperty(s) => UsbError::MissingProperty(s.clone()),
                 UsbError::NoMatchingDevice => UsbError::NoMatchingDevice,
                 UsbError::Io(io) => UsbError::Udev(format!("io: {io}")),
-                UsbError::AmbiguousPartition { devnode, count } => UsbError::AmbiguousPartition {
+                UsbError::TooManyPartitions {
+                    devnode,
+                    count,
+                    limit,
+                } => UsbError::TooManyPartitions {
                     devnode: devnode.clone(),
                     count: *count,
+                    limit: *limit,
                 },
             });
         }
-        Ok(self.device.clone())
+        Ok(vec![self.device.clone()])
     }
 
     fn mount(&self, _dev: &UsbDevice) -> Result<MountSession<Self::Ops>, MountError> {
@@ -1209,7 +1316,7 @@ mod tests {
         let raw_toml = r#"
 crypto_backend = "openssl"
 mode = "pkcs12"
-pkcs12_path_pattern = "/run/cert.p12"
+pkcs12_path_pattern = "certs/user.p12"
 pkcs12_pin_prompt = "PIN: "
 usb_wait_seconds = 5
 on_usb_removed = "lock"
@@ -1379,7 +1486,7 @@ journald_priority = false
         .unwrap_err();
         assert!(matches!(
             err,
-            FlowError::Discovery(DiscoveryError::P12NotFound)
+            FlowError::Discovery(DiscoveryError::P12NotFound { .. })
         ));
         assert_eq!(err.pam_code(), 9); // PAM_AUTHINFO_UNAVAIL
     }

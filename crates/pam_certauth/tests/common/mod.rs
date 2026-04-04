@@ -74,7 +74,7 @@ pub fn minimal_cfg() -> ValidatedConfig {
     let raw_toml = r#"
 crypto_backend = "openssl"
 mode = "pkcs12"
-pkcs12_path_pattern = "/run/cert.p12"
+pkcs12_path_pattern = "certs/user.p12"
 pkcs12_pin_prompt = "PIN: "
 usb_wait_seconds = 5
 on_usb_removed = "lock"
