@@ -59,6 +59,20 @@ repos:
         language: system
         types: [shell]
 
+      - id: cargo-deb-version-match
+        name: Cargo workspace version matches debian/changelog
+        language: system
+        entry: bash -c '
+          set -euo pipefail;
+          cargo_ver=$(grep -E "^version\s*=" Cargo.toml | head -1 | sed -E "s/.*\"([^\"]+)\".*/\1/");
+          deb_ver=$(head -1 debian/changelog | sed -E "s/^[^(]+\(([^-]+).*/\1/");
+          if [ "${cargo_ver}" != "${deb_ver}" ]; then
+              echo "ERROR: Cargo.toml version (${cargo_ver}) != debian/changelog (${deb_ver}). Bump debian/changelog." >&2;
+              exit 1;
+          fi'
+        pass_filenames: false
+        files: '^(Cargo\.toml|debian/changelog)$'
+
       - id: no-max-integrity-placeholder
         name: Forbid MAX_INTEGRITY OID placeholders in fixtures, code and docs
         language: system

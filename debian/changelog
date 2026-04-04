@@ -1,3 +1,26 @@
+pam-certauth (0.3.4-1) unstable; urgency=medium
+
+  * Catch debian/changelog up with the workspace versions shipped in 0.3.2
+    and 0.3.3 (PR #11, #12). Earlier releases shipped a .deb whose
+    Version field said 0.3.1-1 even though the binaries were built from
+    0.3.2/0.3.3 source — apt refused to upgrade because dpkg saw no
+    version increase. This release fixes the metadata and tags 0.3.4.
+  * 0.3.2 — USB partitioned-flash support: when the whole-device has no
+    filesystem, pam_certauth enumerates partitions and accepts those
+    whose ID_FS_TYPE is in the allowlist.
+  * 0.3.3 — drop the LABEL=PAMCERT requirement; iterate all USB
+    partitions with allowed FS until a .p12 is found. New config
+    `max_usb_partitions` (default 8, anti-DoS). Fix:
+    `pkcs12_path_pattern` is now honoured by discovery instead of being
+    silently ignored; semantics changed to "relative path from mount",
+    `${user}` placeholder supported, path-traversal rejected by the
+    validator. Default remains `certs/user.p12`.
+  * CI: new guardrail step that fails the build if Cargo workspace
+    version and debian/changelog top entry disagree (prevents recurrence
+    of the metadata mismatch above).
+
+ -- Mikhail Korolev <mikhail@robonet.me>  Sat, 04 Apr 2026 11:20:00 +0300
+
 pam-certauth (0.3.1-1) unstable; urgency=medium
 
   * Packaging: relax runtime dependencies so the package installs on
