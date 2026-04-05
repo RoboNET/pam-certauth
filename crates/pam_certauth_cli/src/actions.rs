@@ -43,12 +43,14 @@ async fn handle(actions: &Arc<dyn LogindActionsTrait>, req: ActionRequest) -> an
             match action {
                 OnUsbRemoved::Lock => {
                     let id = logind_id.ok_or_else(|| {
+                        log_missing_logind_id("Lock", &session);
                         anyhow::anyhow!("Lock requested but session has no logind id")
                     })?;
                     actions.lock_session(&id).await?;
                 }
                 OnUsbRemoved::Logout => {
                     let id = logind_id.ok_or_else(|| {
+                        log_missing_logind_id("Logout", &session);
                         anyhow::anyhow!("Logout requested but session has no logind id")
                     })?;
                     actions.terminate_session(&id).await?;
@@ -72,6 +74,30 @@ async fn handle(actions: &Arc<dyn LogindActionsTrait>, req: ActionRequest) -> an
         }
     }
     Ok(())
+}
+
+/// Emit an actionable diagnostic when a Lock/Logout action is dropped
+/// because the session has no `LogindSession` target. Prints the actual
+/// target and a one-line tip so the operator can resolve the PAM-stack
+/// misconfiguration that caused `XDG_SESSION_ID` to be missing during
+/// `pam_sm_open_session`.
+fn log_missing_logind_id(action: &str, session: &crate::registry::ActiveSession) {
+    tracing::warn!(
+        target: "pam_certauth.monitord",
+        action,
+        session_id = %session.session_id,
+        target = ?session.target,
+        pam_user = %session.pam_user,
+        pam_service = %session.pam_service,
+        "USB-removal action dropped: session has no logind id"
+    );
+    tracing::info!(
+        target: "pam_certauth.monitord",
+        "tip: pam_sm_open_session pushes XDG_SESSION_ID to monitord via UpdateSessionTarget; \
+         ensure pam_systemd.so precedes pam_certauth.so in the session phase of /etc/pam.d/<{service}> \
+         (see docs/install.md §10)",
+        service = session.pam_service,
+    );
 }
 
 fn run_hook(

@@ -346,6 +346,39 @@ PAM-аутентификация не пройдёт; logging-only режим н
   держать админ-канал доступа (SSH с key-only auth, без PAM-цепочки
   pam_certauth) до полной валидации развёртывания.
 
+### 3.6.1 USB извлечён, но logout не происходит (0.3.10+)
+
+**Симптом:** в journald корректно фиксируется удаление токена, monitord
+объявляет grace-окно истёкшим, но logout/lock не выполняется:
+
+```
+INFO pam_certauth.monitord: grace window expired, dispatching action serial="..."
+WARN pam_certauth.monitord: USB-removal action dropped: session has no logind id
+                            action=Logout target=Tty("/dev/tty1") ...
+INFO pam_certauth.monitord: tip: pam_sm_open_session pushes XDG_SESSION_ID to monitord ...
+```
+
+**Причина:** `pam_sm_open_session` не смог достать `XDG_SESSION_ID` из
+PAM-environment, поэтому monitord-запись осталась с placeholder-target'ом
+(`Tty` / `Display` / `Unknown`), а action-runner физически не умеет
+вызвать `terminate_session` без logind id.
+
+**Action-runner fallback (текущее поведение, 0.3.10):**
+
+| Конфигурация              | Что произойдёт без logind id                |
+|---------------------------|---------------------------------------------|
+| `action = "lock"`         | Дропается с WARN; сессия остаётся открытой  |
+| `action = "logout"`       | Дропается с WARN; сессия остаётся открытой  |
+| `action = "shutdown"`     | Срабатывает — `power_off` не требует logind |
+| `action = "hook"`         | Срабатывает — hook получает SESSION_ID env  |
+
+Hook-сценарий даёт оператору запасной выход: написать скрипт, который
+сам решает что делать без logind (например `pkill -KILL -u $PAM_USER`
+или `chvt 1` + sysrq).
+
+**Полный разбор причин и фикс** — `docs/install.md` §10
+«`Logout requested but session has no logind id`».
+
 ### 3.7 PAM-стек заблокирован после неудачной правки
 
 **Симптом:** все пользователи (включая root) не могут войти.
@@ -451,6 +484,11 @@ sudo journalctl -u pam-certauth -g 'pam_certauth.monitord'
 - `pam_certauth.monitord.reinsert` — отмена в grace-окне.
 - `pam_certauth.monitord.lock` — отправка `LockSession` к logind.
 - `pam_certauth.monitord.reload` — reload конфига.
+- `USB-removal action dropped` (WARN, 0.3.10+) — action не отправлен,
+  потому что в сессии нет logind id. См. §3.6.1.
+- `pushed logind session target to monitord` (INFO, `pam_certauth.session`,
+  0.3.10+) — `pam_sm_open_session` успешно проксировал `XDG_SESSION_ID`
+  в monitord; норма для logind-сессии.
 
 ### 6.2 cdylib (PAM-модуль)
 

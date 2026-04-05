@@ -473,8 +473,36 @@ openssl x509 -in /tmp/ca/alice.pem -noout -text \
 надо строкой `@include certauth`.
 
 Поставочный скрипт `/usr/share/pam-certauth/integrate-pam.sh`
-автоматически вставляет `@include certauth` перед первой `auth`-строкой
-и сохраняет резервную копию `<file>.bak.<UTC-timestamp>`.
+автоматически вставляет `@include certauth` в правильную позицию и
+сохраняет резервную копию `<file>.bak.<UTC-timestamp>`. Точка вставки:
+
+- Если в файле есть `auth ... pam_parsec_mac.so` (типично для Astra SE
+  `/etc/pam.d/login`, `/etc/pam.d/fly-dm`) — `@include` встаёт **после**
+  этой строки. Иначе snippet `certauth-only` с `success=done` обрывал бы
+  auth-стек до выполнения pam_parsec_mac, и его account/session-инстансы
+  валились с `"Can't obtain required data"` → login deny.
+- Иначе `@include` встаёт перед первой `auth`-строкой (legacy behaviour
+  для систем без МКЦ-стека, например Ubuntu/Debian dev-машин).
+
+> **Важно (0.3.10+) — порядок `pam_systemd.so` в `session`-фазе.**
+> Начиная с 0.3.10 наш `pam_sm_open_session` подтягивает `XDG_SESSION_ID`
+> из PAM-environment и пушит его в monitord, чтобы USB-removal action
+> (`Lock` / `Logout`) умел адресовать logind-сессию пользователя.
+> `XDG_SESSION_ID` создаётся `pam_systemd.so` в `session`-фазе и
+> существует **только** после того, как этот модуль отработал.
+> Поэтому в `/etc/pam.d/<сервис>` строка `session ... pam_systemd.so`
+> ОБЯЗАНА идти **до** `@include certauth` (или `session ...
+> pam_certauth.so`). На штатных Astra SE `login`/`fly-dm` это так по
+> умолчанию; если оператор пересобирал стек вручную — проверить
+> отдельно. Иначе в journald появится:
+>
+> ```
+> WARN pam_certauth.session: XDG_SESSION_ID not in PAM env during sm_open_session
+> WARN pam_certauth.monitord: USB-removal action dropped: session has no logind id
+> ```
+>
+> и при извлечении флешки logout НЕ произойдёт — см. §10
+> «Logout requested but session has no logind id».
 
 ### 8.1 fly-dm
 
@@ -957,6 +985,69 @@ pamtester sudo alice authenticate
 
 Решение: проверить сетевую доступность OCSP-ответчика; если контур
 офлайн — использовать `mode = "crl"` с локальным CRL.
+
+### `Logout requested but session has no logind id`
+
+Симптом (0.3.10+): извлечение USB-токена корректно детектится в
+journald (`grace window expired, dispatching action`), но через
+секунду логаут не происходит, в логе:
+
+```
+WARN pam_certauth.monitord: USB-removal action dropped: session has no logind id action=Logout target=Tty("/dev/tty1") ...
+INFO pam_certauth.monitord: tip: pam_sm_open_session pushes XDG_SESSION_ID to monitord via UpdateSessionTarget; ensure pam_systemd.so precedes pam_certauth.so in the session phase of /etc/pam.d/<login>
+```
+
+Корневая причина: на момент `pam_sm_open_session` нашего модуля
+`XDG_SESSION_ID` не был выставлен в PAM-environment, поэтому
+зарегистрированная в monitord сессия осталась с placeholder-target'ом
+(`Tty` / `Display` / `Unknown`), захваченным на auth-фазе. Action-runner
+не может вызвать `terminate_session` без logind id.
+
+**Причина 1 (типичная):** `pam_systemd.so` отсутствует в `session`-фазе
+сервиса. Бывает, если admin собрал кастомный `/etc/pam.d/<service>` (не
+для штатных Astra SE `login`/`fly-dm`).
+
+Проверка:
+
+```bash
+sudo grep -nE 'session.*(pam_systemd|certauth)' /etc/pam.d/login /etc/pam.d/fly-dm
+```
+
+Фикс: вставить строку `session optional pam_systemd.so` ДО `@include certauth`
+(или восстановить из штатного шаблона `dpkg-reconfigure libpam-runtime`).
+
+**Причина 2:** `pam_systemd.so` есть, но стоит ПОСЛЕ `pam_certauth.so`
+в `session`-фазе. Наш `sm_open_session` отрабатывает раньше, чем
+`pam_systemd` успевает мнти `XDG_SESSION_ID` → пуш UpdateSessionTarget
+уходит с пустым значением и игнорируется (см. `pam_certauth.session:
+XDG_SESSION_ID not in PAM env`).
+
+Фикс: переставить так, чтобы `session ... pam_systemd.so` шла перед
+`@include certauth`. На штатной Astra SE `/etc/pam.d/login` это уже
+так — проблема возникает только при ручной переборке.
+
+**Причина 3:** консольная сессия без systemd (sysvinit, OpenRC).
+`pam_systemd` не загружен в принципе, `XDG_SESSION_ID` физически не
+создаётся → fallback на TTY-based logout (не logind terminate) пока
+не реализован — это отдельная задача в roadmap. До тех пор:
+
+- использовать `[on_usb_removed].action = "shutdown"` (грубо, но
+  работает) или `"hook"` со своим скриптом, который умеет
+  выкинуть пользователя через `pkill -KILL -u <pam_user>` или
+  `chvt 1`;
+- либо включить systemd на хосте.
+
+**Verify фикса:**
+
+```bash
+sudo journalctl -u pam-certauth -f &
+# залогиниться, дождаться:
+#   INFO pam_certauth.session: pushed logind session target to monitord
+#   target=LogindSession { id: "..." }
+# извлечь USB:
+#   INFO pam_certauth.monitord: grace window expired, dispatching action
+#   (logout должен произойти без WARN'а про "no logind id")
+```
 
 ### Замок-аут после неудачной правки PAM
 

@@ -114,6 +114,25 @@ pub enum ClientMessage {
         #[serde(with = "crate::system_time_serde")]
         closed_at: SystemTime,
     },
+    /// Update the `SessionTarget` of an already-open session.
+    ///
+    /// Sent by the PAM module from `pam_sm_open_session` once
+    /// `XDG_SESSION_ID` becomes available (i.e. `pam_systemd.so` has
+    /// already run in the session phase). The daemon swaps the target
+    /// in-place so that subsequent USB-removal actions (Lock / Logout)
+    /// can address the right logind session id.
+    ///
+    /// Added in 0.3.10 as a backward-compatible extension. Older daemons
+    /// that do not recognise this variant reply with `BAD_REQUEST`; the
+    /// PAM module logs a warning and continues — the existing entry just
+    /// keeps the `Tty`/`Display`/`Unknown` target that PAM captured at
+    /// authenticate time.
+    UpdateSessionTarget {
+        /// Session id (matches what the PAM module sent in `SessionOpen`).
+        session_id: Uuid,
+        /// New target (typically `SessionTarget::LogindSession { id }`).
+        new_target: crate::session_target::SessionTarget,
+    },
     /// Liveness check.
     Ping,
 }
