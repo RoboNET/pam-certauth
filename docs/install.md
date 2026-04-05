@@ -172,6 +172,44 @@ sudo apt install ./pam-certauth_0.3.0-1_amd64.deb
 `apt` подтянет недостающие зависимости (`libgost-engine | gost-engine`,
 `libpkcs11-helper1`, `librtpkcs11ecp`).
 
+### 2.4½ Предполётная проверка (`pam-certauth check`)
+
+Перед `systemctl restart pam-certauth` или при первой установке прогоните
+preflight: он валидирует `config.toml` и доносит ВСЕ потенциальные
+мисконфиги в одном проходе — без открытия сокета и без рестарта demon'а.
+
+```bash
+sudo pam-certauth check
+```
+
+Что проверяется:
+
+- **PAM-стек.** Сканирует `/etc/pam.d/{login,fly-dm,fly-dm-np,sshd,sudo,su}`
+  и валит ERROR, если `@include certauth-*` стоит ПЕРЕД
+  `auth required pam_parsec_mac.so` (на Astra SE это убивает account-фазу
+  с «Can't obtain required data»). Подсказывает команду фикса через
+  `integrate-pam.sh`.
+- **`[mac].runtime` vs ядро.** `runtime=required` без активного
+  `parsec_strict_mode()=1` — ERROR (`required` в strict-mode без МКЦ
+  ядра делает demon бесполезным). `auto` + отсутствующее ядро — WARN
+  (тихий fallback на `StubBackend`, MAC НЕ enforced). `disabled` — INFO.
+- **Trust anchors / intermediates.** Каждый путь из `[trust].anchors`
+  и `[trust].intermediates` должен существовать, быть непустым и
+  содержать хотя бы один `-----BEGIN CERTIFICATE-----` маркер. Иначе
+  ERROR — demon не может валидировать ни одной цепочки.
+- **`/etc/pam_certauth/ca/`.** WARN, если world-writable
+  (`mode & 0o002 != 0`).
+- **`PARSEC_CAP_CHMAC`.** Если МКЦ ядро активно и `[mac].runtime ≠ disabled`,
+  но у процесса нет capability — WARN: метки на `sessions.json` не лягут.
+- **`host_identity`-источники.** По одной INFO/WARN строке на каждый
+  настроенный источник (`machine_id`, `dmi_*`, `hostname`,
+  `custom_command`) — видно сразу, что резолвится и что падает.
+
+Exit-код: **0** — только INFO/WARN; **1** — есть хотя бы один ERROR. Тот
+же check выполняется demon'ом на старте: при наличии ERROR boot
+обрывается, в `journalctl -u pam-certauth` останутся структурные
+сообщения с `target=pam_certauth.startup_check` для каждой проверки.
+
 ### 2.5 Проверка systemd-юнита
 
 ```bash

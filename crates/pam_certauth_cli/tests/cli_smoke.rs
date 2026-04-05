@@ -22,3 +22,17 @@ fn binary_has_daemon_subcommand_help() {
         "help text mismatch:\n{stdout}"
     );
 }
+
+#[test]
+fn binary_has_check_subcommand_help() {
+    let out = Command::new(env!("CARGO_BIN_EXE_pam-certauth"))
+        .args(["check", "--help"])
+        .output()
+        .expect("run pam-certauth check --help");
+    assert!(out.status.success(), "check --help failed: {out:?}");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("startup validation checks"),
+        "help text mismatch:\n{stdout}"
+    );
+}

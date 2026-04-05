@@ -1,5 +1,50 @@
 # Changelog
 
+## [0.3.9] — 2026-04-05
+
+### Added
+
+- **Startup validation pipeline.** Daemon теперь на старте, сразу после
+  `load_validated_config`, прогоняет `run_startup_checks` — единый
+  sweep из шести проверок, который ловит мисконфиги, не видимые
+  TOML-валидатором:
+  1. **PAM stack ordering.** Сканирует `/etc/pam.d/{login,fly-dm,
+     fly-dm-np,sshd,sudo,su}`. Если `@include certauth-*` стоит ПЕРЕД
+     `auth required pam_parsec_mac.so` — ERROR с подсказкой про
+     `integrate-pam.sh` (регрессия фикса из 0.3.8: на Astra SE
+     неправильный порядок убивает account-фазу `pam_parsec_mac`).
+  2. **`[mac].runtime` vs ядро.** `required` без активного
+     `parsec_strict_mode()=1` — ERROR + fail-fast (раньше demon
+     стартовал, и фейл случался на каждой auth). Остальные комбинации
+     — INFO/WARN с явным текстом.
+  3. **Trust anchors / intermediates.** Существование + не-ноль байт +
+     счётчик `BEGIN CERTIFICATE` маркеров. Defense-in-depth: TOML
+     валидатор отвергает невалидные пути на загрузке, startup-check
+     ловит сценарий «файл удалили/обрезали между провизионингом и
+     рестартом».
+  4. **`/etc/pam_certauth/ca/` permissions.** WARN, если каталог
+     world-writable (`mode & 0o002 != 0`).
+  5. **`PARSEC_CAP_CHMAC`.** WARN, если МКЦ-ядро активно и
+     `[mac].runtime ≠ disabled`, но у процесса нет capability —
+     метки на `sessions.json` не лягут.
+  6. **`host_identity` probe.** По одной INFO/WARN-строке на каждый
+     настроенный источник — admin сразу видит резолв, не дожидаясь
+     первой auth-сессии.
+
+  Каждая запись помечена стабильным `check` ID
+  (`pam_stack_misorder`, `mac_runtime_required_missing_kernel`,
+  `trust_anchor_missing`, ...) — grep'абельно через
+  `journalctl -u pam-certauth -g startup_check`. При наличии хотя бы
+  одного ERROR boot обрывается с явным сообщением — заметно в
+  `systemctl status`, а не в первой неудачной auth-сессии.
+
+- **`pam-certauth check` subcommand.** Standalone preflight: загружает
+  config + прогоняет тот же pipeline без открытия socket'а. Печатает
+  `[INFO ]/[WARN ]/[ERROR]` лог + summary. Exit 0 — чисто, exit 1 —
+  есть ERROR. Можно навесить на `ExecStartPre=` в systemd-unit, чтобы
+  превратить preflight в hard gate. Документация в `docs/install.md`
+  §2.4½.
+
 ## [0.3.8] — 2026-04-04
 
 ### Critical
