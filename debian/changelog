@@ -1,3 +1,48 @@
+pam-certauth (0.3.12-1) unstable; urgency=medium
+
+  * Critical fix (Astra SE 1.8.3 production): USB-removal Logout/Lock
+    action was silently dropped on banker terminals because our
+    `session required pam_certauth.so` ran BEFORE `pam_systemd.so`.
+    `XDG_SESSION_ID` was not yet in PAM env when `pam_sm_open_session`
+    fired → `UpdateSessionTarget` never sent → monitord retained the
+    auth-phase placeholder target (Tty/Display) → action handler could
+    not call `terminate_session` and bailed with
+    "Logout requested but session has no logind id".
+
+  * Snippet split: `dist/pam.d/certauth`, `certauth-only`, and
+    `certauth-optional` no longer carry the `session` line. The
+    auth/account block stays inside the snippet so `@include certauth*`
+    keeps working for the auth-stack integration that
+    `integrate-pam.sh` plants near the top of the file. Existing
+    manual integrations that referenced the snippet by path will lose
+    the session-phase line — operators must re-run `integrate-pam.sh`
+    after upgrade (the script now adds the session line explicitly).
+
+  * `dist/scripts/integrate-pam.sh` two-include pattern: in addition
+    to the auth-block `@include`, it now inserts
+    `session    required   pam_certauth.so` AFTER
+    `@include common-session` (anchor priority: common-session →
+    last session-phase line → EOF). `--unintegrate` strips both
+    lines. Idempotent on both passes; single backup per invocation.
+
+  * Startup check `pam_stack_session_misorder`: scans each known PAM
+    service file (`login`, `fly-dm`, `fly-dm-np`, `sshd`, `sudo`,
+    `su`) and ERRORs when `session required pam_certauth.so` precedes
+    pam_systemd.so / @include common-session. Fail-fast on daemon
+    start, surfaced by `pam-certauth check` subcommand for
+    pre-deployment validation. Adds INFO records
+    `pam_stack_session_ok` and `pam_stack_session_no_systemd` for the
+    common healthy and sysvinit/OpenRC layouts respectively.
+
+  * Docs (`docs/install.md` §8 + §10): documents the two-include
+    pattern, explains the snippet split, and rewrites the
+    "Logout requested but session has no logind id" troubleshooting
+    entry for the 0.3.12 placement model. The §10 entry now points
+    operators at the new startup-check ID and the
+    `integrate-pam.sh` re-run as the canonical fix.
+
+ -- Mikhail Korolev <michael443959@gmail.com>  Sun, 05 Apr 2026 13:15:00 +0300
+
 pam-certauth (0.3.11-1) unstable; urgency=medium
 
   * Hotfix: добавлен метод `MonitordClient::send_update_session_target`

@@ -164,6 +164,123 @@ fn startup_check_pam_no_parsec_mac_is_silent() {
 }
 
 #[test]
+fn startup_check_pam_session_misorder_detected() {
+    // session pam_certauth.so BEFORE @include common-session →
+    // XDG_SESSION_ID не доступен на момент sm_open_session.
+    let tmp = tempfile::tempdir().expect("tmp");
+    let svc = tmp.path().join("login");
+    let mut f = fs::File::create(&svc).expect("svc");
+    writeln!(
+        f,
+        "auth required pam_unix.so\n\
+         session required pam_certauth.so\n\
+         @include common-session"
+    )
+    .expect("write");
+
+    let mut report = StartupCheckReport::default();
+    startup_check::pam_stack::check(tmp.path(), &mut report);
+
+    let errs: Vec<_> = report
+        .records
+        .iter()
+        .filter(|r| r.severity == StartupCheckSeverity::Error)
+        .collect();
+    assert_eq!(errs.len(), 1, "expected one ERROR record, got {report:#?}");
+    assert_eq!(errs[0].check, "pam_stack_session_misorder");
+    assert!(
+        errs[0].message.contains("XDG_SESSION_ID"),
+        "msg: {}",
+        errs[0].message
+    );
+    assert!(
+        errs[0].message.contains("integrate-pam.sh"),
+        "expected fix hint in: {}",
+        errs[0].message
+    );
+}
+
+#[test]
+fn startup_check_pam_session_correct_order_emits_info() {
+    let tmp = tempfile::tempdir().expect("tmp");
+    let svc = tmp.path().join("login");
+    let mut f = fs::File::create(&svc).expect("svc");
+    writeln!(
+        f,
+        "auth required pam_unix.so\n\
+         @include common-session\n\
+         session required pam_certauth.so"
+    )
+    .expect("write");
+
+    let mut report = StartupCheckReport::default();
+    startup_check::pam_stack::check(tmp.path(), &mut report);
+
+    assert_eq!(report.count(StartupCheckSeverity::Error), 0);
+    let oks: Vec<_> = report
+        .records
+        .iter()
+        .filter(|r| r.check == "pam_stack_session_ok")
+        .collect();
+    assert_eq!(oks.len(), 1, "{report:#?}");
+}
+
+#[test]
+fn startup_check_pam_session_no_systemd_is_info() {
+    // session pam_certauth present but no pam_systemd / common-session →
+    // not an error, but an INFO so the operator knows logind logout is off.
+    let tmp = tempfile::tempdir().expect("tmp");
+    let svc = tmp.path().join("login");
+    let mut f = fs::File::create(&svc).expect("svc");
+    writeln!(
+        f,
+        "auth required pam_unix.so\nsession required pam_certauth.so"
+    )
+    .expect("write");
+
+    let mut report = StartupCheckReport::default();
+    startup_check::pam_stack::check(tmp.path(), &mut report);
+
+    assert_eq!(report.count(StartupCheckSeverity::Error), 0);
+    let infos: Vec<_> = report
+        .records
+        .iter()
+        .filter(|r| r.check == "pam_stack_session_no_systemd")
+        .collect();
+    assert_eq!(infos.len(), 1, "{report:#?}");
+}
+
+#[test]
+fn startup_check_pam_session_direct_pam_systemd_anchor() {
+    // Direct `session ... pam_systemd.so` line (no @include common-session
+    // aggregator) should still anchor the ordering check.
+    let tmp = tempfile::tempdir().expect("tmp");
+    let svc = tmp.path().join("login");
+    let mut f = fs::File::create(&svc).expect("svc");
+    writeln!(
+        f,
+        "auth required pam_unix.so\n\
+         session optional pam_systemd.so\n\
+         session required pam_certauth.so"
+    )
+    .expect("write");
+
+    let mut report = StartupCheckReport::default();
+    startup_check::pam_stack::check(tmp.path(), &mut report);
+
+    assert_eq!(report.count(StartupCheckSeverity::Error), 0);
+    assert_eq!(
+        report
+            .records
+            .iter()
+            .filter(|r| r.check == "pam_stack_session_ok")
+            .count(),
+        1,
+        "{report:#?}"
+    );
+}
+
+#[test]
 fn startup_check_pam_comments_are_ignored() {
     let tmp = tempfile::tempdir().expect("tmp");
     let svc = tmp.path().join("login");

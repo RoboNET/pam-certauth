@@ -185,10 +185,20 @@ sudo pam-certauth check
 Что проверяется:
 
 - **PAM-стек.** Сканирует `/etc/pam.d/{login,fly-dm,fly-dm-np,sshd,sudo,su}`
-  и валит ERROR, если `@include certauth-*` стоит ПЕРЕД
-  `auth required pam_parsec_mac.so` (на Astra SE это убивает account-фазу
-  с «Can't obtain required data»). Подсказывает команду фикса через
-  `integrate-pam.sh`.
+  и валит ERROR в двух случаях:
+  1. `@include certauth-*` стоит ПЕРЕД `auth required pam_parsec_mac.so`
+     (на Astra SE это убивает account-фазу с «Can't obtain required data»).
+     Check id: `pam_stack_misorder`.
+  2. (0.3.12+) `session required pam_certauth.so` стоит ПЕРЕД
+     `pam_systemd.so` / `@include common-session` —
+     `XDG_SESSION_ID` ещё не доступен на момент `pam_sm_open_session`,
+     `UpdateSessionTarget` не отправляется, monitord не умеет вызвать
+     logind Logout/Lock при извлечении USB. Check id:
+     `pam_stack_session_misorder`. Обе ошибки подсказывают команду фикса
+     через `integrate-pam.sh`. Хелсчек для session-фазы пишет
+     `pam_stack_session_ok` (INFO) при корректном порядке или
+     `pam_stack_session_no_systemd` (INFO) если в стеке вообще нет
+     pam_systemd — типично для sysvinit/OpenRC хостов.
 - **`[mac].runtime` vs ядро.** `runtime=required` без активного
   `parsec_strict_mode()=1` — ERROR (`required` в strict-mode без МКЦ
   ядра делает demon бесполезным). `auto` + отсутствующее ядро — WARN
@@ -484,17 +494,36 @@ openssl x509 -in /tmp/ca/alice.pem -noout -text \
 - Иначе `@include` встаёт перед первой `auth`-строкой (legacy behaviour
   для систем без МКЦ-стека, например Ubuntu/Debian dev-машин).
 
-> **Важно (0.3.10+) — порядок `pam_systemd.so` в `session`-фазе.**
-> Начиная с 0.3.10 наш `pam_sm_open_session` подтягивает `XDG_SESSION_ID`
-> из PAM-environment и пушит его в monitord, чтобы USB-removal action
-> (`Lock` / `Logout`) умел адресовать logind-сессию пользователя.
-> `XDG_SESSION_ID` создаётся `pam_systemd.so` в `session`-фазе и
-> существует **только** после того, как этот модуль отработал.
-> Поэтому в `/etc/pam.d/<сервис>` строка `session ... pam_systemd.so`
-> ОБЯЗАНА идти **до** `@include certauth` (или `session ...
-> pam_certauth.so`). На штатных Astra SE `login`/`fly-dm` это так по
-> умолчанию; если оператор пересобирал стек вручную — проверить
-> отдельно. Иначе в journald появится:
+> **Важно (0.3.12+) — two-include pattern и порядок `pam_systemd.so`.**
+> Начиная с 0.3.12 наш `integrate-pam.sh` подключает PAM-модуль
+> **двумя** строками:
+>
+> 1. `@include certauth*` (auth + account фазы) — попадает в верх файла
+>    после `auth ... pam_parsec_mac.so` (или перед первой `auth`-строкой,
+>    если МКЦ выключен);
+> 2. `session    required   pam_certauth.so` — ставится **после**
+>    `@include common-session` (или после последней `session`-строки,
+>    если common-session нет).
+>
+> Это нужно потому, что `pam_sm_open_session` нашего модуля читает
+> `XDG_SESSION_ID` из PAM-environment и пушит его в monitord, чтобы
+> USB-removal action (`Lock` / `Logout`) умел адресовать logind-сессию
+> пользователя. `XDG_SESSION_ID` создаётся `pam_systemd.so` (обычно
+> через `common-session`) — поэтому наш `session` ОБЯЗАН идти **после**.
+>
+> Поставочные snippets (`/etc/pam.d/certauth`, `certauth-only`,
+> `certauth-optional`) с 0.3.12 содержат только `auth`+`account` —
+> `session` живёт отдельной строкой в host pam.d-файле. После
+> апгрейда с 0.3.11 на 0.3.12 операторам нужно **один раз** прогнать
+> `integrate-pam.sh --unintegrate <файл> && integrate-pam.sh --mode=<режим>
+> <файл>` для каждого ранее интегрированного сервиса — старая
+> session-строка из snippet'а после обновления `.deb` исчезнет, а
+> новую вставит только повторный прогон скрипта.
+>
+> Demon на старте валит `ERROR pam_stack_session_misorder` если
+> наша session-строка стоит ПЕРЕД `@include common-session` /
+> `pam_systemd.so`. Проверить можно без рестарта:
+> `sudo pam-certauth check`. Иначе в journald появится:
 >
 > ```
 > WARN pam_certauth.session: XDG_SESSION_ID not in PAM env during sm_open_session
@@ -670,10 +699,14 @@ ls /sys/kernel/security/parsec 2>/dev/null       # ENOENT → МКЦ выклю�
 **Сценарий 1 — МКЦ выключен (текущий default на банкоматах):**
 
 ```
-# /etc/pam.d/login
-auth      required pam_certauth.so
-account   required pam_certauth.so
-session   required pam_certauth.so
+# /etc/pam.d/login (0.3.12+ two-include pattern)
+@include certauth
+auth       requisite   pam_nologin.so
+auth       required    pam_env.so
+@include common-auth
+@include common-account
+@include common-session
+session    required    pam_certauth.so   # ← ПОСЛЕ common-session (pam_systemd)
 ```
 
 Никаких `pam_parsec_mac.so` в стеке. В `config.toml`:
@@ -692,11 +725,14 @@ no-op `StubBackend`. Событие `mac_runtime_disabled` (INFO) фиксиру
 **Сценарий 2 — МКЦ включён:**
 
 ```
-# /etc/pam.d/login
-auth      required pam_certauth.so
-auth      required pam_parsec_mac.so       # ВАЖНО: после pam_certauth
-account   required pam_parsec_mac.so
-session   required pam_parsec_mac.so
+# /etc/pam.d/login (0.3.12+ two-include pattern)
+auth       required   pam_parsec_mac.so       # ← raw МКЦ строка
+@include certauth                              # ← добавлено integrate-pam.sh
+account    required   pam_parsec_mac.so
+@include common-session
+session    required   pam_parsec_cap.so
+session    required   pam_parsec_mac.so
+session    required   pam_certauth.so          # ← добавлено integrate-pam.sh
 ```
 
 В `config.toml`:
@@ -1003,28 +1039,41 @@ INFO pam_certauth.monitord: tip: pam_sm_open_session pushes XDG_SESSION_ID to mo
 (`Tty` / `Display` / `Unknown`), захваченным на auth-фазе. Action-runner
 не может вызвать `terminate_session` без logind id.
 
-**Причина 1 (типичная):** `pam_systemd.so` отсутствует в `session`-фазе
-сервиса. Бывает, если admin собрал кастомный `/etc/pam.d/<service>` (не
-для штатных Astra SE `login`/`fly-dm`).
+**Причина 1 (типичная, 0.3.11 и старше — pre-fix):** `@include certauth*`
+включал `session required pam_certauth.so` внутри snippet'а, и сниппет
+оказывался выше `@include common-session` (где живёт `pam_systemd.so`).
+Наш `sm_open_session` срабатывал раньше, чем `pam_systemd` успевал
+выставить `XDG_SESSION_ID`. В 0.3.12 session-фаза вынесена из snippet'ов
+в отдельную строку, которую `integrate-pam.sh` ставит ПОСЛЕ
+`@include common-session`. Демон 0.3.12+ валит на старте
+`ERROR pam_stack_session_misorder` если порядок неправильный.
 
 Проверка:
 
 ```bash
-sudo grep -nE 'session.*(pam_systemd|certauth)' /etc/pam.d/login /etc/pam.d/fly-dm
+sudo pam-certauth check 2>&1 | grep pam_stack_session
+# OR:
+sudo grep -nE 'session.*(pam_systemd|certauth)|@include[[:space:]]+(common-session|certauth)' \
+    /etc/pam.d/login /etc/pam.d/fly-dm
 ```
 
-Фикс: вставить строку `session optional pam_systemd.so` ДО `@include certauth`
-(или восстановить из штатного шаблона `dpkg-reconfigure libpam-runtime`).
+Фикс — переинтегрировать через 0.3.12+ скрипт:
 
-**Причина 2:** `pam_systemd.so` есть, но стоит ПОСЛЕ `pam_certauth.so`
-в `session`-фазе. Наш `sm_open_session` отрабатывает раньше, чем
-`pam_systemd` успевает мнти `XDG_SESSION_ID` → пуш UpdateSessionTarget
-уходит с пустым значением и игнорируется (см. `pam_certauth.session:
-XDG_SESSION_ID not in PAM env`).
+```bash
+sudo /usr/share/pam-certauth/integrate-pam.sh --unintegrate /etc/pam.d/login
+sudo /usr/share/pam-certauth/integrate-pam.sh --mode=<your-mode> /etc/pam.d/login
+# повторить для fly-dm / sshd / sudo / su по необходимости
+sudo systemctl restart pam-certauth
+```
 
-Фикс: переставить так, чтобы `session ... pam_systemd.so` шла перед
-`@include certauth`. На штатной Astra SE `/etc/pam.d/login` это уже
-так — проблема возникает только при ручной переборке.
+**Причина 2:** `pam_systemd.so` отсутствует в `session`-фазе сервиса
+вообще (кастомный `/etc/pam.d/<service>` без `@include common-session`).
+Startup-check выдаёт INFO `pam_stack_session_no_systemd`.
+
+Фикс: вставить строку `session optional pam_systemd.so` (или
+`@include common-session`) ДО `session required pam_certauth.so` —
+проще всего восстановить штатный шаблон через
+`dpkg-reconfigure libpam-runtime` и затем перепрогнать `integrate-pam.sh`.
 
 **Причина 3:** консольная сессия без systemd (sysvinit, OpenRC).
 `pam_systemd` не загружен в принципе, `XDG_SESSION_ID` физически не
