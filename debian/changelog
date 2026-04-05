@@ -1,3 +1,27 @@
+pam-certauth (0.3.13-1) unstable; urgency=high
+
+  * Hotfix: ACTUALLY implement XDG_SESSION_ID capture in
+    `pam_sm_open_session`. The 0.3.10/0.3.11/0.3.12 release notes
+    declared the feature but the cdylib code path was never added —
+    `pam_sm_open_session` never read `XDG_SESSION_ID` and never called
+    `MonitordClient::send_update_session_target`, so monitord kept the
+    auth-phase placeholder target on every login. Bankers' terminals
+    continued to fail the USB-removal Logout/Lock action because
+    `terminate_session` had no logind id to target.
+
+  * Adds `crate::pam_helpers::pam_get_env_string` (thin `pam_getenv`
+    wrapper) and a new `crate::xdg_capture` module containing a pure
+    decision helper (`capture_xdg`) covered by unit tests for the
+    three branches (XDG missing / present / IPC failure). The
+    production cdylib calls `capture_xdg` after the MAC pipeline and
+    before session_open hooks; an IPC failure logs WARN and never
+    aborts session-open (best-effort semantics).
+
+  * No daemon-side changes; relies on the `UpdateSessionTarget` wire
+    contract already shipped in 0.3.10.
+
+ -- Mikhail Korolev <mikhail@robonet.me>  Sun, 05 Apr 2026 14:50:00 +0300
+
 pam-certauth (0.3.12-1) unstable; urgency=medium
 
   * Critical fix (Astra SE 1.8.3 production): USB-removal Logout/Lock

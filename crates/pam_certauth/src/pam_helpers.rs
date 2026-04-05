@@ -43,6 +43,12 @@ extern "C" {
         item_type: c_int,
         item: *mut *const c_void,
     ) -> c_int;
+
+    /// Read a PAM environment variable (`pam_getenv`). Returns a
+    /// pointer owned by PAM, valid for the lifetime of `pamh`; the
+    /// caller must NOT free it. Returns NULL when the variable is
+    /// unset.
+    fn pam_getenv(pamh: *mut pam_sys::pam_handle_t, name: *const c_char) -> *const c_char;
 }
 
 /// Read PAM_USER off the live handle.
@@ -136,6 +142,50 @@ pub unsafe fn pam_get_tty_string(
     // SAFETY: For PAM_TTY the item is a `const char *` valid for the
     // lifetime of `pamh`.
     let cstr = CStr::from_ptr(item_ptr.cast::<c_char>());
+    let s = cstr
+        .to_str()
+        .map(str::to_owned)
+        .map_err(|_| PamHelperError::NonUtf8)?;
+    if s.is_empty() {
+        Ok(None)
+    } else {
+        Ok(Some(s))
+    }
+}
+
+/// Read a PAM environment variable off the live handle via `pam_getenv`.
+///
+/// Returns `Ok(None)` when the variable is unset (PAM returns NULL) or
+/// when the stored value is the empty string. Returns `Ok(Some(_))` for
+/// any other value.
+///
+/// Used by `pam_sm_open_session` to read `XDG_SESSION_ID` (populated by
+/// `pam_systemd.so` in the session phase). When `pam_systemd` has not
+/// yet run, this returns `Ok(None)` — callers MUST treat that as a
+/// benign condition and skip the IPC push.
+///
+/// # Safety
+///
+/// See [`pam_get_user_string`].
+///
+/// # Errors
+///
+/// * [`PamHelperError::NonUtf8`] if PAM returned non-UTF-8 bytes.
+pub unsafe fn pam_get_env_string(
+    pamh: *mut pam_sys::pam_handle_t,
+    name: &str,
+) -> Result<Option<String>, PamHelperError> {
+    let c_name = CString::new(name).map_err(|_| PamHelperError::PamRc(-1))?;
+    // SAFETY: `pamh` is owned by PAM; `c_name` is a valid NUL-terminated
+    // C string whose lifetime covers this call. `pam_getenv` returns a
+    // pointer into PAM-owned storage; we must not free it.
+    let ptr = pam_getenv(pamh, c_name.as_ptr());
+    if ptr.is_null() {
+        return Ok(None);
+    }
+    // SAFETY: PAM guarantees `ptr` is a NUL-terminated C string valid
+    // for the lifetime of `pamh`.
+    let cstr = CStr::from_ptr(ptr);
     let s = cstr
         .to_str()
         .map(str::to_owned)

@@ -1,5 +1,27 @@
 # Changelog
 
+## [0.3.13] — 2026-04-05
+
+### Fixed
+
+- **Hotfix: ACTUALLY implement `XDG_SESSION_ID` capture in
+  `pam_sm_open_session`.** Версии 0.3.10/0.3.11/0.3.12 в changelog'е
+  заявили, что капчурят `XDG_SESSION_ID` и отправляют
+  `UpdateSessionTarget` в monitord, но в cdylib код этого не было —
+  `pam_sm_open_session` не вызывал `pam_getenv`, не открывал IPC и не
+  слал `UpdateSessionTarget`. На production-банкоматах USB-removal
+  Logout/Lock молча не работал три релиза подряд: action handler не
+  имел logind id и падал на `terminate_session`.
+- Добавлены: `crate::pam_helpers::pam_get_env_string` (thin
+  обёртка над `pam_getenv`) и новый модуль `crate::xdg_capture` с
+  чистой функцией `capture_xdg` (unit-тесты на три ветки: XDG
+  отсутствует / присутствует и IPC ok / IPC fail). Production cdylib
+  зовёт `capture_xdg` после MAC pipeline и до session_open hooks;
+  любая IPC-ошибка логируется WARN и НЕ ломает session-open
+  (best-effort semantics).
+- Wire-протокол не меняется — переиспользуется `UpdateSessionTarget`
+  фрейм, отправленный с daemon-side ещё в 0.3.10.
+
 ## [0.3.9] — 2026-04-05
 
 ### Added
