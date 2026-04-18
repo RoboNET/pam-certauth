@@ -1,141 +1,139 @@
-//! fly-dm greeter-show-messages check (informational).
+//! fly-dm GreetString.desktop check (informational).
 //!
-//! pam_certauth surfaces PAM_TEXT_INFO ("Этот банкомат: host_id=...",
-//! p12_wrong_pin_diagnostic) on the lock screen via io.show_info().
-//! fly-dm only forwards PAM_TEXT_INFO to the greeter UI when
-//! `greeter-show-messages = true` is set under `[greeter]` in
-//! /etc/X11/fly-dm/fly-dmrc. This check reports the state.
+//! On modern Astra (fly-qdm 2.15+), the legacy KDM-style
+//! `greeter-show-messages` option in `/etc/X11/fly-dm/fly-dmrc` is NOT
+//! parsed. The actual point where banner text is injected into the login
+//! screen header is `/etc/X11/fly-dm/override/GreetString.desktop`:
+//! fly-dm reads `Name=` and `Name[<locale>]=` from the `[Desktop Entry]`
+//! section and substitutes `%n` (hostname), `%h` (host+domain), `%d`
+//! (display) into the greeter header.
 //!
-//! Severity: Info only (never errors, never warns). Silent skip when the
-//! fly-dmrc file does not exist (sshd-only hosts, server stands).
+//! `pam-certauth update-greeter` (separate subcommand) writes the ATM
+//! `host_id=<id>` into one or more `Name[...]` keys so the identifier is
+//! visible on the lock screen. This startup check reports whether that has
+//! been done.
+//!
+//! Severity: Info only (never errors, never warns). Silent skip when
+//! `/etc/X11/fly-dm/` does not exist (server stands, sshd-only hosts).
 
 use std::path::{Path, PathBuf};
 
 use super::{StartupCheckRecord, StartupCheckReport};
 
-/// Outcome of parsing `/etc/X11/fly-dm/fly-dmrc` for the
-/// `greeter-show-messages` flag in the `[greeter]` section.
+/// Outcome of parsing `/etc/X11/fly-dm/override/GreetString.desktop`
+/// for the presence of an injected `host_id=` token.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum GreeterMessagesState {
-    /// `greeter-show-messages = true` (or `yes`/`1`) — PAM_TEXT_INFO is
-    /// forwarded to the greeter UI.
-    Enabled,
-    /// Option is present but explicitly set to a false-like value
-    /// (`false`/`no`/`0`) — PAM_TEXT_INFO will NOT appear on the lock screen.
-    DisabledExplicit,
-    /// Option is not present (either the `[greeter]` section is absent or
-    /// the option is omitted within it). fly-dm defaults to off, so PAM
-    /// info-messages will not be shown.
-    Missing,
+pub enum GreetStringState {
+    /// At least one `Name` / `Name[<locale>]` value in `[Desktop Entry]`
+    /// contains the substring `host_id=` — `pam-certauth update-greeter`
+    /// has already injected the ATM identifier.
+    Customized,
+    /// The file is present (or has a `[Desktop Entry]` section) but no
+    /// `Name*` value contains `host_id=` — still using the stock greeter
+    /// string.
+    Default,
 }
 
-/// Pure parser for fly-dmrc content. Exposed for unit tests.
+/// Pure parser for GreetString.desktop content. Exposed for unit tests.
 ///
 /// Logic:
-/// * locate the `[greeter]` section (section name is case-insensitive,
-///   surrounding whitespace ignored);
-/// * within that section (until the next `[...]` header or EOF), match
-///   `greeter-show-messages\s*=\s*(value)` (key case-insensitive);
-/// * `true`/`yes`/`1` (case-insensitive) → `Enabled`;
-/// * `false`/`no`/`0` (case-insensitive) → `DisabledExplicit`;
-/// * any other value or no match → `Missing`.
+/// * locate the `[Desktop Entry]` section (case-sensitive, the standard
+///   spelling for .desktop files);
+/// * within that section (until the next `[...]` header or EOF), collect
+///   every key whose name starts with `Name` (covers `Name`, `Name[ru]`,
+///   `Name[en_US]`, `Name[tt]`, etc.);
+/// * if any of those values contains the substring `host_id=`
+///   (case-sensitive — looser matching would yield false positives) →
+///   `Customized`;
+/// * otherwise (including: no `[Desktop Entry]` section, no `Name*` keys,
+///   empty file) → `Default`.
 #[must_use]
-pub fn evaluate_fly_dmrc(text: &str) -> GreeterMessagesState {
-    let mut in_greeter = false;
+pub fn evaluate_greet_string_desktop(text: &str) -> GreetStringState {
+    let mut in_desktop_entry = false;
     for raw in text.lines() {
         let line = raw.trim();
-        if line.is_empty() || line.starts_with('#') || line.starts_with(';') {
+        if line.is_empty() || line.starts_with('#') {
             continue;
         }
         if let Some(stripped) = line.strip_prefix('[') {
             if let Some(name) = stripped.strip_suffix(']') {
-                in_greeter = name.trim().eq_ignore_ascii_case("greeter");
+                in_desktop_entry = name.trim() == "Desktop Entry";
             } else {
-                in_greeter = false;
+                in_desktop_entry = false;
             }
             continue;
         }
-        if !in_greeter {
+        if !in_desktop_entry {
             continue;
         }
         let Some(eq_idx) = line.find('=') else {
             continue;
         };
         let key = line[..eq_idx].trim();
-        if !key.eq_ignore_ascii_case("greeter-show-messages") {
+        // Accept Name, Name[ru], Name[en_US], Name[tt], …
+        if !(key == "Name" || (key.starts_with("Name[") && key.ends_with(']'))) {
             continue;
         }
-        let value = line[eq_idx + 1..].trim();
-        // strip trailing inline comment if any
-        let value = value
-            .split_once('#')
-            .map_or(value, |(v, _)| v.trim_end());
-        let value = value
-            .split_once(';')
-            .map_or(value, |(v, _)| v.trim_end());
-        let value = value.trim();
-        if value.eq_ignore_ascii_case("true")
-            || value.eq_ignore_ascii_case("yes")
-            || value == "1"
-        {
-            return GreeterMessagesState::Enabled;
+        let value = &line[eq_idx + 1..];
+        if value.contains("host_id=") {
+            return GreetStringState::Customized;
         }
-        if value.eq_ignore_ascii_case("false")
-            || value.eq_ignore_ascii_case("no")
-            || value == "0"
-        {
-            return GreeterMessagesState::DisabledExplicit;
-        }
-        // unrecognised value — treat as missing/default
-        return GreeterMessagesState::Missing;
     }
-    GreeterMessagesState::Missing
+    GreetStringState::Default
 }
 
-/// Report whether fly-dm is configured to forward PAM_TEXT_INFO to the
-/// greeter UI. Always Info severity; silent skip when fly-dmrc is absent.
+/// Report whether fly-dm's greeter banner has been customized with the
+/// ATM `host_id`. Always Info severity; silent skip when fly-dm is not
+/// installed at all.
 pub fn check(fs_root: Option<&Path>, report: &mut StartupCheckReport) {
     let root = fs_root.map_or_else(|| PathBuf::from("/"), PathBuf::from);
-    let path = root.join("etc/X11/fly-dm/fly-dmrc");
+    let fly_dm_root = root.join("etc/X11/fly-dm");
 
-    if !path.exists() {
-        // sshd-only host / server stand — nothing to say.
+    if !fly_dm_root.exists() {
+        // sshd-only host / server stand — fly-dm is not installed.
         return;
     }
 
-    let text = match std::fs::read_to_string(&path) {
+    let greet_path = fly_dm_root.join("override/GreetString.desktop");
+
+    if !greet_path.exists() {
+        report.push(StartupCheckRecord::info(
+            "fly_dm_greeter_override_missing",
+            format!(
+                "fly-dm installed but {path} absent — \
+                 `pam-certauth update-greeter` will create it",
+                path = greet_path.display()
+            ),
+        ));
+        return;
+    }
+
+    let text = match std::fs::read_to_string(&greet_path) {
         Ok(t) => t,
         Err(e) => {
             report.push(StartupCheckRecord::info(
                 "fly_dm_greeter_read_failed",
                 format!(
-                    "fly-dm greeter config {path} present but unreadable ({e}); \
-                     cannot determine whether PAM_TEXT_INFO will appear on the lock screen",
-                    path = path.display()
+                    "fly-dm greeter override {path} present but unreadable ({e}); \
+                     cannot determine whether the ATM host_id is on the lock screen",
+                    path = greet_path.display()
                 ),
             ));
             return;
         }
     };
 
-    match evaluate_fly_dmrc(&text) {
-        GreeterMessagesState::Enabled => report.push(StartupCheckRecord::info(
-            "fly_dm_greeter_messages_on",
-            "fly-dm greeter-show-messages=true — PAM info-messages will appear on the lock screen",
+    match evaluate_greet_string_desktop(&text) {
+        GreetStringState::Customized => report.push(StartupCheckRecord::info(
+            "fly_dm_greeter_greet_string_customized",
+            "fly-dm GreetString.desktop contains host_id — \
+             banner will be visible on lock screen",
         )),
-        GreeterMessagesState::DisabledExplicit => report.push(StartupCheckRecord::info(
-            "fly_dm_greeter_messages_off",
-            "fly-dm greeter-show-messages set to false in /etc/X11/fly-dm/fly-dmrc — \
-             PAM_TEXT_INFO from pam_certauth (host_id banner, p12 wrong-pin diagnostic) \
-             will NOT appear on the lock screen. Fix: set greeter-show-messages = true \
-             under [greeter] (see docs/install.md §8.5.1) or re-run integrate-pam.sh \
-             on /etc/pam.d/fly-dm",
-        )),
-        GreeterMessagesState::Missing => report.push(StartupCheckRecord::info(
-            "fly_dm_greeter_messages_default",
-            "fly-dm greeter-show-messages not set in /etc/X11/fly-dm/fly-dmrc — \
-             defaults to off; PAM_TEXT_INFO from pam_certauth will NOT appear on \
-             the lock screen. Fix: same as above",
+        GreetStringState::Default => report.push(StartupCheckRecord::info(
+            "fly_dm_greeter_greet_string_default",
+            "fly-dm GreetString.desktop present but lacks host_id — \
+             run `pam-certauth update-greeter` to inject the ATM identifier \
+             into the login screen banner",
         )),
     }
 }
@@ -148,73 +146,86 @@ mod tests {
     use tempfile::tempdir;
 
     #[test]
-    fn evaluate_enabled_simple() {
-        let txt = "[greeter]\ngreeter-show-messages = true\n";
-        assert_eq!(evaluate_fly_dmrc(txt), GreeterMessagesState::Enabled);
-    }
-
-    #[test]
-    fn evaluate_enabled_yes_case_insensitive() {
-        let txt = "[Greeter]\nGreeter-Show-Messages=Yes\n";
-        assert_eq!(evaluate_fly_dmrc(txt), GreeterMessagesState::Enabled);
-    }
-
-    #[test]
-    fn evaluate_enabled_one() {
-        let txt = "[greeter]\ngreeter-show-messages=1\n";
-        assert_eq!(evaluate_fly_dmrc(txt), GreeterMessagesState::Enabled);
-    }
-
-    #[test]
-    fn evaluate_enabled_true_mixed_case() {
-        let txt = "[greeter]\ngreeter-show-messages = True\n";
-        assert_eq!(evaluate_fly_dmrc(txt), GreeterMessagesState::Enabled);
-    }
-
-    #[test]
-    fn evaluate_disabled_explicit() {
-        let txt = "[greeter]\ngreeter-show-messages = false\n";
+    fn evaluate_customized_single_locale() {
+        let txt = "[Desktop Entry]\n\
+                   Name=Welcome to %n\n\
+                   Name[ru]=Банкомат %n host_id=abc12345\n";
         assert_eq!(
-            evaluate_fly_dmrc(txt),
-            GreeterMessagesState::DisabledExplicit
+            evaluate_greet_string_desktop(txt),
+            GreetStringState::Customized
         );
     }
 
     #[test]
-    fn evaluate_disabled_no() {
-        let txt = "[greeter]\ngreeter-show-messages=no\n";
+    fn evaluate_customized_default_name_only() {
+        let txt = "[Desktop Entry]\nName=ATM host_id=xyz\n";
         assert_eq!(
-            evaluate_fly_dmrc(txt),
-            GreeterMessagesState::DisabledExplicit
+            evaluate_greet_string_desktop(txt),
+            GreetStringState::Customized
         );
     }
 
     #[test]
-    fn evaluate_missing_other_section_only() {
-        let txt = "[other]\ngreeter-show-messages = true\n";
-        assert_eq!(evaluate_fly_dmrc(txt), GreeterMessagesState::Missing);
+    fn evaluate_default_stock_template() {
+        let txt = "[Desktop Entry]\n\
+                   Name=Welcome to %n\n\
+                   Name[ru]=Добро пожаловать в %n\n\
+                   Name[tt]=Монда рәхим итегез: %n\n";
+        assert_eq!(
+            evaluate_greet_string_desktop(txt),
+            GreetStringState::Default
+        );
     }
 
     #[test]
-    fn evaluate_missing_empty_file() {
-        assert_eq!(evaluate_fly_dmrc(""), GreeterMessagesState::Missing);
+    fn evaluate_default_empty_file() {
+        assert_eq!(evaluate_greet_string_desktop(""), GreetStringState::Default);
     }
 
     #[test]
-    fn evaluate_missing_greeter_section_without_option() {
-        let txt = "[greeter]\nfoo = bar\n[daemon]\nbaz=qux\n";
-        assert_eq!(evaluate_fly_dmrc(txt), GreeterMessagesState::Missing);
+    fn evaluate_default_no_section() {
+        let txt = "Name=Foo host_id=bar\n";
+        assert_eq!(
+            evaluate_greet_string_desktop(txt),
+            GreetStringState::Default
+        );
     }
 
     #[test]
-    fn evaluate_only_matches_inside_greeter_section() {
-        // Option appears in [daemon], then [greeter] has nothing relevant.
-        let txt = "[daemon]\ngreeter-show-messages = true\n[greeter]\nfoo = bar\n";
-        assert_eq!(evaluate_fly_dmrc(txt), GreeterMessagesState::Missing);
+    fn evaluate_default_other_section_with_host_id() {
+        // host_id appears in [Other], but [Desktop Entry] is stock.
+        let txt = "[Other]\nName=foo host_id=zzz\n\
+                   [Desktop Entry]\nName=Welcome to %n\n";
+        assert_eq!(
+            evaluate_greet_string_desktop(txt),
+            GreetStringState::Default
+        );
     }
 
     #[test]
-    fn check_silent_skip_when_file_missing() {
+    fn evaluate_customized_multi_locale_one_customized() {
+        let txt = "[Desktop Entry]\n\
+                   Name=Welcome to %n\n\
+                   Name[ru]=Добро пожаловать в %n\n\
+                   Name[en_US]=ATM %n host_id=node42\n\
+                   Name[tt]=Монда рәхим итегез: %n\n";
+        assert_eq!(
+            evaluate_greet_string_desktop(txt),
+            GreetStringState::Customized
+        );
+    }
+
+    #[test]
+    fn evaluate_default_section_without_name_keys() {
+        let txt = "[Desktop Entry]\nType=Application\nComment=foo\n";
+        assert_eq!(
+            evaluate_greet_string_desktop(txt),
+            GreetStringState::Default
+        );
+    }
+
+    #[test]
+    fn check_silent_skip_when_no_fly_dm_root() {
         let tmp = tempdir().expect("tempdir");
         let mut report = StartupCheckReport::default();
         check(Some(tmp.path()), &mut report);
@@ -222,47 +233,54 @@ mod tests {
     }
 
     #[test]
-    fn check_emits_info_when_enabled() {
+    fn check_emits_info_when_override_missing() {
         let tmp = tempdir().expect("tempdir");
-        let dir = tmp.path().join("etc/X11/fly-dm");
-        fs::create_dir_all(&dir).expect("mkdir");
-        fs::write(dir.join("fly-dmrc"), "[greeter]\ngreeter-show-messages = true\n")
-            .expect("write");
+        // fly-dm root exists but override/ subdir + file do not.
+        fs::create_dir_all(tmp.path().join("etc/X11/fly-dm")).expect("mkdir");
         let mut report = StartupCheckReport::default();
         check(Some(tmp.path()), &mut report);
         assert_eq!(report.records.len(), 1);
         let rec = &report.records[0];
         assert_eq!(rec.severity, StartupCheckSeverity::Info);
-        assert_eq!(rec.check, "fly_dm_greeter_messages_on");
+        assert_eq!(rec.check, "fly_dm_greeter_override_missing");
     }
 
     #[test]
-    fn check_emits_info_when_disabled() {
+    fn check_emits_info_when_customized() {
         let tmp = tempdir().expect("tempdir");
-        let dir = tmp.path().join("etc/X11/fly-dm");
+        let dir = tmp.path().join("etc/X11/fly-dm/override");
         fs::create_dir_all(&dir).expect("mkdir");
-        fs::write(dir.join("fly-dmrc"), "[greeter]\ngreeter-show-messages = false\n")
-            .expect("write");
+        fs::write(
+            dir.join("GreetString.desktop"),
+            "[Desktop Entry]\nName[ru]=Банкомат %n host_id=abc12345\n",
+        )
+        .expect("write");
         let mut report = StartupCheckReport::default();
         check(Some(tmp.path()), &mut report);
         assert_eq!(report.records.len(), 1);
         let rec = &report.records[0];
         assert_eq!(rec.severity, StartupCheckSeverity::Info);
-        assert_eq!(rec.check, "fly_dm_greeter_messages_off");
+        assert_eq!(rec.check, "fly_dm_greeter_greet_string_customized");
     }
 
     #[test]
-    fn check_emits_info_when_missing_option() {
+    fn check_emits_info_when_default() {
         let tmp = tempdir().expect("tempdir");
-        let dir = tmp.path().join("etc/X11/fly-dm");
+        let dir = tmp.path().join("etc/X11/fly-dm/override");
         fs::create_dir_all(&dir).expect("mkdir");
-        fs::write(dir.join("fly-dmrc"), "[daemon]\nfoo = bar\n").expect("write");
+        fs::write(
+            dir.join("GreetString.desktop"),
+            "[Desktop Entry]\n\
+             Name=Welcome to %n\n\
+             Name[ru]=Добро пожаловать в %n\n",
+        )
+        .expect("write");
         let mut report = StartupCheckReport::default();
         check(Some(tmp.path()), &mut report);
         assert_eq!(report.records.len(), 1);
         let rec = &report.records[0];
         assert_eq!(rec.severity, StartupCheckSeverity::Info);
-        assert_eq!(rec.check, "fly_dm_greeter_messages_default");
+        assert_eq!(rec.check, "fly_dm_greeter_greet_string_default");
     }
 
     #[cfg(unix)]
@@ -274,10 +292,10 @@ mod tests {
             return;
         }
         let tmp = tempdir().expect("tempdir");
-        let dir = tmp.path().join("etc/X11/fly-dm");
+        let dir = tmp.path().join("etc/X11/fly-dm/override");
         fs::create_dir_all(&dir).expect("mkdir");
-        let p = dir.join("fly-dmrc");
-        fs::write(&p, "[greeter]\ngreeter-show-messages = true\n").expect("write");
+        let p = dir.join("GreetString.desktop");
+        fs::write(&p, "[Desktop Entry]\nName=Welcome to %n\n").expect("write");
         let mut perms = fs::metadata(&p).expect("meta").permissions();
         perms.set_mode(0o000);
         fs::set_permissions(&p, perms).expect("chmod");
