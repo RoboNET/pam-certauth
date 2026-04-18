@@ -1,3 +1,27 @@
+pam-certauth (0.3.15-1) unstable; urgency=medium
+
+  * fly-dm greeter: surface PAM_TEXT_INFO on the lock screen.
+    pam_certauth sends "Этот банкомат: host_id=..." and the
+    p12_wrong_pin_diagnostic via io.show_info(), but fly-dm only
+    forwards info-messages to the greeter UI when
+    `greeter-show-messages = true` is set under `[greeter]` in
+    /etc/X11/fly-dm/fly-dmrc. Without that, operators saw these
+    messages only in journalctl. Two changes address this:
+      - integrate-pam.sh now patches fly-dmrc when the target is
+        /etc/pam.d/fly-dm or fly-dm-np. Idempotent, backs up to
+        fly-dmrc.bak.<UTC>, preserves attrs. Flags
+        --enable-greeter-messages (default ON for fly-dm*) and
+        --no-greeter-messages (CI / non-interactive deploys).
+        --unintegrate does NOT touch fly-dmrc.
+      - New startup-check module `fly_dm_greeter` reads fly-dmrc
+        and emits an Info record on every daemon start / `check`
+        run: fly_dm_greeter_messages_on / _off / _default /
+        _read_failed. Silent skip when the file is absent
+        (sshd-only hosts, server stands). Wired into
+        run_startup_checks and re-exported as check_fly_dm_greeter.
+
+ -- Mikhail Korolev <michael443959@gmail.com>  Sat, 18 Apr 2026 10:30:00 +0300
+
 pam-certauth (0.3.14-1) unstable; urgency=medium
 
   * Build hotfix: 0.3.13 debian/changelog timestamp (12:00 +0300) was
