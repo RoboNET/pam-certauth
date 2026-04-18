@@ -2,13 +2,24 @@
 # integrate-pam.sh — insert "@include <snippet>" + session-line into a PAM service.
 #
 # Usage:
-#   sudo integrate-pam.sh [--mode=2fa|optional|cert-only] <pam.d-file>
+#   sudo integrate-pam.sh [--mode=2fa|optional|cert-only]
+#                         [--enable-greeter-messages|--no-greeter-messages]
+#                         <pam.d-file>
 #   sudo integrate-pam.sh --unintegrate <pam.d-file>
 #
 # Modes (canonical interface, --mode=...):
 #   2fa        snippet=certauth          (default; cert + password, classic 2FA)
 #   optional   snippet=certauth-optional (cert OR password; phased rollout)
 #   cert-only  snippet=certauth-only     (cert is sole factor — LOCKOUT-STRICT)
+#
+# fly-dm greeter tweak (display manager targets only):
+#   When the target is /etc/pam.d/fly-dm or /etc/pam.d/fly-dm-np, this script
+#   also patches /etc/X11/fly-dm/fly-dmrc so that fly-dm forwards
+#   PAM_TEXT_INFO (host_id banner, p12 wrong-pin diagnostic) to the greeter
+#   UI by setting `greeter-show-messages = true` under `[greeter]`.
+#   * --enable-greeter-messages — explicit opt-in (default ON for fly-dm*).
+#   * --no-greeter-messages     — disable (CI / non-interactive deploys).
+#   The tweak is idempotent and never reverted on --unintegrate.
 #
 # Deprecated aliases (still accepted for BC, emit deprecation note on stderr):
 #   --strict     ≡ --mode=2fa
@@ -41,6 +52,8 @@ set -euo pipefail
 
 snippet="certauth"
 mode_op="integrate"
+# greeter_messages: "" (auto = ON for fly-dm targets), "on", "off".
+greeter_messages=""
 
 mode_to_snippet() {
     case "$1" in
@@ -82,6 +95,14 @@ while [[ $# -gt 0 ]]; do
             mode_op="unintegrate"
             shift
             ;;
+        --enable-greeter-messages)
+            greeter_messages="on"
+            shift
+            ;;
+        --no-greeter-messages)
+            greeter_messages="off"
+            shift
+            ;;
         --)
             shift
             break
@@ -97,7 +118,7 @@ while [[ $# -gt 0 ]]; do
 done
 
 if [[ $# -ne 1 ]]; then
-    echo "usage: $0 [--mode=2fa|optional|cert-only|--unintegrate] <pam.d-file>" >&2
+    echo "usage: $0 [--mode=2fa|optional|cert-only] [--enable-greeter-messages|--no-greeter-messages] [--unintegrate] <pam.d-file>" >&2
     echo "       --mode=cert-only is the lockout-strict mode (no password fallback)" >&2
     exit 64
 fi
@@ -271,3 +292,134 @@ msg_parts=()
 [[ $need_include -eq 1 ]] && msg_parts+=("${snippet}")
 [[ $need_session -eq 1 ]] && msg_parts+=("session-line")
 echo "info: $target updated (${msg_parts[*]})"
+
+# -----------------------------------------------------------------------------
+# Optional: patch /etc/X11/fly-dm/fly-dmrc so PAM_TEXT_INFO surfaces in the
+# fly-dm greeter UI. Only runs when target is fly-dm or fly-dm-np.
+# -----------------------------------------------------------------------------
+FLYDM_CONFIG="/etc/X11/fly-dm/fly-dmrc"
+
+patch_fly_dmrc() {
+    local cfg="$1"
+    if [[ ! -f "$cfg" ]]; then
+        echo "info: $cfg not found, skipping greeter-messages tweak"
+        return 1
+    fi
+
+    # Idempotence: option already true under [greeter]?
+    if awk '
+        BEGIN { in_g = 0; found = 0 }
+        /^[[:space:]]*\[/ {
+            line = $0
+            sub(/^[[:space:]]*\[/, "", line); sub(/\].*$/, "", line)
+            gsub(/[[:space:]]/, "", line)
+            in_g = (tolower(line) == "greeter") ? 1 : 0
+            next
+        }
+        in_g && /^[[:space:]]*[Gg][Rr][Ee][Ee][Tt][Ee][Rr]-[Ss][Hh][Oo][Ww]-[Mm][Ee][Ss][Ss][Aa][Gg][Ee][Ss][[:space:]]*=/ {
+            v = $0
+            sub(/^[^=]*=[[:space:]]*/, "", v)
+            sub(/[[:space:]#;].*$/, "", v)
+            if (tolower(v) == "true" || tolower(v) == "yes" || v == "1") { found = 1 }
+            exit
+        }
+        END { exit (found ? 0 : 1) }
+    ' "$cfg"; then
+        echo "info: $cfg already has greeter-show-messages = true (no-op)"
+        return 1
+    fi
+
+    local ts_local
+    ts_local="$(date -u +%Y%m%dT%H%M%SZ)"
+    local backup_local="${cfg}.bak.${ts_local}"
+    cp -p "$cfg" "$backup_local"
+    echo "info: backup written to $backup_local"
+
+    local tmp_cfg
+    tmp_cfg="$(mktemp "${cfg}.XXXXXX")"
+
+    # First, classify: does [greeter] section exist? does the option already exist?
+    local scan
+    scan="$(awk '
+        BEGIN { in_g = 0; have_greeter = 0; have_opt = 0 }
+        /^[[:space:]]*\[/ {
+            sname = $0
+            sub(/^[[:space:]]*\[/, "", sname); sub(/\].*$/, "", sname)
+            gsub(/[[:space:]]/, "", sname)
+            if (tolower(sname) == "greeter") { in_g = 1; have_greeter = 1 } else { in_g = 0 }
+            next
+        }
+        in_g && /^[[:space:]]*[Gg][Rr][Ee][Ee][Tt][Ee][Rr]-[Ss][Hh][Oo][Ww]-[Mm][Ee][Ss][Ss][Aa][Gg][Ee][Ss][[:space:]]*=/ {
+            have_opt = 1
+        }
+        END { print have_greeter "," have_opt }
+    ' "$cfg")"
+    local have_greeter="${scan%,*}"
+    local have_opt="${scan#*,}"
+
+    if [[ "$have_opt" == "1" ]]; then
+        # Replace in-place inside [greeter] section.
+        awk '
+            BEGIN { in_g = 0 }
+            /^[[:space:]]*\[/ {
+                sname = $0
+                sub(/^[[:space:]]*\[/, "", sname); sub(/\].*$/, "", sname)
+                gsub(/[[:space:]]/, "", sname)
+                if (tolower(sname) == "greeter") { in_g = 1 } else { in_g = 0 }
+                print
+                next
+            }
+            in_g && /^[[:space:]]*[Gg][Rr][Ee][Ee][Tt][Ee][Rr]-[Ss][Hh][Oo][Ww]-[Mm][Ee][Ss][Ss][Aa][Gg][Ee][Ss][[:space:]]*=/ {
+                print "greeter-show-messages = true"
+                next
+            }
+            { print }
+        ' "$cfg" > "$tmp_cfg"
+    elif [[ "$have_greeter" == "1" ]]; then
+        # Insert immediately after the [greeter] header.
+        awk '
+            BEGIN { inserted = 0 }
+            {
+                print
+                if (inserted == 0) {
+                    line = $0
+                    sname = line
+                    sub(/^[[:space:]]*\[/, "", sname); sub(/\].*$/, "", sname)
+                    gsub(/[[:space:]]/, "", sname)
+                    if (line ~ /^[[:space:]]*\[/ && tolower(sname) == "greeter") {
+                        print "greeter-show-messages = true"
+                        inserted = 1
+                    }
+                }
+            }
+        ' "$cfg" > "$tmp_cfg"
+    else
+        # No section at all: append.
+        cp "$cfg" "$tmp_cfg"
+        # Ensure newline separation before new section.
+        if [[ -s "$tmp_cfg" ]] && [[ "$(tail -c1 "$tmp_cfg" | od -An -c | tr -d ' ')" != '\n' ]]; then
+            printf '\n' >> "$tmp_cfg"
+        fi
+        printf '\n[greeter]\ngreeter-show-messages = true\n' >> "$tmp_cfg"
+    fi
+
+    preserve_attrs "$cfg" "$tmp_cfg"
+    mv "$tmp_cfg" "$cfg"
+    echo "info: $cfg updated (greeter-show-messages=true)"
+    return 0
+}
+
+target_basename="$(basename -- "$target")"
+if [[ "$target_basename" == "fly-dm" || "$target_basename" == "fly-dm-np" ]]; then
+    case "$greeter_messages" in
+        off)
+            : # explicit opt-out
+            ;;
+        on|"")
+            # default ON for fly-dm/fly-dm-np
+            if patch_fly_dmrc "$FLYDM_CONFIG"; then
+                echo "info: restart fly-dm to apply greeter changes: systemctl restart fly-dm"
+            fi
+            ;;
+    esac
+fi
