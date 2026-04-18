@@ -1,3 +1,33 @@
+pam-certauth (0.3.16-1) unstable; urgency=medium
+
+  * fly-dm greeter pivot: revert the fly-dmrc `greeter-show-messages`
+    cargo-cult from 0.3.15 and switch to the mechanism that actually
+    works on Astra fly-qdm 2.15+ — /etc/X11/fly-dm/override/
+    GreetString.desktop (freedesktop i18n .desktop file). The
+    previous patch targeted a KDM/LightDM legacy key that fly-qdm
+    does not parse; live testing on the Astra VM confirmed the new
+    path renders host_id directly in the login-form headline.
+  * New opt-in feature: when [fly_dm_greeter].update_greet_string =
+    true, pam-certauth resolves the host identity on each daemon
+    start and rewrites GreetString.desktop with the short hash and
+    source, e.g.
+        Банкомат astra184 · host_id=abc12345 (dmi_board_serial)
+    The original file is preserved as .orig on first run. Atomic
+    write (tmpfile + rename). Silent skip on hosts without
+    /etc/X11/fly-dm/. Failures log-and-continue (auth never blocked
+    by a greeter write).
+  * debconf prompt added to debian/postinst (en + ru) so dpkg
+    install asks the operator whether to enable the banner;
+    defaults to off. debconf added to Depends.
+  * `pam-certauth check` validator pivoted to the new file: reports
+    fly_dm_greeter_greet_string_customized / _default /
+    _override_missing / _read_failed as Info records.
+  * integrate-pam.sh: removed the --enable-greeter-messages /
+    --no-greeter-messages flags and the fly-dmrc patcher introduced
+    in 0.3.15. Script is back to PAM-stack-editing only.
+
+ -- Mikhail Korolev <michael443959@gmail.com>  Sat, 18 Apr 2026 16:25:00 +0300
+
 pam-certauth (0.3.15-1) unstable; urgency=medium
 
   * fly-dm greeter: surface PAM_TEXT_INFO on the lock screen.
