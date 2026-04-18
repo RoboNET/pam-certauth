@@ -134,6 +134,41 @@ async fn run_async(args: DaemonArgs) -> anyhow::Result<()> {
         );
     }
 
+    // Astra greeter banner: resolve the host identity once and (when
+    // enabled) write the GreetString.desktop override so the ATM
+    // host_id is visible above the fly-dm login form. Failures MUST NOT
+    // block startup — a broken filesystem is not a reason to refuse
+    // authentication. We log and continue. Without this banner the
+    // daemon still works (the `host_id` PAM_TEXT_INFO from flow.rs
+    // remains as universal fallback for TTY/sshd).
+    {
+        let resolver = pam_certauth_core::host_identity::HostIdentityResolver::from_validated(
+            &validated.host_identity,
+            std::path::PathBuf::from("/"),
+        );
+        match resolver.resolve() {
+            Ok(resolved) => {
+                match crate::fly_dm_greeter_writer::update(&validated.fly_dm_greeter, &resolved) {
+                    Ok(outcome) => tracing::info!(
+                        target: "pam_certauth.fly_dm_greeter",
+                        ?outcome,
+                        "fly-dm greeter update finished"
+                    ),
+                    Err(e) => tracing::warn!(
+                        target: "pam_certauth.fly_dm_greeter",
+                        error = %e,
+                        "fly-dm greeter update failed (continuing)"
+                    ),
+                }
+            }
+            Err(e) => tracing::warn!(
+                target: "pam_certauth.fly_dm_greeter",
+                error = %e,
+                "host identity resolution failed for greeter update"
+            ),
+        }
+    }
+
     let monitor_cfg = &validated.monitor;
 
     let socket_path = args

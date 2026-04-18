@@ -27,7 +27,8 @@ Depends:
  ${misc:Depends},
  libpam0g,
  lsb-base (>= 3.0-6),
- adduser
+ adduser,
+ debconf (>= 0.5) | debconf-2.0
 # libgost-engine: loaded lazily at runtime, only when the verified chain
 # contains GOST-signed certs. Pure RSA deployments do not need it; on
 # Astra hosts the package is named libgost-astra.

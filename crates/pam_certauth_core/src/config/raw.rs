@@ -92,6 +92,45 @@ pub struct RawConfig {
     /// no fallback, `warn_on_homedir_label_mismatch` = true).
     #[serde(default)]
     pub mac: RawMacPolicy,
+    /// Astra fly-dm greeter banner section. Optional; when absent the
+    /// validated layer applies defaults (`update_greet_string = false`,
+    /// stock template values).
+    #[serde(default)]
+    pub fly_dm_greeter: Option<RawFlyDmGreeter>,
+}
+
+/// Raw `[fly_dm_greeter]` block: Astra fly-dm login-screen banner integration.
+///
+/// When `update_greet_string = true`, on each daemon start `pam-certauth`
+/// writes the resolved `host_id` short prefix into
+/// `/etc/X11/fly-dm/override/GreetString.desktop` so the ATM identifier
+/// is visible above the login form. Opt-in; default is `false`. Templates
+/// support the placeholders `{host_id_short}` (8-char hex prefix of the
+/// SHA-256 `host_id`) and `{source}` (`snake_case` source kind such as
+/// `dmi_board_serial`). The .desktop file's own `%n`, `%h`, `%d`
+/// substitutions are performed by fly-dm itself and are passed through
+/// unchanged.
+#[derive(Debug, Clone, Default, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RawFlyDmGreeter {
+    /// When true, the daemon (on start) rewrites GreetString.desktop with
+    /// the resolved `host_id`; when false (default), the file is left
+    /// untouched.
+    #[serde(default)]
+    pub update_greet_string: Option<bool>,
+    /// Absolute path to the GreetString.desktop file. Default
+    /// `/etc/X11/fly-dm/override/GreetString.desktop`.
+    #[serde(default)]
+    pub override_path: Option<String>,
+    /// Template for the `Name=` (default / English) line.
+    #[serde(default)]
+    pub template_en: Option<String>,
+    /// Template for the `Name[ru]=` line.
+    #[serde(default)]
+    pub template_ru: Option<String>,
+    /// Template for the `Name[tt]=` line. Omitted from output when not set.
+    #[serde(default)]
+    pub template_tt: Option<String>,
 }
 
 const fn default_usb_wait_seconds() -> u64 {
