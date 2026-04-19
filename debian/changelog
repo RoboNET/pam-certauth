@@ -1,3 +1,25 @@
+pam-certauth (0.3.17-1) unstable; urgency=medium
+
+  * CI-only release: cut per-build pipeline time.
+    - astra job now runs `cargo nextest run --workspace --features
+      astra-mac` in debug profile. The previous --release run took
+      510s vs ubuntu's 56s (9.1×) because the workflow-level
+      CARGO_PROFILE_RELEASE_CODEGEN_UNITS=1 + LTO=thin env (needed
+      for the production .deb) makes release-mode test compilation
+      catastrophically slow. Tests still exercise the astra-mac
+      feature gate; the final .deb is unchanged and continues to
+      build in release with LTO via dpkg-buildpackage.
+    - scripts/build-deb.sh no longer runs `cargo clean && cargo
+      build --release` before `dpkg-buildpackage`. debian/rules
+      already wiped target/ via override_dh_auto_clean and rebuilt
+      via override_dh_auto_build, so the pre-build was pure
+      duplicated work (~60s per pipeline). dpkg-buildpackage now
+      drives the release build end to end.
+  * No source-code changes vs 0.3.16. Same .deb behaviour, faster
+    CI.
+
+ -- Mikhail Korolev <michael443959@gmail.com>  Sun, 19 Apr 2026 11:30:00 +0300
+
 pam-certauth (0.3.16-1) unstable; urgency=medium
 
   * fly-dm greeter pivot: revert the fly-dmrc `greeter-show-messages`
