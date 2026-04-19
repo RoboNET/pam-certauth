@@ -51,6 +51,8 @@ sha2 = { workspace = true }
 hex = { workspace = true }
 signal-hook = { workspace = true }
 openssl = { workspace = true }
+image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
+ab_glyph = "0.2"
 
 [target.'cfg(target_os = "linux")'.dependencies]
 udev = { workspace = true }

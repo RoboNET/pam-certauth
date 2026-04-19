@@ -134,13 +134,15 @@ async fn run_async(args: DaemonArgs) -> anyhow::Result<()> {
         );
     }
 
-    // Astra greeter banner: resolve the host identity once and (when
-    // enabled) write the GreetString.desktop override so the ATM
-    // host_id is visible above the fly-dm login form. Failures MUST NOT
-    // block startup — a broken filesystem is not a reason to refuse
-    // authentication. We log and continue. Without this banner the
-    // daemon still works (the `host_id` PAM_TEXT_INFO from flow.rs
-    // remains as universal fallback for TTY/sshd).
+    // Astra greeter wallpaper: resolve the host identity once and (when
+    // enabled) bake the host_id into the fly-dm login-screen background
+    // JPG so it is visible to the ATM operator. On Astra МКЦ-3 the
+    // fly-modern theme hard-codes the headline string and ignores
+    // GreetString, so the wallpaper is the only reliable surface. Failures
+    // MUST NOT block startup — a broken filesystem / missing image is not
+    // a reason to refuse authentication. We log and continue. Without
+    // this banner the daemon still works (the `host_id` PAM_TEXT_INFO
+    // from flow.rs remains as universal fallback for TTY/sshd/sudo).
     {
         let resolver = pam_certauth_core::host_identity::HostIdentityResolver::from_validated(
             &validated.host_identity,
@@ -148,23 +150,26 @@ async fn run_async(args: DaemonArgs) -> anyhow::Result<()> {
         );
         match resolver.resolve() {
             Ok(resolved) => {
-                match crate::fly_dm_greeter_writer::update(&validated.fly_dm_greeter, &resolved) {
+                match crate::fly_dm_wallpaper_writer::update(
+                    &validated.fly_dm_greeter,
+                    &resolved,
+                ) {
                     Ok(outcome) => tracing::info!(
                         target: "pam_certauth.fly_dm_greeter",
                         ?outcome,
-                        "fly-dm greeter update finished"
+                        "fly-dm wallpaper update finished"
                     ),
                     Err(e) => tracing::warn!(
                         target: "pam_certauth.fly_dm_greeter",
                         error = %e,
-                        "fly-dm greeter update failed (continuing)"
+                        "fly-dm wallpaper update failed (continuing)"
                     ),
                 }
             }
             Err(e) => tracing::warn!(
                 target: "pam_certauth.fly_dm_greeter",
                 error = %e,
-                "host identity resolution failed for greeter update"
+                "host identity resolution failed for wallpaper update"
             ),
         }
     }
