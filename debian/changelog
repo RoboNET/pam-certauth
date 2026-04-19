@@ -1,3 +1,21 @@
+pam-certauth (0.3.18-1) unstable; urgency=medium
+
+  * Packaging cleanup: drop the fly-dm greeter debconf prompt added
+    in 0.3.16. Operators deploy this with prepared config.toml files
+    via Ansible / centralized rollout; the debconf step at dpkg
+    install time was only ever flipping a flag in config.toml and
+    added moving parts (debconf templates, debconf dep, postinst
+    branching) without changing production behaviour.
+  * Daemon-side feature is unchanged: setting
+    [fly_dm_greeter].update_greet_string = true in config.toml still
+    makes pam-certauth rewrite /etc/X11/fly-dm/override/GreetString.
+    desktop at startup. See dist/config/config.toml.example.
+  * Removed: debian/templates, debian/config, the debconf branch in
+    debian/postinst, debconf from debian/control Depends, and
+    confmodule sourcing at the top of postinst.
+
+ -- Mikhail Korolev <michael443959@gmail.com>  Sun, 19 Apr 2026 13:05:00 +0300
+
 pam-certauth (0.3.17-1) unstable; urgency=medium
 
   * CI-only release: cut per-build pipeline time.
