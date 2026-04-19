@@ -7,14 +7,6 @@ CONFIG_DIR=/etc/pam_certauth
 CACHE_DIR=/var/cache/pam_certauth/ocsp
 STATE_DIR=/var/lib/pam_certauth
 
-# debconf is best-effort: when the frontend is unavailable (e.g. minimal
-# CI chroot) the rest of postinst must still work, so we tolerate a missing
-# /usr/share/debconf/confmodule.
-if [ -r /usr/share/debconf/confmodule ]; then
-    # shellcheck disable=SC1091
-    . /usr/share/debconf/confmodule
-fi
-
 case "$1" in
     configure)
         # Create the dedicated system user the daemon runs as. Idempotent:
@@ -135,32 +127,6 @@ case "$1" in
             echo "Note: МКЦ (MAC integrity) support is opt-in." >&2
             echo "      See /usr/share/pam-certauth/systemd/mac-integrity.conf.example" >&2
             echo "      and docs/install.md for the activation procedure." >&2
-        fi
-
-        # ------------------------------------------------------------------
-        # Astra fly-dm greeter banner: apply the debconf opt-in answer.
-        # We only touch /etc/pam_certauth/config.toml when:
-        #   * debconf says enable=true, AND
-        #   * config.toml exists (we don't generate it from scratch — operator
-        #     still has to copy config.toml.example as documented below).
-        # Append a fresh [fly_dm_greeter] section when missing; otherwise
-        # flip an explicit `update_greet_string = false` to `true`. Any
-        # other shape (already true, custom paths, commented-out section)
-        # is left intact so we don't clobber operator edits.
-        if command -v db_get >/dev/null 2>&1; then
-            db_get pam-certauth/enable-fly-dm-greeter || true
-            if [ "$RET" = "true" ] && [ -f "$CONFIG_DIR/config.toml" ]; then
-                if ! grep -qE '^[[:space:]]*\[fly_dm_greeter\]' "$CONFIG_DIR/config.toml"; then
-                    {
-                        printf '\n[fly_dm_greeter]\n'
-                        printf 'update_greet_string = true\n'
-                    } >> "$CONFIG_DIR/config.toml"
-                elif grep -qE '^[[:space:]]*update_greet_string[[:space:]]*=[[:space:]]*false' \
-                        "$CONFIG_DIR/config.toml"; then
-                    sed -i 's/^[[:space:]]*update_greet_string[[:space:]]*=[[:space:]]*false/update_greet_string = true/' \
-                        "$CONFIG_DIR/config.toml"
-                fi
-            fi
         fi
 
         # Print one-time setup hint if no config has been deployed yet.
