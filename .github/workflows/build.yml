@@ -51,7 +51,13 @@ jobs:
           - id: astra
             container: "ghcr.io/robonet/pam-certauth-astra-builder:latest"
             features: "astra-mac"
-            test_cmd: "cargo nextest run --workspace --features astra-mac --release"
+            # NB: tests run in debug profile (no --release). Workflow-level
+            # env forces release builds to codegen-units=1 + LTO=thin which
+            # are needed for the final .deb but kill test compile time —
+            # baseline run #25 spent 510s compiling tests vs 56s on ubuntu.
+            # Production release-mode validation lives in a separate
+            # nightly workflow.
+            test_cmd: "cargo nextest run --workspace --features astra-mac"
             build_extra: "--skip-lintian"
             artifact_name: pam-certauth-deb-astra
             skip_lintian: true
