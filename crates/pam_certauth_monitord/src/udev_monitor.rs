@@ -111,7 +111,7 @@ fn run_monitor(
     // Best effort: udev sockets default to non-blocking on the kernel side,
     // but we still poll with a short timeout so the shutdown token is
     // honoured promptly.
-    let mut iter = socket;
+    let iter = socket;
     let _ = iter.as_raw_fd(); // sanity check that the fd is valid
     loop {
         if shutdown.is_cancelled() {

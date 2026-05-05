@@ -43,13 +43,13 @@ Next steps:
   1. cp /etc/pam_certauth/config.toml.example /etc/pam_certauth/config.toml
      and edit it for your site (CA bundle, host_identity, user_mapping).
   2. Drop CA bundle into /etc/pam_certauth/ca/bundle.pem (mode 0640).
-  3. Optional: cp /etc/pam_certauth/host_acl.toml.example /etc/pam_certauth/host_acl.toml
+  3. Authorisation is cert-driven (X.509 v3 extensions on the leaf):
+     pam_cert_host_binding + pam_cert_user_binding control which hosts
+     and which local accounts a cert may sign in to. See README.
   4. systemctl enable --now pam-certauth-monitord.service
   5. Integrate the PAM stack:
         sudo /usr/share/pam-certauth/integrate-pam.sh /etc/pam.d/sudo
         sudo /usr/share/pam-certauth/integrate-pam.sh /etc/pam.d/fly-dm
-
-See /usr/share/doc/pam-certauth/stage-7-deployment.md.gz for a full runbook.
 ==============================================================
 EOF
         fi

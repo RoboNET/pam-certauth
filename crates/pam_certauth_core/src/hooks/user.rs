@@ -93,7 +93,7 @@ pub fn lookup_user(name: &str) -> Result<UserInfo, HookError> {
 )))]
 fn group_list(name: &std::ffi::CStr, primary_gid: u32) -> Result<Vec<u32>, i32> {
     match nix::unistd::getgrouplist(name, nix::unistd::Gid::from_raw(primary_gid)) {
-        Ok(gs) => Ok(gs.iter().map(nix::unistd::Gid::as_raw).collect()),
+        Ok(gs) => Ok(gs.into_iter().map(nix::unistd::Gid::as_raw).collect()),
         Err(errno) => Err(errno as i32),
     }
 }

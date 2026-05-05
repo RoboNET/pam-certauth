@@ -9,6 +9,12 @@
 //! ```
 
 #![cfg(target_os = "linux")]
+#![allow(
+    clippy::expect_used,
+    clippy::unwrap_used,
+    clippy::panic,
+    clippy::manual_let_else
+)]
 
 use pam_certauth_core::mount::usb::{mount_usb_device, MountError};
 use pam_certauth_core::usb::UsbDevice;
@@ -45,6 +51,9 @@ fn rejects_disallowed_fs_on_real_kernel() {
         fs_type: Some("xfs".into()),
     };
     let mp = tempfile::tempdir().unwrap();
-    let err = mount_usb_device(&dev, mp.path()).unwrap_err();
+    let err = match mount_usb_device(&dev, mp.path()) {
+        Err(e) => e,
+        Ok(_) => panic!("expected UnsupportedFs error"),
+    };
     assert!(matches!(err, MountError::UnsupportedFs(_)));
 }

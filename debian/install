@@ -1,6 +1,5 @@
 dist/systemd/pam-certauth-monitord.service  lib/systemd/system
 dist/tmpfiles/pam-certauth.conf             usr/lib/tmpfiles.d
 dist/config/config.toml.example             etc/pam_certauth
-dist/config/host_acl.toml.example           etc/pam_certauth
 dist/pam.d/certauth                         etc/pam.d
 dist/scripts/integrate-pam.sh               usr/share/pam-certauth

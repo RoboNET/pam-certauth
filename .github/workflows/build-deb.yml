@@ -24,6 +24,7 @@ jobs:
           sudo DEBIAN_FRONTEND=noninteractive apt-get install -y \
             debhelper dh-cargo \
             libssl-dev libudev-dev libdbus-1-dev libpam0g-dev libsystemd-dev \
+            clang libclang-dev \
             pkg-config lintian devscripts fakeroot build-essential
 
       - name: Install Rust toolchain (pinned, satisfies workspace rust-version)
@@ -62,14 +63,16 @@ jobs:
       - name: Show deb contents
         run: dpkg -c ../pam-certauth_*.deb
 
+      - name: Stage artifacts inside workspace
+        run: |
+          mkdir -p artifacts
+          cp ../pam-certauth_*.deb ../pam-certauth_*.changes ../pam-certauth_*.buildinfo artifacts/
+
       - name: Upload .deb artifact
         uses: actions/upload-artifact@v4
         with:
           name: pam-certauth-deb
-          path: |
-            ../pam-certauth_*.deb
-            ../pam-certauth_*.changes
-            ../pam-certauth_*.buildinfo
+          path: artifacts/*
           if-no-files-found: error
           retention-days: 30
 

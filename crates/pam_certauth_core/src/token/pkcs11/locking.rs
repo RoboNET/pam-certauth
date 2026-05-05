@@ -125,9 +125,19 @@ mod tests {
     )]
 
     use super::*;
+    use std::sync::Mutex as StdMutex;
+
+    /// Test-only serializer: the two tests below both observe
+    /// [`HELD_COUNT`] (a process-global atomic). When cargo runs them in
+    /// parallel, one test's `Mutex`-mode critical section can race with
+    /// the other's `Os`-mode probe and falsely flip `held = true`. We
+    /// take a tiny per-test-binary mutex around both tests so they run
+    /// sequentially — without affecting production behaviour.
+    static TEST_SERIALIZER: StdMutex<()> = StdMutex::new(());
 
     #[test]
     fn os_mode_does_not_set_held_flag() {
+        let _g = TEST_SERIALIZER.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         let observed = with_global_lock(LockingMode::Os, mutex_currently_held);
         assert!(
             !observed,
@@ -137,6 +147,7 @@ mod tests {
 
     #[test]
     fn mutex_mode_sets_held_flag_inside_closure() {
+        let _g = TEST_SERIALIZER.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         let observed = with_global_lock(LockingMode::Mutex, mutex_currently_held);
         assert!(observed, "Mutex mode must set the held flag inside closure");
         // After the call returns, the flag clears again.

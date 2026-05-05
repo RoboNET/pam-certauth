@@ -1,18 +1,7 @@
 # pam_certauth lintian overrides - each must include a justification.
 #
-# These tags are pre-emptively whitelisted because they reflect the design
-# of the package, not actual policy violations. After a real `lintian` run
-# on Ubuntu 22.04 / Astra SE this file should be re-tightened: keep only
-# the tags that actually fire and add justifications for any new ones.
-
-# The PAM module lives at /lib/security/pam_certauth.so (FHS exception for
-# PAM); lintian flags this as a "library in deprecated location".
-pam-certauth: shared-library-lacks-prerequisites lib/security/pam_certauth.so
-
-# /lib/security is owned by libpam-runtime; we install a single .so there.
-pam-certauth: dir-or-file-in-non-standard-location lib/security/pam_certauth.so
-
-# We deliberately do not auto-start the systemd service on install, because
-# config files must be deployed first. lintian flags this as a "package
-# providing a service that does not start it".
-pam-certauth: systemd-service-file-refers-to-unusual-wantedby-target lib/systemd/system/pam-certauth-monitord.service multi-user.target
+# Currently empty: lintian on Ubuntu 22.04 emits only warnings/info tags
+# we explicitly accept (no-manual-page on the daemon, initial-upload, and
+# maintainer-script-calls-systemctl in prerm — all expected for an
+# auth-stack binary). Add overrides here only after a fresh lintian run
+# proves the tag actually fires under the matching name.

@@ -20,6 +20,12 @@ impl MountFlags {
     pub const RO: Self = Self(1 << 3);
     /// NOATIME.
     pub const NOATIME: Self = Self(1 << 4);
+
+    /// Whether `self` has every bit set in `other`.
+    #[must_use]
+    pub const fn contains(self, other: Self) -> bool {
+        self.0 & other.0 == other.0
+    }
 }
 
 impl std::ops::BitOr for MountFlags {

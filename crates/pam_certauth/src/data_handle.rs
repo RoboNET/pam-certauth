@@ -22,12 +22,12 @@ const PAM_SUCCESS: c_int = pam_sys::PAM_SUCCESS as c_int;
 
 extern "C" {
     fn pam_set_data(
-        pamh: *mut pam_sys::PamHandle,
+        pamh: *mut pam_sys::pam_handle_t,
         module_data_name: *const c_char,
         data: *mut c_void,
         cleanup: Option<
             unsafe extern "C" fn(
-                pamh: *mut pam_sys::PamHandle,
+                pamh: *mut pam_sys::pam_handle_t,
                 data: *mut c_void,
                 error_status: c_int,
             ),
@@ -35,7 +35,7 @@ extern "C" {
     ) -> c_int;
 
     fn pam_get_data(
-        pamh: *const pam_sys::PamHandle,
+        pamh: *const pam_sys::pam_handle_t,
         module_data_name: *const c_char,
         data: *mut *const c_void,
     ) -> c_int;
@@ -50,7 +50,7 @@ extern "C" {
 /// [`set_auth_context`]; PAM is the only caller and it adheres to that
 /// contract.
 unsafe extern "C" fn auth_context_cleanup(
-    _pamh: *mut pam_sys::PamHandle,
+    _pamh: *mut pam_sys::pam_handle_t,
     data: *mut c_void,
     _error_status: c_int,
 ) {
@@ -82,7 +82,7 @@ pub enum DataHandleError {
 ///
 /// Returns [`DataHandleError::PamRc`] when `pam_set_data` fails.
 pub unsafe fn set_auth_context(
-    pamh: *mut pam_sys::PamHandle,
+    pamh: *mut pam_sys::pam_handle_t,
     ctx: AuthContext,
 ) -> Result<(), DataHandleError> {
     let key = CString::new(DATA_KEY).map_err(|_| DataHandleError::BadKey)?;
@@ -110,11 +110,11 @@ pub unsafe fn set_auth_context(
 /// `pamh` must be a live PAM handle.  The returned reference borrows
 /// from PAM-owned memory and MUST NOT outlive the surrounding `pam_sm_*`
 /// call.
-pub unsafe fn get_auth_context<'a>(pamh: *mut pam_sys::PamHandle) -> Option<&'a AuthContext> {
+pub unsafe fn get_auth_context<'a>(pamh: *mut pam_sys::pam_handle_t) -> Option<&'a AuthContext> {
     let key = CString::new(DATA_KEY).ok()?;
     let mut data_ptr: *const c_void = std::ptr::null();
     // SAFETY: `pamh` is live; `data_ptr` is a valid out-pointer.
-    let rc = pam_get_data(pamh.cast_const(), key.as_ptr(), &mut data_ptr);
+    let rc = pam_get_data(pamh.cast_const(), key.as_ptr(), &raw mut data_ptr);
     if rc != PAM_SUCCESS || data_ptr.is_null() {
         return None;
     }

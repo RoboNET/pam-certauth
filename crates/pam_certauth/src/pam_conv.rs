@@ -11,7 +11,7 @@
 //! `pam_certauth_core::pkcs12::acquire_p12_material_with_prompter`.
 
 #![cfg(target_os = "linux")]
-#![allow(unsafe_code)]
+#![allow(unsafe_code, clippy::similar_names)]
 
 use std::ffi::{CStr, CString};
 use std::os::raw::{c_char, c_int, c_void};
@@ -68,7 +68,7 @@ extern "C" {
     /// `pam_get_item` is exposed by pam-sys but with a varying signature; we
     /// re-declare it to a known-stable shape.
     fn pam_get_item(
-        pamh: *mut pam_sys::PamHandle,
+        pamh: *mut pam_sys::pam_handle_t,
         item_type: c_int,
         item: *mut *const c_void,
     ) -> c_int;
@@ -95,14 +95,14 @@ extern "C" {
 ///   or produced a NULL response.
 /// * [`PamConvError::NonUtf8`] — the response is not valid UTF-8.
 pub unsafe fn prompt_pin(
-    pamh: *mut pam_sys::PamHandle,
+    pamh: *mut pam_sys::pam_handle_t,
     prompt: &str,
 ) -> Result<SecretString, PamConvError> {
     // SAFETY: PAM guarantees `pamh` is non-null and `pam_get_item` accepts a
     // valid out-pointer.  We initialise `conv_ptr` to NULL and check the rc
     // before dereferencing.
     let mut conv_ptr: *const c_void = std::ptr::null();
-    let rc = pam_get_item(pamh, PAM_CONV, &mut conv_ptr);
+    let rc = pam_get_item(pamh, PAM_CONV, &raw mut conv_ptr);
     if rc != PAM_SUCCESS || conv_ptr.is_null() {
         return Err(PamConvError::NoConv);
     }
@@ -121,13 +121,13 @@ pub unsafe fn prompt_pin(
         msg: c_prompt.as_ptr(),
     };
     // PAM expects an array-of-pointers.  Use a stack-allocated 1-elem array.
-    let msg_ptr: *const PamMessage = &msg;
+    let msg_ptr: *const PamMessage = &raw const msg;
     let mut msg_arr: [*const PamMessage; 1] = [msg_ptr];
     let mut resp_ptr: *mut PamResponse = std::ptr::null_mut();
 
     // SAFETY: `msg_arr` and `resp_ptr` are both valid for the duration of
     // this call.  PAM allocates `*resp_ptr` on success — we own freeing it.
-    let rc = conv_fn(1, msg_arr.as_mut_ptr(), &mut resp_ptr, conv.appdata_ptr);
+    let rc = conv_fn(1, msg_arr.as_mut_ptr(), &raw mut resp_ptr, conv.appdata_ptr);
     if rc != PAM_SUCCESS || resp_ptr.is_null() {
         return Err(PamConvError::ConvFailed);
     }
@@ -169,7 +169,7 @@ pub unsafe fn prompt_pin(
 /// caller MUST ensure the closure does not outlive the PAM stack frame that
 /// owns `pamh` (i.e. do not store the closure across `pam_sm_*` boundaries).
 pub unsafe fn closure_from_pamh(
-    pamh: *mut pam_sys::PamHandle,
+    pamh: *mut pam_sys::pam_handle_t,
 ) -> impl FnMut(&str) -> Result<SecretString, PamConvError> {
     move |prompt: &str| {
         // SAFETY: `pamh` was provided by PAM and is valid for the duration

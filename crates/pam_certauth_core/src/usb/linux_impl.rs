@@ -7,6 +7,7 @@
 
 use super::{UsbDevice, UsbError};
 use std::ffi::OsStr;
+use std::os::fd::AsFd;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
@@ -58,7 +59,7 @@ pub(super) fn wait_for_usb_real(
             return Err(UsbError::Timeout);
         }
         let remaining = deadline.saturating_duration_since(now);
-        let remaining_ms = i32::try_from(remaining.as_millis()).unwrap_or(i32::MAX);
+        let remaining_ms = u16::try_from(remaining.as_millis()).unwrap_or(u16::MAX);
 
         // Drain whatever is already queued without blocking.
         for event in socket.iter() {
@@ -66,8 +67,7 @@ pub(super) fn wait_for_usb_real(
                 let dev_ref = event.device();
                 if dev_ref
                     .property_value("ID_BUS")
-                    .map(|v| v == OsStr::new("usb"))
-                    .unwrap_or(false)
+                    .is_some_and(|v| v == OsStr::new("usb"))
                 {
                     if let Some(dev) = device_from(&dev_ref, vid_pid_filter)? {
                         return Ok(dev);
@@ -77,14 +77,16 @@ pub(super) fn wait_for_usb_real(
         }
 
         // Block on the monitor FD.
+        let socket_fd = socket.as_fd();
         let mut pollfds = [nix::poll::PollFd::new(
-            &socket,
+            socket_fd,
             nix::poll::PollFlags::POLLIN,
         )];
-        match nix::poll::poll(&mut pollfds, remaining_ms) {
+        match nix::poll::poll(&mut pollfds, nix::poll::PollTimeout::from(remaining_ms)) {
             Ok(0) => return Err(UsbError::Timeout),
-            Ok(_) => continue, // loop back, drain queue
-            Err(nix::errno::Errno::EINTR) => continue,
+            Ok(_) | Err(nix::errno::Errno::EINTR) => {
+                // loop back, drain queue / restart on EINTR
+            }
             Err(e) => {
                 return Err(UsbError::Io(std::io::Error::from_raw_os_error(e as i32)));
             }

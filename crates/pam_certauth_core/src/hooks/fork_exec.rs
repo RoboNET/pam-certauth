@@ -361,8 +361,8 @@ mod tests {
         let _addr = b.as_ptr();
     }
 
-    /// P0-6: end-to-end exercise of the no-alloc child path. Forks a real
-    /// `/bin/true` (root-owned) and confirms exit_code == 0 with the
+    /// End-to-end exercise of the no-alloc child path. Forks a real
+    /// `/bin/true` (root-owned) and confirms `exit_code == 0` with the
     /// rewired pre-built groups path active.
     #[cfg(target_os = "linux")]
     #[test]
