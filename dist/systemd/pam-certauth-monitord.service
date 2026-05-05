@@ -1,0 +1,45 @@
+[Unit]
+Description=pam_certauth USB-token monitor daemon
+Documentation=file:///usr/share/doc/pam-certauth/README.md.gz
+Documentation=man:pam-certauth-monitord(8)
+After=systemd-udevd.service systemd-logind.service dbus.service
+Wants=systemd-tmpfiles-setup.service
+Requires=systemd-logind.service
+
+[Service]
+Type=notify
+# Batch 4 (P1-D): monitord reads its operational knobs from the SAME shared
+# config the PAM cdylib parses, so operators only edit one file. Keep CLI
+# flags in mind only as on-the-fly overrides for staging / debugging.
+ExecStart=/usr/sbin/pam-certauth-monitord --config /etc/pam_certauth/config.toml
+Restart=on-failure
+RestartSec=5s
+User=root
+Group=root
+RuntimeDirectory=pam_certauth
+RuntimeDirectoryMode=0750
+StateDirectory=pam_certauth
+StateDirectoryMode=0750
+CacheDirectory=pam_certauth
+CacheDirectoryMode=0750
+ProtectSystem=strict
+ReadWritePaths=/run/pam_certauth /var/cache/pam_certauth /var/lib/pam_certauth
+ProtectHome=yes
+PrivateTmp=yes
+NoNewPrivileges=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictNamespaces=yes
+RestrictRealtime=yes
+LockPersonality=yes
+# MemoryDenyWriteExecute is left off because OpenSSL/gost-engine may need W^X
+# relaxation for ASN.1 parser JIT in libcrypto. Stage 8 should benchmark with
+# =yes and flip if no measurable regression.
+MemoryDenyWriteExecute=no
+SystemCallArchitectures=native
+CapabilityBoundingSet=CAP_DAC_READ_SEARCH CAP_KILL CAP_NET_BIND_SERVICE
+AmbientCapabilities=
+
+[Install]
+WantedBy=multi-user.target

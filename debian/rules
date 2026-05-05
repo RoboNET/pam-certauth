@@ -1,0 +1,61 @@
+#!/usr/bin/make -f
+#
+# debian/rules for pam-certauth.
+# Uses dh-cargo as the buildsystem. We override dh_auto_install because the
+# default places the cdylib in /usr/bin, which is wrong; we ship it as
+# /lib/security/pam_certauth.so.
+
+export DEB_BUILD_MAINT_OPTIONS = hardening=+all
+export CARGO_HOME = $(CURDIR)/debian/cargo_home
+export CARGO_TARGET_DIR = $(CURDIR)/target
+
+# Reproducibility.
+export SOURCE_DATE_EPOCH ?= $(shell dpkg-parsechangelog -STimestamp)
+
+# Pin codegen-units=1, lto=thin (already set in workspace Cargo.toml release
+# profile - these are belt-and-braces).
+export CARGO_PROFILE_RELEASE_CODEGEN_UNITS = 1
+export CARGO_PROFILE_RELEASE_LTO = thin
+
+# Stable locale and timezone for any tooling that snapshots them.
+export LC_ALL = C.UTF-8
+export TZ = UTC
+
+%:
+	dh $@ --buildsystem=cargo
+
+override_dh_auto_configure:
+	dh_auto_configure -- \
+		--release \
+		--workspace
+
+override_dh_auto_build:
+	cargo build --release --workspace --offline || cargo build --release --workspace
+
+override_dh_auto_install:
+	# Place the cdylib at the canonical PAM module path with the expected
+	# (no-`lib` prefix) basename. Using `install -D` here avoids any
+	# debhelper auto-renaming surprises and keeps the rule explicit.
+	install -D -m 0644 target/release/libpam_certauth.so \
+		debian/pam-certauth/lib/security/pam_certauth.so
+	# The monitord binary goes to /usr/sbin and gets stripped later by
+	# dh_strip.
+	install -D -m 0755 target/release/pam-certauth-monitord \
+		debian/pam-certauth/usr/sbin/pam-certauth-monitord
+
+override_dh_auto_test:
+	# We rely on `cargo test` having been run before invoking
+	# dpkg-buildpackage. Re-running here in the build chroot would require
+	# network access for proptest registry queries; skip.
+	@echo "(test override) skipping cargo test; ensure tests passed before packaging"
+
+override_dh_strip:
+	dh_strip --no-automatic-dbgsym
+
+override_dh_systemd_enable:
+	dh_systemd_enable --no-enable pam-certauth-monitord.service
+
+override_dh_systemd_start:
+	# Do not auto-start the monitor service on install. Admin must drop a
+	# config file first.
+	dh_systemd_start --no-start --no-restart-on-upgrade

@@ -1,0 +1,50 @@
+#!/bin/sh
+# postrm - runs after package removal.
+
+set -e
+
+cleanup_pam_includes() {
+    # P1-M: remove "@include certauth" / "@include certauth-optional" lines
+    # left behind by manual `integrate-pam.sh` invocations from common
+    # service files. Idempotent: missing files and missing lines are
+    # silently ignored. We do NOT touch files that admins haven't edited
+    # because they will not contain the include line.
+    for svc in /etc/pam.d/login \
+               /etc/pam.d/sshd \
+               /etc/pam.d/sudo \
+               /etc/pam.d/fly-dm \
+               /etc/pam.d/gdm-password \
+               /etc/pam.d/common-auth; do
+        [ -f "$svc" ] || continue
+        # Remove lines matching: optional whitespace, @include, whitespace,
+        # certauth or certauth-optional, optional whitespace, EOL.
+        sed -i -E '/^[[:space:]]*@include[[:space:]]+certauth(-optional)?[[:space:]]*$/d' \
+            "$svc" 2>/dev/null || true
+    done
+}
+
+case "$1" in
+    purge)
+        cleanup_pam_includes
+        rm -rf /etc/pam_certauth
+        rm -rf /var/cache/pam_certauth
+        rm -rf /var/lib/pam_certauth
+        rm -rf /run/pam_certauth || true
+        if [ -d /run/systemd/system ]; then
+            systemctl daemon-reload >/dev/null 2>&1 || true
+        fi
+        ;;
+    remove|upgrade|failed-upgrade|abort-install|abort-upgrade|disappear)
+        if [ -d /run/systemd/system ]; then
+            systemctl daemon-reload >/dev/null 2>&1 || true
+        fi
+        ;;
+    *)
+        echo "postrm called with unknown argument: $1" >&2
+        exit 1
+        ;;
+esac
+
+#DEBHELPER#
+
+exit 0

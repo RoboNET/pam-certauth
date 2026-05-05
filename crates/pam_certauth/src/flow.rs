@@ -1,0 +1,1821 @@
+//! Stage-2 authentication flow: orchestrates the USB → PKCS#12 → challenge →
+//! trust → mapping → host-binding pipeline.
+//!
+//! The high-level [`authenticate`] entry point is the heart of
+//! `pam_sm_authenticate`.  It is split out from the cdylib boundary so that
+//! unit tests can drive the full flow against mock fixtures (no real udev /
+//! mount / PAM handle required).
+//!
+//! # Architecture
+//!
+//! Side effects that are awkward to fake — discovering the USB device,
+//! mounting it, prompting the user for a PIN, talking to the monitor IPC —
+//! live behind the [`FlowIo`] trait.  Production callers wire up
+//! [`RealFlowIo`] which delegates to the real udev/mount/IPC machinery.
+//! Tests inject [`InMemoryFlowIo`] which serves credentials from a `tempdir`.
+//!
+//! # Errors
+//!
+//! All failure paths converge on [`FlowError`].  See [`FlowError::pam_code`]
+//! for the canonical mapping to PAM return codes.
+
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::time::SystemTime;
+
+use pam_certauth_core::challenge::{challenge_response, CryptoError};
+use pam_certauth_core::config::ValidatedConfig;
+use pam_certauth_core::discovery::{discover_credentials, DiscoveredCreds, DiscoveryError};
+use pam_certauth_core::hooks::{run_hooks_for_stage, HookError, HookExecutor, HookStage, HookVars};
+use pam_certauth_core::host_binding::{verify_cert_scope, HostBindingError};
+use pam_certauth_core::host_identity::HostIdSourceKind;
+use pam_certauth_core::ipc::{MonitorClient, OpenSessionInfo};
+use pam_certauth_core::mapping::{match_user, MappingError, MatchedMapping};
+use pam_certauth_core::mount::usb::MountError;
+use pam_certauth_core::mount_guard::{MountGuard, MountOps};
+use pam_certauth_core::pam_conv::PamConvError;
+use pam_certauth_core::pam_data::AuthContext;
+use pam_certauth_core::pkcs12::{
+    acquire_p12_material_with_prompter, AcquireError, LoadedKeyMaterial, Pkcs12Error,
+};
+use pam_certauth_core::trust::openssl_verifier::Stage2TrustVerifier;
+use pam_certauth_core::usb::{UsbDevice, UsbError};
+use pam_certauth_core::x509::{Certificate, TrustError};
+use secrecy::SecretString;
+
+/// Errors raised by [`authenticate`].
+///
+/// Every variant maps to a stable PAM return code via
+/// [`FlowError::pam_code`]; the cdylib boundary is the only place where
+/// integers are produced, keeping this enum easy to test without pulling in
+/// `pam-sys` constants.
+#[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
+pub enum FlowError {
+    /// USB enumeration failed or timed out.
+    #[error("usb: {0}")]
+    Usb(#[from] UsbError),
+
+    /// `mount(2)` (or pre-checks) failed.
+    #[error("mount: {0}")]
+    Mount(#[from] MountError),
+
+    /// `discover_credentials` failed (missing `user.p12`, oversized files,
+    /// I/O error).
+    #[error("discovery: {0}")]
+    Discovery(#[from] DiscoveryError),
+
+    /// PAM conversation function failed (no conv item, non-utf8 PIN, ...).
+    #[error("pam conversation: {0}")]
+    Conv(#[from] PamConvError),
+
+    /// PIN-retry loop exhausted its attempts.
+    #[error("max PIN tries")]
+    MaxTries,
+
+    /// PKCS#12 bundle was structurally broken (corrupt / missing material).
+    #[error("p12 acquire: {0}")]
+    Pkcs12(String),
+
+    /// Challenge-response failed.
+    #[error("challenge-response: {0}")]
+    Crypto(#[from] CryptoError),
+
+    /// X.509 trust verification failed.
+    #[error("trust: {0}")]
+    Trust(#[from] TrustError),
+
+    /// `pam_user` does not match any subject in the cert.
+    #[error("subject mapping: {0}")]
+    Mapping(#[from] MappingError),
+
+    /// Cert scope (host/user binding extension) rejected the auth.
+    #[error("cert scope: {0}")]
+    CertScope(#[from] HostBindingError),
+
+    /// An internal invariant broke (e.g. `PAM_SET_DATA` failed).
+    #[error("internal: {0}")]
+    Internal(&'static str),
+
+    /// PKCS#11-side error (module load, slot lookup, attribute read,
+    /// ...).
+    #[error("pkcs11: {0}")]
+    Pkcs11(#[from] pam_certauth_core::token::pkcs11::Pkcs11Error),
+
+    /// PKCS#11 PIN-acquire loop returned a non-PIN error or exhausted
+    /// its attempts.
+    #[error("pkcs11 acquire: {0}")]
+    Pkcs11Acquire(#[from] pam_certauth_core::token::pkcs11::AcquireError),
+
+    /// `crypto_backend = "openssl"` combined with `mode = "pkcs11"`
+    /// would require the `pkcs11` OpenSSL engine (libp11) which is
+    /// scheduled for a later stage.  Surface as a typed error so PAM
+    /// returns `PAM_AUTHINFO_UNAVAIL`.
+    #[error("pkcs11 + openssl-engine path not implemented yet")]
+    Pkcs11OpensslEngineNotImplemented,
+
+    /// `cfg.pkcs11_module` is `None` even though `mode = "pkcs11"`.
+    /// Validation should catch this; included for safety.
+    #[error("pkcs11 module path missing in config")]
+    Pkcs11ModulePathMissingInConfig,
+
+    /// A `pre_auth` hook returned a fatal error (executor failure or
+    /// `on_failure = abort` policy hit a non-zero exit / timeout).
+    #[error("pre_auth hook failed: {0}")]
+    PreAuthHook(#[source] HookError),
+
+    /// A `post_auth_success` hook returned a fatal error.
+    #[error("post_auth_success hook failed: {0}")]
+    PostAuthHook(#[source] HookError),
+}
+
+impl From<AcquireError> for FlowError {
+    fn from(value: AcquireError) -> Self {
+        match value {
+            AcquireError::MaxTries => Self::MaxTries,
+            AcquireError::Conv(c) => Self::Conv(c),
+            AcquireError::Corrupt(m) => Self::Pkcs12(m),
+            AcquireError::Missing(s) => Self::Pkcs12(format!("missing: {s}")),
+            // `AcquireError` is `non_exhaustive`; future variants fall through
+            // to a generic "p12 acquire" message rather than panicking.
+            other => Self::Pkcs12(format!("{other}")),
+        }
+    }
+}
+
+impl From<Pkcs12Error> for FlowError {
+    fn from(value: Pkcs12Error) -> Self {
+        match value {
+            Pkcs12Error::WrongPin => Self::MaxTries,
+            Pkcs12Error::MissingKey => Self::Pkcs12("missing key".into()),
+            Pkcs12Error::MissingCert => Self::Pkcs12("missing cert".into()),
+            Pkcs12Error::Corrupt(m) => Self::Pkcs12(m),
+            // `Pkcs12Error` is `non_exhaustive`.
+            other => Self::Pkcs12(format!("{other}")),
+        }
+    }
+}
+
+impl FlowError {
+    /// Map a flow error to its canonical PAM return code.
+    ///
+    /// The numeric values mirror `<security/_pam_types.h>`:
+    ///
+    /// | Variant                                                | Code                       |
+    /// | ------------------------------------------------------ | -------------------------- |
+    /// | `Usb` / `Mount` / `Discovery`                          | `PAM_AUTHINFO_UNAVAIL` (9) |
+    /// | `Pkcs11` (module load / wait / serial / config)        | `PAM_AUTHINFO_UNAVAIL` (9) |
+    /// | `Pkcs11OpensslEngineNotImplemented`                    | `PAM_AUTHINFO_UNAVAIL` (9) |
+    /// | `Pkcs11ModulePathMissingInConfig`                      | `PAM_AUTHINFO_UNAVAIL` (9) |
+    /// | `MaxTries` / `Pkcs11Acquire(PinLocked|MaxAttempts)`    | `PAM_MAXTRIES` (8)         |
+    /// | `Conv` / `Pkcs11Acquire(Conv)` / `Pkcs11(PinIncorrect)`| `PAM_AUTH_ERR` (7)         |
+    /// | `CertScope`                                            | `PAM_AUTH_ERR` (7)         |
+    /// | `Pkcs12` / `Crypto` / `Trust`                          | `PAM_PERM_DENIED` (6)      |
+    /// | `Mapping`                                              | `PAM_PERM_DENIED` (6)      |
+    /// | other `Pkcs11(...)` / `Pkcs11Acquire(Pkcs11)`          | `PAM_AUTH_ERR` (7)         |
+    /// | `Internal`                                             | `PAM_SYSTEM_ERR` (4)       |
+    #[must_use]
+    pub fn pam_code(&self) -> i32 {
+        use pam_certauth_core::token::pkcs11::{AcquireError as P11Acquire, Pkcs11Error};
+        match self {
+            // PAM_AUTHINFO_UNAVAIL — config / discovery / module load failures.
+            Self::Usb(_)
+            | Self::Mount(_)
+            | Self::Discovery(_)
+            | Self::Pkcs11OpensslEngineNotImplemented
+            | Self::Pkcs11ModulePathMissingInConfig
+            | Self::Pkcs11(
+                Pkcs11Error::ModuleLoadFailed { .. }
+                | Pkcs11Error::InitFailed { .. }
+                | Pkcs11Error::ModulePathMissing(_)
+                | Pkcs11Error::TokenWaitTimeout { .. }
+                | Pkcs11Error::NoTokenAvailable
+                | Pkcs11Error::TokenNotFound { .. }
+                | Pkcs11Error::TokenSerialMissing,
+            ) => 9,
+            // PAM_MAXTRIES — exhausted PIN-retry budget on either path.
+            Self::MaxTries
+            | Self::Pkcs11Acquire(P11Acquire::PinLocked | P11Acquire::MaxAttemptsExceeded) => 8,
+            // PAM_PERM_DENIED — cert chain rejected the auth.
+            Self::Pkcs12(_) | Self::Crypto(_) | Self::Trust(_) | Self::Mapping(_) => 6,
+            // PAM_SYSTEM_ERR — internal invariants.
+            Self::Internal(_) => 4,
+            // PAM_AUTH_ERR — every other authentication-side failure
+            // (PAM conv, single PIN error, generic PKCS#11 error, cert
+            // host/user binding scope, ...).
+            //
+            // Hook failures are mapped to PAM_AUTH_ERR per the Stage 5
+            // brief — operators can lower the impact via on_failure=warn
+            // / ignore in the config.
+            Self::Conv(_)
+            | Self::Pkcs11Acquire(_)
+            | Self::Pkcs11(_)
+            | Self::CertScope(_)
+            | Self::PreAuthHook(_)
+            | Self::PostAuthHook(_) => 7,
+        }
+    }
+}
+
+/// Where credentials live on the mounted USB device.
+///
+/// Holds the RAII mount guard so the mount stays alive until this struct
+/// (or the enclosing [`FlowOutcome`]) is dropped.
+pub struct MountSession<O: MountOps + 'static> {
+    /// The mountpoint.
+    pub mountpoint: PathBuf,
+    /// RAII guard that unmounts/cleans up on Drop.
+    pub guard: MountGuard<O>,
+}
+
+/// Side-effecting I/O the flow needs to drive.
+///
+/// Production wires this to udev + `nix::mount::mount`; tests inject an
+/// in-memory implementation that just serves files from a `tempdir`.
+pub trait FlowIo {
+    /// Mount-ops type used by the returned guard.
+    type Ops: MountOps + 'static;
+
+    /// Wait for a USB device to appear, optionally filtered by `(vid, pid)`.
+    ///
+    /// # Errors
+    ///
+    /// Propagates [`UsbError::Timeout`] or any underlying udev/io failure.
+    fn wait_for_usb(&self) -> Result<UsbDevice, UsbError>;
+
+    /// Mount `dev` at a freshly-created mountpoint and return a guard that
+    /// cleans up on Drop.
+    ///
+    /// # Errors
+    ///
+    /// Propagates [`MountError`].
+    fn mount(&self, dev: &UsbDevice) -> Result<MountSession<Self::Ops>, MountError>;
+
+    /// Discover credentials under the mountpoint.
+    ///
+    /// Default impl delegates to [`discover_credentials`]; tests may override.
+    ///
+    /// # Errors
+    ///
+    /// Propagates [`DiscoveryError`].
+    fn discover(&self, mountpoint: &Path) -> Result<DiscoveredCreds, DiscoveryError> {
+        discover_credentials(mountpoint)
+    }
+}
+
+/// All runtime collaborators required by [`authenticate`].
+pub struct Deps<'a> {
+    /// Validated configuration (used for logging defaults; the heavy lifting
+    /// is in the wired collaborators below).
+    pub cfg: &'a ValidatedConfig,
+    /// Stage-2 trust verifier (anchors + intermediates + CRLs already loaded).
+    pub trust: &'a dyn Stage2TrustVerifier,
+    /// Monitord IPC client (stub in stage 2; real client lands in stage 6).
+    pub monitor: &'a dyn MonitorClient,
+    /// Hook executor used for `pre_auth` / `post_auth_success` callbacks.
+    /// Production callers wire [`pam_certauth_core::hooks::ForkExecExecutor`];
+    /// tests inject a `NoopExecutor` or a custom mock.
+    pub hook_executor: &'a dyn HookExecutor,
+    /// Resolved host id hash (hex string, 64 chars typical).  When `*`-only
+    /// host binding is configured this can be any non-empty placeholder.
+    pub host_id_hash: &'a str,
+    /// Source kind that produced the host id, recorded into [`AuthContext`].
+    pub host_id_source: HostIdSourceKind,
+    /// Subject mapping table from validated config.
+    pub user_mappings: &'a [pam_certauth_core::config::validated::UserMapping],
+    /// Where the active session lives — passed to monitord on a successful
+    /// authentication so the daemon knows which logind session, tty, or X
+    /// display to act on. The cdylib derives this from `PAM_TTY`; tests
+    /// that don't care can use [`pam_certauth_proto::SessionTarget::Unknown`].
+    pub pam_target: pam_certauth_proto::SessionTarget,
+}
+
+/// Outcome of a successful authentication.
+///
+/// The mount guard is returned alongside the [`AuthContext`] so the caller
+/// (typically the cdylib `pam_sm_authenticate` entry) can hold the mount
+/// alive for the remainder of the session.  Dropping the guard runs umount
+/// + rmdir.
+///
+/// In PKCS#11 mode (`mode = "pkcs11"`) the USB mount step is skipped, so
+/// `mount` will be `None`.  Existing callers that always destructure the
+/// guard remain backwards compatible because the PKCS#12 flow still
+/// populates the field.
+pub struct FlowOutcome<O: MountOps + 'static> {
+    /// Authenticated session context (later stored in PAM data).
+    pub auth_ctx: AuthContext,
+    /// Owns the lifetime of the USB mount.  `None` for PKCS#11 mode.
+    pub mount: Option<MountGuard<O>>,
+}
+
+impl<O: MountOps + 'static> std::fmt::Debug for FlowOutcome<O> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("FlowOutcome")
+            .field("auth_ctx", &self.auth_ctx)
+            .field("mount", &self.mount.as_ref().map(|_| "<MountGuard>"))
+            .finish()
+    }
+}
+
+/// Drive the full authentication flow.
+///
+/// Dispatches based on `cfg.mode`:
+///
+/// - `Pkcs12` → [`authenticate_pkcs12`] (USB-mount + PKCS#12 file).
+/// - `Pkcs11` → [`authenticate_pkcs11`] (cryptographic operations on a
+///   PKCS#11 token; `crypto_backend` selects native vs OpenSSL-engine).
+///
+/// The PIN prompter is supplied separately from [`FlowIo`] because in
+/// production it captures a raw `*mut PamHandle`, which the cdylib must own
+/// directly; in tests it is just a closure returning a fixed string.
+///
+/// # Errors
+///
+/// Propagates [`FlowError`] for every failure path — see
+/// [`FlowError::pam_code`] for the PAM return-code mapping.
+#[allow(clippy::needless_pass_by_value)]
+pub fn authenticate<I: FlowIo, P>(
+    deps: Deps<'_>,
+    io: &I,
+    pam_user: &str,
+    pam_service: &str,
+    session_id: String,
+    prompt_pin: P,
+) -> Result<FlowOutcome<I::Ops>, FlowError>
+where
+    P: FnMut(&str) -> Result<SecretString, PamConvError>,
+{
+    use pam_certauth_core::config::validated::{CryptoBackend, Mode};
+    match deps.cfg.mode {
+        Mode::Pkcs12 => {
+            authenticate_pkcs12(deps, io, pam_user, pam_service, session_id, prompt_pin)
+        }
+        Mode::Pkcs11 => match deps.cfg.crypto_backend {
+            CryptoBackend::Pkcs11Native => {
+                let pkcs11_io = real_pkcs11_io(deps.cfg)?;
+                authenticate_pkcs11(
+                    deps,
+                    &pkcs11_io,
+                    pam_user,
+                    pam_service,
+                    session_id,
+                    prompt_pin,
+                )
+            }
+            CryptoBackend::Openssl => Err(FlowError::Pkcs11OpensslEngineNotImplemented),
+        },
+    }
+}
+
+/// PKCS#12 (USB) authentication path — was the entire body of
+/// `authenticate` until T13.
+///
+/// # Errors
+///
+/// Propagates [`FlowError`] for every failure path — see
+/// [`FlowError::pam_code`] for the PAM return-code mapping.
+#[allow(clippy::needless_pass_by_value)]
+pub fn authenticate_pkcs12<I: FlowIo, P>(
+    deps: Deps<'_>,
+    io: &I,
+    pam_user: &str,
+    pam_service: &str,
+    session_id: String,
+    mut prompt_pin: P,
+) -> Result<FlowOutcome<I::Ops>, FlowError>
+where
+    P: FnMut(&str) -> Result<SecretString, PamConvError>,
+{
+    // Step 1 — pre_auth hooks (Stage 5). Run BEFORE we touch the USB
+    // bus / mount(2). They get only the PAM identity + the resolved host
+    // identity; cert / USB / session fields are not yet known.
+    //
+    // The monitord IPC notification used to live here, but it ran with
+    // synthetic placeholder fields (no USB serial, no cert metadata,
+    // SessionTarget::Unknown) — useless for the daemon's USB-removal
+    // enforcement. It now happens AFTER all verification steps succeed
+    // and before we hand back the FlowOutcome, so every field is real.
+    let pre_auth_vars = HookVars::for_pre_auth(
+        pam_user,
+        pam_service,
+        deps.host_id_hash,
+        deps.host_id_hash,
+        deps.host_id_source.to_string(),
+    );
+    run_hooks_for_stage(
+        deps.cfg,
+        HookStage::PreAuth,
+        deps.hook_executor,
+        &pre_auth_vars,
+    )
+    .map_err(FlowError::PreAuthHook)?;
+
+    // Step 2 — wait for a USB block device.
+    let dev = io.wait_for_usb()?;
+    tracing::info!(
+        target: "pam_certauth.flow",
+        devnode = ?dev.devnode,
+        vid = format!("{:04x}", dev.vid),
+        pid = format!("{:04x}", dev.pid),
+        "usb device found"
+    );
+
+    // Step 3 — mount with hardening flags (RAII).
+    let session = io.mount(&dev)?;
+    let MountSession {
+        mountpoint,
+        guard: mount,
+    } = session;
+
+    // Step 4 — find p12 + chain.pem.
+    let creds = io.discover(&mountpoint)?;
+
+    // Step 5 — PIN-retry loop.
+    let loaded: LoadedKeyMaterial =
+        acquire_p12_material_with_prompter(&creds.p12_bytes, 3, &mut prompt_pin)?;
+
+    // Step 6 — challenge-response (proves we hold the private key).
+    let priv_key = loaded.private_key()?;
+    challenge_response(
+        &loaded.end_entity,
+        &priv_key,
+        deps.cfg.gost_engine_path.as_deref(),
+    )?;
+
+    // Step 7 — assemble the chain.  `chain.pem` is appended AFTER the p12's
+    // own presented chain so that whichever the bundle had wins ties.
+    let mut presented = loaded.presented_chain.clone();
+    if let Some(chain_pem) = creds.chain_pem.as_deref() {
+        presented.extend(parse_chain_pem(chain_pem)?);
+    }
+
+    // Step 8 — trust verification (path build, signatures, CRLs, pinning).
+    let _verified = deps.trust.verify(&loaded.end_entity, &presented)?;
+
+    // Step 9 — pam_user ↔ subject mapping.
+    let _matched: MatchedMapping = match_user(&loaded.end_entity, pam_user, deps.user_mappings)?;
+
+    // Step 10 — cert scope (cert authorises this host AND this user).
+    //
+    // The cert's `pam_cert_host_binding` and `pam_cert_user_binding`
+    // X.509 extensions are the SOLE source of authorisation. The
+    // certificate alone decides "which user on which host"; there is
+    // no central ACL, no roles, no signed body file.
+    verify_cert_scope(loaded.end_entity.x509(), deps.host_id_hash, pam_user)?;
+
+    // Step 11 — assemble AuthContext.
+    let cert_cn = loaded.end_entity.subject_cn().ok();
+    let cert_serial = Some(loaded.end_entity.serial_hex().to_lowercase());
+    let cert_not_after = Some(loaded.end_entity.not_after());
+    let usb_vid_pid = Some(format!("{:04x}:{:04x}", dev.vid, dev.pid));
+
+    let auth_ctx = AuthContext {
+        session_id,
+        cert_cn,
+        cert_serial,
+        usb_serial: dev.serial.clone(),
+        usb_vid_pid,
+        pam_service: pam_service.to_string(),
+        host_id: deps.host_id_hash.to_string(),
+        host_id_source: deps.host_id_source,
+        authenticated_at: SystemTime::now(),
+        cert_not_after,
+    };
+
+    // Step 11b — post_auth_success hooks (Stage 5). Run after every
+    // verification step has succeeded but before set_pam_data, so a hook
+    // failure can still abort the session by returning PAM_AUTH_ERR.
+    let post_vars = HookVars::for_post_auth_success(pam_user, &auth_ctx);
+    run_hooks_for_stage(
+        deps.cfg,
+        HookStage::PostAuthSuccess,
+        deps.hook_executor,
+        &post_vars,
+    )
+    .map_err(FlowError::PostAuthHook)?;
+
+    // Step 11c — notify monitord with the FULL post-auth payload (USB
+    // serial from the discovered device, cert CN/serial from the
+    // validated leaf, target from PAM_TTY). Failure stays non-fatal:
+    // the auth itself already succeeded, and the FailModeWrapper around
+    // the production client decides whether to swallow IPC errors.
+    let cert_cn_str = auth_ctx.cert_cn.as_deref().unwrap_or("");
+    let cert_serial_str = auth_ctx.cert_serial.as_deref().unwrap_or("");
+    let info = OpenSessionInfo {
+        session_id: &auth_ctx.session_id,
+        pam_user,
+        pam_service,
+        host_id_hash: deps.host_id_hash,
+        target: deps.pam_target.clone(),
+        usb_serial: dev.serial.as_deref(),
+        cert_cn: cert_cn_str,
+        cert_serial: cert_serial_str,
+    };
+    if let Err(e) = deps.monitor.open_session(&info) {
+        tracing::warn!(
+            target: "pam_certauth.flow",
+            error = %e,
+            "monitor open_session failed (non-fatal)"
+        );
+    }
+
+    Ok(FlowOutcome {
+        auth_ctx,
+        mount: Some(mount),
+    })
+}
+
+// ---------------------------------------------------------------------------
+// PKCS#11 (Stage 4) authentication path
+// ---------------------------------------------------------------------------
+
+/// Type alias for the closure-style PIN prompter passed through to
+/// [`Pkcs11Io::acquire_session`].  The trait object form avoids
+/// re-genericising the trait at every level of the dispatcher.
+pub type PinPrompterFn<'a> = dyn FnMut(&str) -> Result<SecretString, PamConvError> + 'a;
+
+/// Side-effecting collaborators that the PKCS#11 path needs.
+///
+/// Production wires this to [`RealPkcs11Io`] which talks to a live
+/// `cryptoki::Pkcs11` context; tests inject a closure-backed stub.
+pub trait Pkcs11Io {
+    /// Wait for a token to appear in any slot, optionally filtered by
+    /// `CKA_LABEL`.  Returns the [`Slot`] that satisfied the search and
+    /// keeps a reference to the underlying backend alive for subsequent
+    /// `acquire_session` calls.
+    ///
+    /// # Errors
+    ///
+    /// Forwards any [`pam_certauth_core::token::pkcs11::Pkcs11Error`].
+    fn wait_for_token(
+        &self,
+    ) -> Result<pam_certauth_core::token::pkcs11::Slot, pam_certauth_core::token::pkcs11::Pkcs11Error>;
+
+    /// Read the token serial number on the supplied slot.  Used to fill
+    /// `AuthContext.usb_serial` in mode B.
+    ///
+    /// # Errors
+    ///
+    /// Forwards any [`pam_certauth_core::token::pkcs11::Pkcs11Error`].
+    fn read_token_serial(
+        &self,
+        slot: pam_certauth_core::token::pkcs11::Slot,
+    ) -> Result<String, pam_certauth_core::token::pkcs11::Pkcs11Error>;
+
+    /// Drive the bounded PIN-retry loop, prompting the user via
+    /// `pin_prompter` until either a session is opened or the loop bails.
+    ///
+    /// # Errors
+    ///
+    /// Forwards any [`pam_certauth_core::token::pkcs11::AcquireError`].
+    fn acquire_session(
+        &self,
+        slot: pam_certauth_core::token::pkcs11::Slot,
+        pin_prompter: &mut PinPrompterFn<'_>,
+    ) -> Result<
+        pam_certauth_core::token::pkcs11::Pkcs11Session,
+        pam_certauth_core::token::pkcs11::AcquireError,
+    >;
+}
+
+/// Production [`Pkcs11Io`] backed by a real [`pam_certauth_core::token::pkcs11::Pkcs11Backend`].
+///
+/// Construct via [`real_pkcs11_io`]; the backend is shared by reference
+/// across the trait methods.  Module/PIN/locking parameters come from
+/// the validated config.
+pub struct RealPkcs11Io<'a> {
+    /// Owned backend (the dynamic library and `Pkcs11` ctx).
+    backend: pam_certauth_core::token::pkcs11::Pkcs11Backend,
+    /// Token wait timeout.
+    timeout: std::time::Duration,
+    /// Optional `CKA_LABEL` filter for token discovery.
+    token_label: Option<String>,
+    /// Number of PIN attempts allowed.
+    max_pin_attempts: u32,
+    /// Lifetime tie-back to the validated config to avoid a `'static` bound.
+    _cfg: std::marker::PhantomData<&'a ValidatedConfig>,
+}
+
+impl Pkcs11Io for RealPkcs11Io<'_> {
+    fn wait_for_token(
+        &self,
+    ) -> Result<pam_certauth_core::token::pkcs11::Slot, pam_certauth_core::token::pkcs11::Pkcs11Error>
+    {
+        self.backend
+            .wait_for_token(self.timeout, self.token_label.as_deref())
+    }
+
+    fn read_token_serial(
+        &self,
+        slot: pam_certauth_core::token::pkcs11::Slot,
+    ) -> Result<String, pam_certauth_core::token::pkcs11::Pkcs11Error> {
+        pam_certauth_core::token::pkcs11::read_token_serial(&self.backend, slot)
+    }
+
+    fn acquire_session(
+        &self,
+        slot: pam_certauth_core::token::pkcs11::Slot,
+        pin_prompter: &mut PinPrompterFn<'_>,
+    ) -> Result<
+        pam_certauth_core::token::pkcs11::Pkcs11Session,
+        pam_certauth_core::token::pkcs11::AcquireError,
+    > {
+        pam_certauth_core::token::pkcs11::acquire_pkcs11_session(
+            &self.backend,
+            slot,
+            self.max_pin_attempts,
+            |prompt| pin_prompter(prompt),
+        )
+    }
+}
+
+/// Construct a [`RealPkcs11Io`] from the validated config.  Loads the
+/// PKCS#11 module right away so configuration mistakes surface as
+/// [`FlowError::Pkcs11`] before any USB device or PIN prompt is touched.
+///
+/// # Errors
+///
+/// - [`FlowError::Pkcs11ModulePathMissingInConfig`] — `cfg.pkcs11_module`
+///   is `None` (config-validation should normally catch this).
+/// - [`FlowError::Pkcs11`] for any backend load / init error.
+pub fn real_pkcs11_io(cfg: &ValidatedConfig) -> Result<RealPkcs11Io<'_>, FlowError> {
+    let module_path = cfg
+        .pkcs11_module
+        .as_deref()
+        .ok_or(FlowError::Pkcs11ModulePathMissingInConfig)?;
+    let backend = pam_certauth_core::token::pkcs11::Pkcs11Backend::load(
+        module_path,
+        cfg.pkcs11_locking_mode,
+    )?;
+    Ok(RealPkcs11Io {
+        backend,
+        timeout: cfg.pkcs11_slot_wait,
+        token_label: cfg.pkcs11_token_label.clone(),
+        max_pin_attempts: cfg.pkcs11_max_pin_attempts,
+        _cfg: std::marker::PhantomData,
+    })
+}
+
+/// Drive the PKCS#11 (Stage 4 mode B) authentication path.
+///
+/// This function is intentionally generic over the I/O abstraction
+/// ([`Pkcs11Io`]) — the production callers wire [`RealPkcs11Io`] while
+/// tests inject a stub.  No USB / mount step happens; the token is
+/// discovered through [`Pkcs11Io::wait_for_token`] and the on-token
+/// signature is verified locally via [`pam_certauth_core::token::pkcs11::pkcs11_challenge_response`].
+///
+/// `intermediates_from_config` is the only chain the verifier sees in
+/// T13: pulling intermediates **off the token** is left for T18.  This
+/// is a documented OPEN QUESTION.
+///
+/// # Errors
+///
+/// Propagates [`FlowError`] for every failure path — see
+/// [`FlowError::pam_code`] for the PAM return-code mapping.
+#[allow(clippy::needless_pass_by_value, clippy::too_many_lines)]
+pub fn authenticate_pkcs11<O, T, P>(
+    deps: Deps<'_>,
+    io: &T,
+    pam_user: &str,
+    pam_service: &str,
+    session_id: String,
+    mut prompt_pin: P,
+) -> Result<FlowOutcome<O>, FlowError>
+where
+    O: MountOps + 'static,
+    T: Pkcs11Io,
+    P: FnMut(&str) -> Result<SecretString, PamConvError>,
+{
+    use pam_certauth_core::token::pkcs11::{
+        pkcs11_challenge_response, select_mechanism, FoundCertificate, FoundPrivateKey,
+    };
+
+    // Step 1 — pre_auth hooks (Stage 5). Same gate as the PKCS#12 path.
+    //
+    // Pre-auth IPC notification was deliberately removed: it used to fire
+    // with synthetic placeholders (Unknown target, no serial, no cert
+    // metadata), which defeated monitord's USB-removal enforcement. The
+    // notification now happens post-auth with real fields.
+    let pre_auth_vars = HookVars::for_pre_auth(
+        pam_user,
+        pam_service,
+        deps.host_id_hash,
+        deps.host_id_hash,
+        deps.host_id_source.to_string(),
+    );
+    run_hooks_for_stage(
+        deps.cfg,
+        HookStage::PreAuth,
+        deps.hook_executor,
+        &pre_auth_vars,
+    )
+    .map_err(FlowError::PreAuthHook)?;
+
+    // Step 2 — wait for a token to appear.
+    let slot = io.wait_for_token()?;
+    tracing::info!(
+        target: "pam_certauth.flow",
+        ?slot,
+        token_label = ?deps.cfg.pkcs11_token_label,
+        "pkcs11 token found"
+    );
+
+    // Step 3 — read serial early so we still have a useful AuthContext
+    //          even if subsequent steps fail (used for telemetry only).
+    let token_serial = io.read_token_serial(slot)?;
+
+    // Step 4 — bounded PIN loop → authenticated session.  When the
+    // operator configured `pkcs11_pin_prompt` we substitute the
+    // default Russian "Введите PIN токена: " prompt with that value.
+    // The prompter receives the substituted string verbatim and feeds
+    // it to `pam_conv` (production) or ignores it (tests).
+    let prompt_override = deps.cfg.pkcs11_pin_prompt.clone();
+    let session = io.acquire_session(slot, &mut |default_prompt| {
+        let p = prompt_override.as_deref().unwrap_or(default_prompt);
+        prompt_pin(p)
+    })?;
+
+    // Step 5 — find the end-entity certificate object on the token.  The
+    // `CKA_LABEL` filter, when set, comes from `pkcs11_object_label`
+    // (the per-user certificate object) — *not* from the token label,
+    // which is used earlier in `wait_for_token` to disambiguate slots.
+    let cert: FoundCertificate =
+        session.find_certificate(deps.cfg.pkcs11_object_label.as_deref())?;
+    tracing::info!(
+        target: "pam_certauth.flow",
+        cka_label = ?cert.cka_label,
+        "pkcs11 certificate found"
+    );
+
+    // Step 6 — find the matching private key (paired by CKA_ID).
+    let key: FoundPrivateKey = session.find_private_key_for_cert(&cert)?;
+
+    // Step 7 — pick a signing mechanism, then challenge-response.
+    let pubkey = cert.certificate.public_key().map_err(FlowError::Trust)?;
+    let mechanism = select_mechanism(key.key_type, &pubkey)?;
+    pkcs11_challenge_response(
+        &session,
+        key.object,
+        key.key_type,
+        &mechanism,
+        &cert.certificate,
+    )?;
+
+    // Step 8 — assemble the chain from config-only intermediates.
+    //
+    // OPEN QUESTION: we do **not** harvest intermediates
+    // from the token in T13 — the verifier only sees what the operator
+    // configured under `[trust]`.  T18 will add an on-token chain
+    // pull-up.  This is intentional: the trust verifier still works as
+    // long as the cert chains to a configured anchor, which is the
+    // common case for both Rutoken and JaCarta deployments.
+    let presented_chain: Vec<Certificate> = Vec::new();
+    let _verified = deps.trust.verify(&cert.certificate, &presented_chain)?;
+
+    // Step 9 — subject mapping (cert ↔ pam_user).
+    let _matched: MatchedMapping = match_user(&cert.certificate, pam_user, deps.user_mappings)?;
+
+    // Step 10 — cert scope (cert authorises this host AND this user).
+    verify_cert_scope(cert.certificate.x509(), deps.host_id_hash, pam_user)?;
+
+    // Step 11 — assemble AuthContext.  The token serial replaces the
+    // USB serial in this mode (monitord uses the same field).
+    let cert_cn = cert.certificate.subject_cn().ok();
+    let cert_serial = Some(cert.certificate.serial_hex().to_lowercase());
+    let cert_not_after = Some(cert.certificate.not_after());
+    let auth_ctx = AuthContext {
+        session_id,
+        cert_cn,
+        cert_serial,
+        usb_serial: Some(token_serial),
+        usb_vid_pid: None,
+        pam_service: pam_service.to_string(),
+        host_id: deps.host_id_hash.to_string(),
+        host_id_source: deps.host_id_source,
+        authenticated_at: SystemTime::now(),
+        cert_not_after,
+    };
+
+    // Drop the session here so `C_Logout` runs before we return.
+    drop(session);
+
+    // Step 11b — post_auth_success hooks (Stage 5).
+    let post_vars = HookVars::for_post_auth_success(pam_user, &auth_ctx);
+    run_hooks_for_stage(
+        deps.cfg,
+        HookStage::PostAuthSuccess,
+        deps.hook_executor,
+        &post_vars,
+    )
+    .map_err(FlowError::PostAuthHook)?;
+
+    // Step 11c — notify monitord with the FULL post-auth payload. In
+    // PKCS#11 mode the token serial occupies the `usb_serial` slot the
+    // daemon keys removal enforcement on.
+    let cert_cn_str = auth_ctx.cert_cn.as_deref().unwrap_or("");
+    let cert_serial_str = auth_ctx.cert_serial.as_deref().unwrap_or("");
+    let info = OpenSessionInfo {
+        session_id: &auth_ctx.session_id,
+        pam_user,
+        pam_service,
+        host_id_hash: deps.host_id_hash,
+        target: deps.pam_target.clone(),
+        usb_serial: auth_ctx.usb_serial.as_deref(),
+        cert_cn: cert_cn_str,
+        cert_serial: cert_serial_str,
+    };
+    if let Err(e) = deps.monitor.open_session(&info) {
+        tracing::warn!(
+            target: "pam_certauth.flow",
+            error = %e,
+            "monitor open_session failed (non-fatal)"
+        );
+    }
+
+    Ok(FlowOutcome {
+        auth_ctx,
+        mount: None,
+    })
+}
+
+/// Helper to keep `flow::authenticate` body short.  Public so tests can
+/// reuse it.
+///
+/// # Errors
+///
+/// Returns [`TrustError::CertParse`] if the input is not a sequence of
+/// PEM-encoded X.509 certificates.
+pub fn parse_chain_pem(pem: &[u8]) -> Result<Vec<Certificate>, TrustError> {
+    let stack = openssl::x509::X509::stack_from_pem(pem)
+        .map_err(|e| TrustError::CertParse(e.to_string()))?;
+    let mut out = Vec::with_capacity(stack.len());
+    for x in &stack {
+        let der = x
+            .to_der()
+            .map_err(|e| TrustError::CertParse(e.to_string()))?;
+        out.push(Certificate::from_der(&der)?);
+    }
+    Ok(out)
+}
+
+// ---------------------------------------------------------------------------
+// Production FlowIo adapter
+// ---------------------------------------------------------------------------
+
+/// Production [`FlowIo`] — wires udev + mount(2).
+#[cfg(target_os = "linux")]
+pub struct RealFlowIo {
+    /// Wait timeout.
+    pub timeout: std::time::Duration,
+    /// Optional VID/PID filter (none → accept any USB block device).
+    pub vid_pid_filter: Option<(u16, u16)>,
+    /// Base directory under which session-specific mountpoints are created.
+    pub mountpoint_base: PathBuf,
+    /// Session id used to derive the per-session mountpoint subdirectory.
+    pub session_id: String,
+}
+
+#[cfg(target_os = "linux")]
+impl FlowIo for RealFlowIo {
+    type Ops = pam_certauth_core::mount_guard::RealMountOps;
+
+    fn wait_for_usb(&self) -> Result<UsbDevice, UsbError> {
+        pam_certauth_core::usb::wait_for_usb(self.timeout, self.vid_pid_filter)
+    }
+
+    fn mount(&self, dev: &UsbDevice) -> Result<MountSession<Self::Ops>, MountError> {
+        let target = self.mountpoint_base.join(&self.session_id);
+        // Caller must ensure `target.parent()` exists; we create the leaf.
+        std::fs::create_dir_all(&target).map_err(MountError::MountSyscall)?;
+        let guard = pam_certauth_core::mount::usb::mount_usb_device(dev, &target)?;
+        Ok(MountSession {
+            mountpoint: target,
+            guard,
+        })
+    }
+}
+
+// ---------------------------------------------------------------------------
+// In-memory FlowIo (tests / e2e on tmpfs)
+// ---------------------------------------------------------------------------
+
+/// Test-only [`MountOps`] that does nothing on Drop — used to wrap an
+/// already-staged tempdir as if it were a real mount.
+#[derive(Debug, Default)]
+pub struct NoopMountOps;
+
+impl MountOps for NoopMountOps {
+    fn mount(
+        &self,
+        _source: &Path,
+        _target: &Path,
+        _fs_type: &str,
+        _flags: pam_certauth_core::mount_guard::MountFlags,
+        _data: Option<&str>,
+    ) -> Result<(), pam_certauth_core::error::MountGuardError> {
+        Ok(())
+    }
+    fn umount(&self, _target: &Path) -> Result<(), pam_certauth_core::error::MountGuardError> {
+        Ok(())
+    }
+    fn mkdir_mode_0700(
+        &self,
+        _path: &Path,
+    ) -> Result<(), pam_certauth_core::error::MountGuardError> {
+        Ok(())
+    }
+    fn rmdir(&self, _path: &Path) -> Result<(), pam_certauth_core::error::MountGuardError> {
+        Ok(())
+    }
+}
+
+/// In-memory [`FlowIo`] for tests and e2e on tmpfs.  No real mount happens —
+/// the caller pre-stages `mountpoint/certs/{user.p12,chain.pem}` files.
+pub struct InMemoryFlowIo {
+    /// Synthetic device record returned by [`Self::wait_for_usb`].
+    pub device: UsbDevice,
+    /// Pre-staged mountpoint (typically a `tempfile::TempDir`).
+    pub mountpoint: PathBuf,
+    /// Optional canned error to return from `wait_for_usb` (one-shot).
+    pub usb_error: Option<UsbError>,
+    /// Optional canned error to return from `mount` (one-shot).
+    pub mount_error: Option<MountError>,
+}
+
+impl InMemoryFlowIo {
+    /// Build a synthetic flow-io serving `mountpoint`.
+    #[must_use]
+    pub fn new(mountpoint: PathBuf) -> Self {
+        Self {
+            device: UsbDevice {
+                devnode: PathBuf::from("/dev/sdz1"),
+                serial: Some("MOCK".into()),
+                vid: 0x1234,
+                pid: 0x5678,
+                fs_type: Some("vfat".into()),
+            },
+            mountpoint,
+            usb_error: None,
+            mount_error: None,
+        }
+    }
+}
+
+impl FlowIo for InMemoryFlowIo {
+    type Ops = NoopMountOps;
+
+    fn wait_for_usb(&self) -> Result<UsbDevice, UsbError> {
+        if let Some(e) = &self.usb_error {
+            // UsbError doesn't implement Clone; rebuild the most useful variants.
+            return Err(match e {
+                UsbError::Timeout => UsbError::Timeout,
+                UsbError::Udev(s) => UsbError::Udev(s.clone()),
+                UsbError::UnsupportedPlatform => UsbError::UnsupportedPlatform,
+                UsbError::MissingProperty(s) => UsbError::MissingProperty(s.clone()),
+                UsbError::NoMatchingDevice => UsbError::NoMatchingDevice,
+                UsbError::Io(io) => UsbError::Udev(format!("io: {io}")),
+            });
+        }
+        Ok(self.device.clone())
+    }
+
+    fn mount(&self, _dev: &UsbDevice) -> Result<MountSession<Self::Ops>, MountError> {
+        if let Some(e) = &self.mount_error {
+            return Err(match e {
+                MountError::UnsupportedFs(s) => MountError::UnsupportedFs(s.clone()),
+                MountError::MountpointInvalid(p) => MountError::MountpointInvalid(p.clone()),
+                MountError::UnsupportedPlatform => MountError::UnsupportedPlatform,
+                _ => MountError::UnsupportedFs("(replay)".into()),
+            });
+        }
+        let guard = MountGuard::adopt(Arc::new(NoopMountOps), self.mountpoint.clone());
+        Ok(MountSession {
+            mountpoint: self.mountpoint.clone(),
+            guard,
+        })
+    }
+}
+
+#[cfg(test)]
+#[allow(
+    clippy::expect_used,
+    clippy::unwrap_used,
+    clippy::err_expect,
+    clippy::panic,
+    clippy::duration_suboptimal_units
+)]
+mod tests {
+    use super::*;
+    use pam_certauth_core::config::validated::{UserMapping, UserMatchCriteria};
+    use pam_certauth_core::host_identity::HostIdSourceKind;
+    use pam_certauth_core::ipc::StubClient;
+    use pam_certauth_core::trust::openssl_verifier::{OpensslVerifier, OpensslVerifierConfig};
+    use std::time::Duration;
+
+    /// Loads a fixture under `crates/pam_certauth_core/tests/fixtures/`.
+    fn fixture_bytes(name: &str) -> Vec<u8> {
+        let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../pam_certauth_core/tests/fixtures")
+            .join(name);
+        std::fs::read(&path).unwrap_or_else(|e| panic!("read {name}: {e}"))
+    }
+
+    fn stage_p12_mount(p12_name: &str, with_chain: bool) -> tempfile::TempDir {
+        let tmp = tempfile::tempdir().unwrap();
+        let certs_dir = tmp.path().join("certs");
+        std::fs::create_dir(&certs_dir).unwrap();
+        std::fs::write(certs_dir.join("user.p12"), fixture_bytes(p12_name)).unwrap();
+        if with_chain {
+            std::fs::write(certs_dir.join("chain.pem"), fixture_bytes("int.pem")).unwrap();
+        }
+        tmp
+    }
+
+    fn build_verifier() -> OpensslVerifier {
+        let ca = Certificate::from_pem(&fixture_bytes("ca.pem")).unwrap();
+        let int_ = Certificate::from_pem(&fixture_bytes("int.pem")).unwrap();
+        OpensslVerifier::new(OpensslVerifierConfig {
+            anchors: vec![ca],
+            intermediates: vec![int_],
+            crl_pems: vec![],
+            crl_strict: false,
+            clock_skew: Duration::from_secs(60),
+            signature_alg_whitelist: vec![
+                "sha256WithRSAEncryption".into(),
+                "ecdsa-with-SHA256".into(),
+            ],
+            spki_pins: vec![],
+            max_depth: 4,
+            gost_engine_path: None,
+        })
+        .unwrap()
+    }
+
+    fn cn_mapping(user: &str, cn: &str) -> UserMapping {
+        UserMapping {
+            pam_user: user.to_string(),
+            criteria: UserMatchCriteria::SubjectCn(cn.to_string()),
+        }
+    }
+
+    fn minimal_cfg() -> ValidatedConfig {
+        // Build via toml + try_from to avoid restating every default in code.
+        let raw_toml = r#"
+crypto_backend = "openssl"
+mode = "pkcs12"
+pkcs12_path_pattern = "/run/cert.p12"
+pkcs12_pin_prompt = "PIN: "
+usb_wait_seconds = 5
+on_usb_removed = "lock"
+usb_removed_grace_seconds = 5
+suspend_grace_seconds = 30
+monitor_fail_mode = "permissive"
+
+[trust]
+anchors = []
+intermediates = []
+allowed_signature_algorithms = []
+max_chain_depth = 4
+clock_skew_seconds = 60
+
+[trust.revocation]
+mode = "none"
+crl_paths = []
+
+[trust.pinning]
+enabled = false
+allowed_root_spki_sha256 = []
+
+[host_identity]
+sources = ["override"]
+fallback = "deny"
+override = "host-T"
+custom_command_timeout_seconds = 5
+
+[logging]
+level = "info"
+syslog_facility = "auth"
+journald_priority = false
+"#;
+        let raw: pam_certauth_core::config::raw::RawConfig = toml::from_str(raw_toml).unwrap();
+        ValidatedConfig::try_from(&raw).unwrap()
+    }
+
+    #[test]
+    fn happy_path_rsa() {
+        let tmp = stage_p12_mount("leaf_rsa.p12", false);
+        let leaf = Certificate::from_pem(&fixture_bytes("leaf_rsa.pem")).unwrap();
+        let serial = leaf.serial_hex().to_lowercase();
+
+        let verifier = build_verifier();
+        let cfg = minimal_cfg();
+        let mappings = vec![cn_mapping("alice", "alice")];
+
+        let monitor = StubClient;
+        let exec = pam_certauth_core::hooks::NoopExecutor::new();
+        let deps = Deps {
+            cfg: &cfg,
+            trust: &verifier,
+            monitor: &monitor,
+            hook_executor: &exec,
+            host_id_hash: "host-T-hash",
+            host_id_source: HostIdSourceKind::Override,
+            user_mappings: &mappings,
+            pam_target: pam_certauth_proto::SessionTarget::Unknown,
+        };
+
+        let io = InMemoryFlowIo::new(tmp.path().to_path_buf());
+        let outcome = authenticate(deps, &io, "alice", "ssh", "sess-1".into(), |_| {
+            Ok(SecretString::from("correct-pin".to_string()))
+        })
+        .expect("happy path");
+        assert_eq!(outcome.auth_ctx.cert_cn.as_deref(), Some("alice"));
+        assert_eq!(
+            outcome.auth_ctx.cert_serial.as_deref(),
+            Some(serial.as_str())
+        );
+        assert!(outcome.auth_ctx.cert_not_after.is_some());
+    }
+
+    #[test]
+    fn happy_path_ecdsa() {
+        let tmp = stage_p12_mount("leaf_ecdsa.p12", false);
+        let leaf = Certificate::from_pem(&fixture_bytes("leaf_ecdsa.pem")).unwrap();
+        let serial = leaf.serial_hex().to_lowercase();
+
+        let verifier = build_verifier();
+        let cfg = minimal_cfg();
+        let mappings = vec![cn_mapping("bob", "bob")];
+
+        let monitor = StubClient;
+        let exec = pam_certauth_core::hooks::NoopExecutor::new();
+        let deps = Deps {
+            cfg: &cfg,
+            trust: &verifier,
+            monitor: &monitor,
+            hook_executor: &exec,
+            host_id_hash: "host-T-hash",
+            host_id_source: HostIdSourceKind::Override,
+            user_mappings: &mappings,
+            pam_target: pam_certauth_proto::SessionTarget::Unknown,
+        };
+
+        let io = InMemoryFlowIo::new(tmp.path().to_path_buf());
+        let outcome = authenticate(deps, &io, "bob", "ssh", "sess-2".into(), |_| {
+            Ok(SecretString::from("correct-pin".to_string()))
+        })
+        .expect("happy path ecdsa");
+        assert_eq!(outcome.auth_ctx.cert_cn.as_deref(), Some("bob"));
+        assert_eq!(
+            outcome.auth_ctx.cert_serial.as_deref(),
+            Some(serial.as_str())
+        );
+    }
+
+    #[test]
+    fn wrong_pin_three_times_returns_max_tries() {
+        let tmp = stage_p12_mount("leaf_rsa.p12", false);
+        let verifier = build_verifier();
+        let cfg = minimal_cfg();
+        let leaf = Certificate::from_pem(&fixture_bytes("leaf_rsa.pem")).unwrap();
+        let _serial = leaf.serial_hex().to_lowercase();
+        let mappings = vec![cn_mapping("alice", "alice")];
+
+        let monitor = StubClient;
+        let exec = pam_certauth_core::hooks::NoopExecutor::new();
+        let deps = Deps {
+            cfg: &cfg,
+            trust: &verifier,
+            monitor: &monitor,
+            hook_executor: &exec,
+            host_id_hash: "host-T-hash",
+            host_id_source: HostIdSourceKind::Override,
+            user_mappings: &mappings,
+            pam_target: pam_certauth_proto::SessionTarget::Unknown,
+        };
+
+        let io = InMemoryFlowIo::new(tmp.path().to_path_buf());
+        let attempts = std::cell::Cell::new(0_u32);
+        let err = authenticate(deps, &io, "alice", "ssh", "sess-3".into(), |_| {
+            attempts.set(attempts.get() + 1);
+            Ok(SecretString::from("badpin".to_string()))
+        })
+        .unwrap_err();
+        assert!(matches!(err, FlowError::MaxTries));
+        assert_eq!(attempts.get(), 3);
+        assert_eq!(err.pam_code(), 8); // PAM_MAXTRIES
+    }
+
+    #[test]
+    fn missing_p12_returns_authinfo_unavail() {
+        let tmp = tempfile::tempdir().unwrap();
+        // Note: certs/ directory not created.
+        let verifier = build_verifier();
+        let cfg = minimal_cfg();
+        let mappings = vec![cn_mapping("alice", "alice")];
+
+        let monitor = StubClient;
+        let exec = pam_certauth_core::hooks::NoopExecutor::new();
+        let deps = Deps {
+            cfg: &cfg,
+            trust: &verifier,
+            monitor: &monitor,
+            hook_executor: &exec,
+            host_id_hash: "host-T-hash",
+            host_id_source: HostIdSourceKind::Override,
+            user_mappings: &mappings,
+            pam_target: pam_certauth_proto::SessionTarget::Unknown,
+        };
+        let io = InMemoryFlowIo::new(tmp.path().to_path_buf());
+        let err = authenticate(deps, &io, "alice", "ssh", "sess-4".into(), |_| {
+            Ok(SecretString::from("correct-pin".to_string()))
+        })
+        .unwrap_err();
+        assert!(matches!(
+            err,
+            FlowError::Discovery(DiscoveryError::P12NotFound)
+        ));
+        assert_eq!(err.pam_code(), 9); // PAM_AUTHINFO_UNAVAIL
+    }
+
+    #[test]
+    fn subject_mismatch_is_perm_denied() {
+        let tmp = stage_p12_mount("leaf_rsa.p12", false);
+        let leaf = Certificate::from_pem(&fixture_bytes("leaf_rsa.pem")).unwrap();
+        let _serial = leaf.serial_hex().to_lowercase();
+
+        let verifier = build_verifier();
+        let cfg = minimal_cfg();
+        // mapping says alice's CN should be "ghost" — does not match
+        let mappings = vec![cn_mapping("alice", "ghost")];
+
+        let monitor = StubClient;
+        let exec = pam_certauth_core::hooks::NoopExecutor::new();
+        let deps = Deps {
+            cfg: &cfg,
+            trust: &verifier,
+            monitor: &monitor,
+            hook_executor: &exec,
+            host_id_hash: "host-T-hash",
+            host_id_source: HostIdSourceKind::Override,
+            user_mappings: &mappings,
+            pam_target: pam_certauth_proto::SessionTarget::Unknown,
+        };
+        let io = InMemoryFlowIo::new(tmp.path().to_path_buf());
+        let err = authenticate(deps, &io, "alice", "ssh", "sess-5".into(), |_| {
+            Ok(SecretString::from("correct-pin".to_string()))
+        })
+        .unwrap_err();
+        assert!(matches!(err, FlowError::Mapping(_)));
+        assert_eq!(err.pam_code(), 6); // PAM_PERM_DENIED
+    }
+
+    // Cert host/user binding scope is exhaustively tested in
+    // `pam_certauth_core::host_binding::tests`; we don't re-test the
+    // matrix end-to-end here because every fixture cert has `["*"]` for
+    // both extensions (max-permissive).
+
+    // -----------------------------------------------------------------
+    // PKCS#11 dispatch tests (T13)
+    //
+    // We can't synthesize a real `Pkcs11Session`, so the stub returns an
+    // `AcquireError` from `acquire_session`.  That's enough to assert the
+    // dispatcher routes to the PKCS#11 path and propagates errors through
+    // the right `FlowError` variants.
+    // -----------------------------------------------------------------
+
+    use pam_certauth_core::token::pkcs11::{
+        AcquireError as P11Acquire, Pkcs11Error, Pkcs11Session, Slot,
+    };
+
+    fn pkcs11_native_cfg() -> ValidatedConfig {
+        let raw_toml = r#"
+crypto_backend = "pkcs11_native"
+mode = "pkcs11"
+pkcs11_module = "/nonexistent/dummy.so"
+pkcs11_token_label = "Test Token"
+pkcs11_max_pin_attempts = 2
+pkcs11_locking_mode = "os"
+usb_wait_seconds = 1
+on_usb_removed = "lock"
+usb_removed_grace_seconds = 5
+suspend_grace_seconds = 30
+monitor_fail_mode = "permissive"
+
+[trust]
+anchors = []
+intermediates = []
+allowed_signature_algorithms = []
+max_chain_depth = 4
+clock_skew_seconds = 60
+
+[trust.revocation]
+mode = "none"
+crl_paths = []
+
+[trust.pinning]
+enabled = false
+allowed_root_spki_sha256 = []
+
+[host_identity]
+sources = ["override"]
+fallback = "deny"
+override = "host-T"
+custom_command_timeout_seconds = 5
+
+[logging]
+level = "info"
+syslog_facility = "auth"
+journald_priority = false
+"#;
+        let raw: pam_certauth_core::config::raw::RawConfig = toml::from_str(raw_toml).unwrap();
+        ValidatedConfig::try_from(&raw).unwrap()
+    }
+
+    fn pkcs11_openssl_cfg() -> ValidatedConfig {
+        let mut cfg = pkcs11_native_cfg();
+        cfg.crypto_backend = pam_certauth_core::config::validated::CryptoBackend::Openssl;
+        cfg
+    }
+
+    /// Stub [`Pkcs11Io`] used in the dispatch tests.  Every method
+    /// returns a scripted error.
+    #[allow(clippy::struct_field_names)]
+    struct StubPkcs11Io {
+        on_wait: std::cell::RefCell<Option<Result<Slot, Pkcs11Error>>>,
+        on_serial: std::cell::RefCell<Option<Result<String, Pkcs11Error>>>,
+        on_acquire: std::cell::RefCell<Option<Result<Pkcs11Session, P11Acquire>>>,
+    }
+
+    impl StubPkcs11Io {
+        fn new() -> Self {
+            Self {
+                on_wait: std::cell::RefCell::new(None),
+                on_serial: std::cell::RefCell::new(None),
+                on_acquire: std::cell::RefCell::new(None),
+            }
+        }
+        fn slot() -> Slot {
+            Slot::try_from(0_u64).unwrap()
+        }
+    }
+
+    impl Pkcs11Io for StubPkcs11Io {
+        fn wait_for_token(&self) -> Result<Slot, Pkcs11Error> {
+            self.on_wait
+                .borrow_mut()
+                .take()
+                .unwrap_or_else(|| Ok(Self::slot()))
+        }
+        fn read_token_serial(&self, _slot: Slot) -> Result<String, Pkcs11Error> {
+            self.on_serial
+                .borrow_mut()
+                .take()
+                .unwrap_or_else(|| Ok("FAKE-SERIAL".into()))
+        }
+        fn acquire_session(
+            &self,
+            _slot: Slot,
+            _pin_prompter: &mut PinPrompterFn<'_>,
+        ) -> Result<Pkcs11Session, P11Acquire> {
+            self.on_acquire
+                .borrow_mut()
+                .take()
+                .unwrap_or_else(|| Err(P11Acquire::MaxAttemptsExceeded))
+        }
+    }
+
+    /// Build a no-op `InMemoryFlowIo` purely to satisfy the generic
+    /// signature of [`authenticate`] when we know the dispatcher will
+    /// never touch it (the PKCS#11 branch builds its own `Pkcs11Io`).
+    fn dummy_flow_io() -> InMemoryFlowIo {
+        InMemoryFlowIo::new(std::path::PathBuf::from("/tmp/never-used"))
+    }
+
+    #[test]
+    fn dispatcher_routes_pkcs11_openssl_to_not_implemented() {
+        let cfg = pkcs11_openssl_cfg();
+        let verifier = build_verifier();
+        let mappings = vec![cn_mapping("alice", "alice")];
+        let monitor = StubClient;
+        let exec = pam_certauth_core::hooks::NoopExecutor::new();
+        let deps = Deps {
+            cfg: &cfg,
+            trust: &verifier,
+            monitor: &monitor,
+            hook_executor: &exec,
+            host_id_hash: "host-T-hash",
+            host_id_source: HostIdSourceKind::Override,
+            user_mappings: &mappings,
+            pam_target: pam_certauth_proto::SessionTarget::Unknown,
+        };
+        let io = dummy_flow_io();
+        let err = authenticate(deps, &io, "alice", "ssh", "sess-p11-1".into(), |_| {
+            Ok(SecretString::from("any"))
+        })
+        .err()
+        .expect("must fail");
+        assert!(matches!(err, FlowError::Pkcs11OpensslEngineNotImplemented));
+        assert_eq!(err.pam_code(), 9); // PAM_AUTHINFO_UNAVAIL
+    }
+
+    #[test]
+    fn dispatcher_routes_pkcs11_native_with_missing_module_to_pkcs11_error() {
+        // `pkcs11_native_cfg()` references `/nonexistent/dummy.so`; the
+        // dispatcher tries to load it and surfaces `Pkcs11(ModulePathMissing)`.
+        let cfg = pkcs11_native_cfg();
+        let verifier = build_verifier();
+        let mappings = vec![cn_mapping("alice", "alice")];
+        let monitor = StubClient;
+        let exec = pam_certauth_core::hooks::NoopExecutor::new();
+        let deps = Deps {
+            cfg: &cfg,
+            trust: &verifier,
+            monitor: &monitor,
+            hook_executor: &exec,
+            host_id_hash: "host-T-hash",
+            host_id_source: HostIdSourceKind::Override,
+            user_mappings: &mappings,
+            pam_target: pam_certauth_proto::SessionTarget::Unknown,
+        };
+        let io = dummy_flow_io();
+        let err = authenticate(deps, &io, "alice", "ssh", "sess-p11-2".into(), |_| {
+            Ok(SecretString::from("any"))
+        })
+        .err()
+        .expect("must fail");
+        assert!(
+            matches!(err, FlowError::Pkcs11(Pkcs11Error::ModulePathMissing(_))),
+            "got {err:?}"
+        );
+        assert_eq!(err.pam_code(), 9);
+    }
+
+    #[test]
+    fn pkcs11_path_propagates_acquire_max_attempts_as_max_tries() {
+        let cfg = pkcs11_native_cfg();
+        let verifier = build_verifier();
+        let mappings = vec![cn_mapping("alice", "alice")];
+        let monitor = StubClient;
+        let exec = pam_certauth_core::hooks::NoopExecutor::new();
+        let deps = Deps {
+            cfg: &cfg,
+            trust: &verifier,
+            monitor: &monitor,
+            hook_executor: &exec,
+            host_id_hash: "host-T-hash",
+            host_id_source: HostIdSourceKind::Override,
+            user_mappings: &mappings,
+            pam_target: pam_certauth_proto::SessionTarget::Unknown,
+        };
+
+        // We exercise `authenticate_pkcs11` directly with the stub, since
+        // the dispatcher's `RealPkcs11Io` would need a real provider.
+        let stub = StubPkcs11Io::new();
+        // Default behaviour: wait_for_token Ok, read_serial Ok, acquire MaxAttemptsExceeded.
+        let err = authenticate_pkcs11::<NoopMountOps, _, _>(
+            deps,
+            &stub,
+            "alice",
+            "ssh",
+            "sess-p11-3".into(),
+            |_| Ok(SecretString::from("badpin")),
+        )
+        .err()
+        .expect("must fail");
+        assert!(
+            matches!(
+                err,
+                FlowError::Pkcs11Acquire(P11Acquire::MaxAttemptsExceeded)
+            ),
+            "got {err:?}"
+        );
+        assert_eq!(err.pam_code(), 8); // PAM_MAXTRIES
+    }
+
+    #[test]
+    fn pkcs11_path_propagates_token_wait_timeout_as_authinfo_unavail() {
+        let cfg = pkcs11_native_cfg();
+        let verifier = build_verifier();
+        let mappings = vec![cn_mapping("alice", "alice")];
+        let monitor = StubClient;
+        let exec = pam_certauth_core::hooks::NoopExecutor::new();
+        let deps = Deps {
+            cfg: &cfg,
+            trust: &verifier,
+            monitor: &monitor,
+            hook_executor: &exec,
+            host_id_hash: "host-T-hash",
+            host_id_source: HostIdSourceKind::Override,
+            user_mappings: &mappings,
+            pam_target: pam_certauth_proto::SessionTarget::Unknown,
+        };
+
+        let stub = StubPkcs11Io::new();
+        *stub.on_wait.borrow_mut() = Some(Err(Pkcs11Error::TokenWaitTimeout { seconds: 1 }));
+
+        let err = authenticate_pkcs11::<NoopMountOps, _, _>(
+            deps,
+            &stub,
+            "alice",
+            "ssh",
+            "sess-p11-4".into(),
+            |_| Ok(SecretString::from("any")),
+        )
+        .err()
+        .expect("must fail");
+        assert!(
+            matches!(err, FlowError::Pkcs11(Pkcs11Error::TokenWaitTimeout { .. })),
+            "got {err:?}"
+        );
+        assert_eq!(err.pam_code(), 9); // PAM_AUTHINFO_UNAVAIL
+    }
+
+    #[test]
+    fn pkcs11_path_propagates_serial_missing_after_wait_ok() {
+        let cfg = pkcs11_native_cfg();
+        let verifier = build_verifier();
+        let mappings = vec![cn_mapping("alice", "alice")];
+        let monitor = StubClient;
+        let exec = pam_certauth_core::hooks::NoopExecutor::new();
+        let deps = Deps {
+            cfg: &cfg,
+            trust: &verifier,
+            monitor: &monitor,
+            hook_executor: &exec,
+            host_id_hash: "host-T-hash",
+            host_id_source: HostIdSourceKind::Override,
+            user_mappings: &mappings,
+            pam_target: pam_certauth_proto::SessionTarget::Unknown,
+        };
+
+        let stub = StubPkcs11Io::new();
+        *stub.on_serial.borrow_mut() = Some(Err(Pkcs11Error::TokenSerialMissing));
+
+        let err = authenticate_pkcs11::<NoopMountOps, _, _>(
+            deps,
+            &stub,
+            "alice",
+            "ssh",
+            "sess-p11-5".into(),
+            |_| Ok(SecretString::from("any")),
+        )
+        .err()
+        .expect("must fail");
+        assert!(
+            matches!(err, FlowError::Pkcs11(Pkcs11Error::TokenSerialMissing)),
+            "got {err:?}"
+        );
+        assert_eq!(err.pam_code(), 9);
+    }
+
+    // -----------------------------------------------------------------
+    // Stage 5: hook executor wiring tests
+    //
+    // The flow now invokes pre_auth (before USB) and post_auth_success
+    // (after cert verification) hooks via a `&dyn HookExecutor`.  The
+    // tests below confirm:
+    //
+    // 1. A successful executor lets the flow continue.
+    // 2. A pre_auth Abort failure short-circuits to `PreAuthHook` BEFORE
+    //    the USB device is touched (so the in-memory IO would not even
+    //    have to be staged).
+    // 3. A post_auth_success Warn failure does not abort (matches the
+    //    on_failure=warn semantics from `apply_on_failure`).
+    // 4. The PKCS#11 path also calls the same hook stages.
+    // -----------------------------------------------------------------
+
+    use pam_certauth_core::hooks::{
+        HookConfig as Stage5HookConfig, HookOutcome, HookStage as Stage5HookStage, OnFailure, RunAs,
+    };
+    use std::collections::BTreeMap;
+    use std::sync::Mutex;
+
+    /// Mock executor used by the Stage 5 wiring tests.
+    struct MockExec {
+        scripted: Mutex<
+            std::collections::VecDeque<Result<HookOutcome, pam_certauth_core::hooks::HookError>>,
+        >,
+        calls: Mutex<Vec<(Stage5HookStage, Vec<String>)>>,
+    }
+    impl MockExec {
+        fn new(scripted: Vec<Result<HookOutcome, pam_certauth_core::hooks::HookError>>) -> Self {
+            Self {
+                scripted: Mutex::new(scripted.into()),
+                calls: Mutex::new(Vec::new()),
+            }
+        }
+        fn calls(&self) -> Vec<(Stage5HookStage, Vec<String>)> {
+            self.calls.lock().unwrap().clone()
+        }
+    }
+    impl pam_certauth_core::hooks::HookExecutor for MockExec {
+        fn execute(
+            &self,
+            hook: &Stage5HookConfig,
+            _vars: &pam_certauth_core::hooks::HookVars,
+        ) -> Result<HookOutcome, pam_certauth_core::hooks::HookError> {
+            self.calls
+                .lock()
+                .unwrap()
+                .push((hook.stage, hook.command.clone()));
+            self.scripted
+                .lock()
+                .unwrap()
+                .pop_front()
+                .unwrap_or_else(|| {
+                    Ok(HookOutcome {
+                        stage: hook.stage,
+                        command: hook.command.clone(),
+                        exit_code: 0,
+                        killed_by_timeout: false,
+                        duration: std::time::Duration::ZERO,
+                        stdout_lines: 0,
+                        stderr_lines: 0,
+                    })
+                })
+        }
+    }
+
+    fn dummy_stage5_hook(stage: Stage5HookStage, on_failure: OnFailure) -> Stage5HookConfig {
+        Stage5HookConfig {
+            stage,
+            command: vec![format!("/hook/{stage:?}").to_lowercase()],
+            timeout: std::time::Duration::from_secs(5),
+            on_failure,
+            run_as: RunAs::Root,
+            env: BTreeMap::<String, pam_certauth_core::hooks::Template>::new(),
+        }
+    }
+
+    fn nonzero_outcome(stage: Stage5HookStage, code: i32) -> HookOutcome {
+        HookOutcome {
+            stage,
+            command: vec!["/x".into()],
+            exit_code: code,
+            killed_by_timeout: false,
+            duration: std::time::Duration::from_millis(1),
+            stdout_lines: 0,
+            stderr_lines: 0,
+        }
+    }
+
+    #[test]
+    fn pkcs12_calls_pre_auth_and_post_auth_hooks_on_happy_path() {
+        let tmp = stage_p12_mount("leaf_rsa.p12", false);
+        let leaf = Certificate::from_pem(&fixture_bytes("leaf_rsa.pem")).unwrap();
+        let _serial = leaf.serial_hex().to_lowercase();
+
+        let verifier = build_verifier();
+        let mut cfg = minimal_cfg();
+        cfg.hooks = vec![
+            dummy_stage5_hook(Stage5HookStage::PreAuth, OnFailure::Abort),
+            dummy_stage5_hook(Stage5HookStage::PostAuthSuccess, OnFailure::Abort),
+        ];
+        let mappings = vec![cn_mapping("alice", "alice")];
+
+        let monitor = StubClient;
+        let exec = MockExec::new(Vec::new());
+        let deps = Deps {
+            cfg: &cfg,
+            trust: &verifier,
+            monitor: &monitor,
+            hook_executor: &exec,
+            host_id_hash: "host-T-hash",
+            host_id_source: HostIdSourceKind::Override,
+            user_mappings: &mappings,
+            pam_target: pam_certauth_proto::SessionTarget::Unknown,
+        };
+
+        let io = InMemoryFlowIo::new(tmp.path().to_path_buf());
+        authenticate(deps, &io, "alice", "ssh", "sess-h1".into(), |_| {
+            Ok(SecretString::from("correct-pin"))
+        })
+        .expect("happy path with hooks");
+
+        let calls = exec.calls();
+        assert_eq!(calls.len(), 2);
+        assert_eq!(calls[0].0, Stage5HookStage::PreAuth);
+        assert_eq!(calls[1].0, Stage5HookStage::PostAuthSuccess);
+    }
+
+    #[test]
+    fn pkcs12_pre_auth_abort_short_circuits_with_preauthhook_error() {
+        let tmp = stage_p12_mount("leaf_rsa.p12", false);
+        let verifier = build_verifier();
+        let mut cfg = minimal_cfg();
+        cfg.hooks = vec![dummy_stage5_hook(
+            Stage5HookStage::PreAuth,
+            OnFailure::Abort,
+        )];
+        let mappings = vec![cn_mapping("alice", "alice")];
+
+        let monitor = StubClient;
+        let exec = MockExec::new(vec![Ok(nonzero_outcome(Stage5HookStage::PreAuth, 7))]);
+        let deps = Deps {
+            cfg: &cfg,
+            trust: &verifier,
+            monitor: &monitor,
+            hook_executor: &exec,
+            host_id_hash: "host-T-hash",
+            host_id_source: HostIdSourceKind::Override,
+            user_mappings: &mappings,
+            pam_target: pam_certauth_proto::SessionTarget::Unknown,
+        };
+
+        let io = InMemoryFlowIo::new(tmp.path().to_path_buf());
+        let err = authenticate(deps, &io, "alice", "ssh", "sess-h2".into(), |_| {
+            Ok(SecretString::from("correct-pin"))
+        })
+        .unwrap_err();
+        assert!(matches!(err, FlowError::PreAuthHook(_)), "got {err:?}");
+        assert_eq!(err.pam_code(), 7); // PAM_AUTH_ERR
+                                       // Only the pre_auth hook ran; post-auth was never reached.
+        let calls = exec.calls();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].0, Stage5HookStage::PreAuth);
+    }
+
+    #[test]
+    fn pkcs12_post_auth_warn_does_not_block_success() {
+        let tmp = stage_p12_mount("leaf_rsa.p12", false);
+        let leaf = Certificate::from_pem(&fixture_bytes("leaf_rsa.pem")).unwrap();
+        let _serial = leaf.serial_hex().to_lowercase();
+
+        let verifier = build_verifier();
+        let mut cfg = minimal_cfg();
+        cfg.hooks = vec![dummy_stage5_hook(
+            Stage5HookStage::PostAuthSuccess,
+            OnFailure::Warn,
+        )];
+        let mappings = vec![cn_mapping("alice", "alice")];
+
+        let monitor = StubClient;
+        let exec = MockExec::new(vec![Ok(nonzero_outcome(
+            Stage5HookStage::PostAuthSuccess,
+            42,
+        ))]);
+        let deps = Deps {
+            cfg: &cfg,
+            trust: &verifier,
+            monitor: &monitor,
+            hook_executor: &exec,
+            host_id_hash: "host-T-hash",
+            host_id_source: HostIdSourceKind::Override,
+            user_mappings: &mappings,
+            pam_target: pam_certauth_proto::SessionTarget::Unknown,
+        };
+
+        let io = InMemoryFlowIo::new(tmp.path().to_path_buf());
+        let outcome = authenticate(deps, &io, "alice", "ssh", "sess-h3".into(), |_| {
+            Ok(SecretString::from("correct-pin"))
+        })
+        .expect("warn must not abort");
+        assert_eq!(outcome.auth_ctx.cert_cn.as_deref(), Some("alice"));
+        // Hook was indeed invoked.
+        let calls = exec.calls();
+        assert!(calls
+            .iter()
+            .any(|c| c.0 == Stage5HookStage::PostAuthSuccess));
+    }
+
+    #[test]
+    fn pkcs11_pre_auth_abort_short_circuits_before_token_wait() {
+        // A PreAuth Abort must fire before `wait_for_token` is called,
+        // so the stub's wait result is irrelevant.
+        let mut cfg = pkcs11_native_cfg();
+        cfg.hooks = vec![dummy_stage5_hook(
+            Stage5HookStage::PreAuth,
+            OnFailure::Abort,
+        )];
+
+        let verifier = build_verifier();
+        let mappings = vec![cn_mapping("alice", "alice")];
+        let monitor = StubClient;
+        let exec = MockExec::new(vec![Ok(nonzero_outcome(Stage5HookStage::PreAuth, 1))]);
+        let deps = Deps {
+            cfg: &cfg,
+            trust: &verifier,
+            monitor: &monitor,
+            hook_executor: &exec,
+            host_id_hash: "host-T-hash",
+            host_id_source: HostIdSourceKind::Override,
+            user_mappings: &mappings,
+            pam_target: pam_certauth_proto::SessionTarget::Unknown,
+        };
+
+        let stub = StubPkcs11Io::new();
+        // If pre_auth ran AFTER wait_for_token we'd hit MaxAttemptsExceeded.
+        // Asserting PreAuthHook proves the hook ran first.
+        let err = authenticate_pkcs11::<NoopMountOps, _, _>(
+            deps,
+            &stub,
+            "alice",
+            "ssh",
+            "sess-h4".into(),
+            |_| Ok(SecretString::from("any")),
+        )
+        .unwrap_err();
+        assert!(matches!(err, FlowError::PreAuthHook(_)), "got {err:?}");
+    }
+}
