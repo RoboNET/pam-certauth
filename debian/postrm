@@ -4,11 +4,12 @@
 set -e
 
 cleanup_pam_includes() {
-    # P1-M: remove "@include certauth" / "@include certauth-optional" lines
-    # left behind by manual `integrate-pam.sh` invocations from common
-    # service files. Idempotent: missing files and missing lines are
-    # silently ignored. We do NOT touch files that admins haven't edited
-    # because they will not contain the include line.
+    # P1-M: remove "@include certauth" / "@include certauth-optional" /
+    # "@include certauth-only" lines left behind by manual
+    # `integrate-pam.sh` invocations from common service files.
+    # Idempotent: missing files and missing lines are silently ignored.
+    # We do NOT touch files that admins haven't edited because they will
+    # not contain the include line.
     for svc in /etc/pam.d/login \
                /etc/pam.d/sshd \
                /etc/pam.d/sudo \
@@ -16,9 +17,7 @@ cleanup_pam_includes() {
                /etc/pam.d/gdm-password \
                /etc/pam.d/common-auth; do
         [ -f "$svc" ] || continue
-        # Remove lines matching: optional whitespace, @include, whitespace,
-        # certauth or certauth-optional, optional whitespace, EOL.
-        sed -i -E '/^[[:space:]]*@include[[:space:]]+certauth(-optional)?[[:space:]]*$/d' \
+        sed -i -E '/^[[:space:]]*@include[[:space:]]+certauth(-optional|-only)?[[:space:]]*$/d' \
             "$svc" 2>/dev/null || true
     done
 }
@@ -30,6 +29,14 @@ case "$1" in
         rm -rf /var/cache/pam_certauth
         rm -rf /var/lib/pam_certauth
         rm -rf /run/pam_certauth || true
+        # Remove the dedicated system user and its group on purge.
+        # Idempotent: deluser exits 0 if the user is already gone.
+        if getent passwd pamcertauth >/dev/null; then
+            deluser --system pamcertauth >/dev/null 2>&1 || true
+        fi
+        if getent group pamcertauth >/dev/null; then
+            delgroup --system pamcertauth >/dev/null 2>&1 || true
+        fi
         if [ -d /run/systemd/system ]; then
             systemctl daemon-reload >/dev/null 2>&1 || true
         fi

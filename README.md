@@ -17,8 +17,8 @@ passphrase-protected `.p12` on a USB filesystem.
 - RSA / ECDSA via OpenSSL for mixed environments.
 - Host binding through per-cert X.509 v3 extensions — a stolen token on
   another machine does not work.
-- USB-removal monitoring via udev plus automatic
-  lock/logout/shutdown via `systemd-logind` D-Bus.
+- USB-removal monitoring via udev plus configurable response
+  (`lock` / `logout` / `hook` / `shutdown`) via `systemd-logind` D-Bus.
 - Correct suspend/resume handling with a configurable grace window.
 - Integration with `fly-dm`, `sudo`, `login`, `gdm`.
 - CRL and/or OCSP revocation with offline cache for air-gapped
@@ -61,12 +61,59 @@ Detailed architecture: [docs/architecture.md](docs/architecture.md)
 ## Install
 
 ```bash
-sudo apt install ./pam-certauth_0.1.0-1_amd64.deb
+sudo apt install ./pam-certauth_0.1.1-1_amd64.deb
 ```
 
-Dependencies (`gost-engine`, `pcsc-lite`, `libssl3`) are pulled in by
-APT. Full step-by-step walkthrough: [docs/install.md](docs/install.md)
-(Russian).
+Dependencies (`gost-engine`, `pcsc-lite`, `libssl3`, `lsb-base` for the
+SysV init wrapper on non-systemd hosts) are pulled in by APT. Full
+step-by-step walkthrough: [docs/install.md](docs/install.md) (Russian).
+
+## Authorisation model
+
+Authorisation ("which user on which host") lives **inside each
+end-entity certificate** as two private X.509 v3 extensions:
+
+| Extension              | OID                                            | Encoding                |
+|------------------------|------------------------------------------------|-------------------------|
+| `pam_cert_host_binding`| `2.25.183976554325829274683049824615098`        | `SEQUENCE OF UTF8String` |
+| `pam_cert_user_binding`| `2.25.215438916728501023845629178354627`        | `SEQUENCE OF UTF8String` |
+
+When present, these extensions are the **sole source** of authorisation
+— they decide which hosts and which PAM users a certificate may sign in
+to. The `[[user_mapping]]` list in `config.toml` is a **legacy fallback**
+used only for certificates that ship without `pam_cert_user_binding`.
+See [docs/cert-issuance.md](docs/cert-issuance.md) for the
+`openssl.cnf` cookbook.
+
+## Authentication modes
+
+Three modes are shipped as separate PAM snippets and selected via
+`integrate-pam.sh --mode=...`:
+
+| Mode        | Snippet (`/etc/pam.d/`)   | Control                       | Behaviour                                   |
+|-------------|---------------------------|-------------------------------|---------------------------------------------|
+| `2fa`       | `certauth` (default)      | `auth required`               | Cert AND password (classic 2FA).            |
+| `optional`  | `certauth-optional`       | `auth sufficient`             | Cert OR password — phased rollout.          |
+| `cert-only` | `certauth-only`           | `auth [success=done default=die]` | Cert is the sole factor — **lockout-strict**. |
+
+```bash
+sudo /usr/share/pam-certauth/integrate-pam.sh --mode=2fa       /etc/pam.d/sudo
+sudo /usr/share/pam-certauth/integrate-pam.sh --mode=optional  /etc/pam.d/sudo
+sudo /usr/share/pam-certauth/integrate-pam.sh --mode=cert-only /etc/pam.d/sudo
+```
+
+The legacy flags `--strict` / `--optional` are still accepted as
+deprecated aliases for `--mode=2fa` / `--mode=optional`. Before
+deploying `cert-only`, read the lockout warning in
+[docs/install.md §8](docs/install.md) and
+[docs/operations.md §3.6](docs/operations.md).
+
+## Logging
+
+The PAM cdylib emits `tracing` records to syslog (facility `LOG_AUTH`,
+ident `pam_certauth`) — they land in `/var/log/auth.log` (classic
+syslog) or in journald with the `pam_certauth[<pid>]:` prefix. The
+monitord daemon logs to journald via `Type=notify`.
 
 ## Quick start (10-minute test bench)
 
