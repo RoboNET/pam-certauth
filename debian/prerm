@@ -19,7 +19,7 @@ set -e
 
 case "$1" in
     remove|deconfigure)
-        if [ -x /usr/bin/deb-systemd-invoke ]; then
+        if command -v deb-systemd-invoke >/dev/null 2>&1; then
             deb-systemd-invoke stop pam-certauth-monitord.service >/dev/null 2>&1 || true
         fi
         ;;
