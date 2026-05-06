@@ -27,6 +27,20 @@
 - API-документация Rust: запустить `cargo doc --workspace --no-deps`
   локально; результат — в `target/doc/pam_certauth_core/index.html`.
 
+## Что нового в 0.1.1
+
+- Cert-driven авторизация: расширения `pam_cert_host_binding` /
+  `pam_cert_user_binding` имеют приоритет над `[[user_mapping]]`;
+  TOML-список оставлен как legacy fallback.
+- Три эксплуатационных режима (`2fa` / `optional` / `cert-only`),
+  переключаемых `integrate-pam.sh --mode=...`.
+- syslog-backend для PAM-модуля: `tracing::error!` /
+  `tracing::warn!` пишутся в `/var/log/auth.log` под `pam_certauth`.
+- SysV-init скрипт `/etc/init.d/pam-certauth-monitord` — для хостов
+  без systemd.
+- Документированы `on_usb_removed`-режимы, USBGuard-interop и
+  Astra ЗПС (DIGSIG) caveat.
+
 ## English documentation
 
 - [README.md](../README.md) (primary, English)

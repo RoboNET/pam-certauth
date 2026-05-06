@@ -1,6 +1,6 @@
 # Архитектура pam_certauth
 
-Этот документ — единая ссылочная архитектура версии 1.0.0. После
+Этот документ — единая ссылочная архитектура версии 0.1.1. После
 прочтения инженер должен корректно отвечать на вопросы:
 
 - что происходит при вызове `pam_sm_authenticate`?
@@ -162,7 +162,16 @@ PAM-стек делает несколько вызовов в порядке `a
    - challenge-response с приватным ключом;
    - извлечь расширения `pam_cert_host_binding` и
      `pam_cert_user_binding` из leaf-сертификата и сверить их с
-     `host_id_hash` и `pam_user` (`verify_cert_scope`).
+     `host_id_hash` и `pam_user` через `verify_cert_scope`.
+     **Когда `pam_cert_user_binding` присутствует, это единственный
+     источник авторизации для PAM-пользователя**; список
+     `[[user_mapping]]` из `config.toml` в этом случае не читается.
+     Если `pam_cert_user_binding` отсутствует — модуль откатывается
+     на legacy-сравнение через `[[user_mapping]]`. Поведение
+     зафиксировано тестом в
+     `crates/pam_certauth/tests/negative_auth.rs` на фикстуре
+     `leaf_no_user_binding` (см. также unit-тест в
+     `crates/pam_certauth/src/flow.rs`).
 8. При успехе — построить `AuthContext` и сохранить через
    `pam_set_data`.
 9. Отправить `Hello` + `SessionOpen` в monitord (получить `Ack`).
@@ -378,7 +387,7 @@ Newline-delimited JSON (NDJSON):
 Из [`crates/pam_certauth_proto/src/client.rs`](../crates/pam_certauth_proto/src/client.rs):
 
 ```json
-{"type": "hello", "protocol_version": 1, "agent": "libpam_certauth/1.0.0"}
+{"type": "hello", "protocol_version": 1, "agent": "libpam_certauth/0.1.1"}
 ```
 
 ```json
@@ -398,7 +407,7 @@ Newline-delimited JSON (NDJSON):
 Из [`crates/pam_certauth_proto/src/server.rs`](../crates/pam_certauth_proto/src/server.rs):
 
 ```json
-{"type": "hello_ack", "server_version": "1.0.0", "protocol_version": 1}
+{"type": "hello_ack", "server_version": "0.1.1", "protocol_version": 1}
 ```
 
 ```json
@@ -538,7 +547,28 @@ fail-closed. `INTERNAL` и `BAD_REQUEST` — по политике
   `pam_cert_user_binding`) → `PAM_AUTH_ERR` (сообщает: «этот
   пользователь не прошёл»).
 
-## 14. Дальнейшее чтение
+## 14. Журналирование `tracing` → syslog / journald
+
+`tracing`-подписчик cdylib `pam_certauth.so` строится в момент первого
+вызова `pam_sm_*` и шлёт записи в **syslog** через `LOG_AUTH` facility
+с ident `pam_certauth`. На системах с journald эти строки видны через
+`journalctl -t pam_certauth` и попадают в `/var/log/auth.log` (на
+обычном syslog-стеке) с префиксом `pam_certauth[<pid>]:`. Это
+поведение появилось в 0.1.1 (`fix(pam): wire syslog backend for
+tracing subscriber`) — в 0.1.0 cdylib писал в stderr, который libpam
+отбрасывал, и production-диагностика была фактически невозможна.
+
+`pam-certauth-monitord` использует `tracing-journald` и пишет в
+journald через нативный `Type=notify`-канал. На SysV-init хостах без
+journald записи `tracing` уходят в stderr демона; куда они попадут
+дальше — определяется тем, как init-скрипт перенаправляет stderr
+(в стандартной поставке `start-stop-daemon` отдаёт stderr системному
+syslog'у через `logger`).
+
+Полная семантика того, что и на каком уровне логируется, — в
+[docs/operations.md §6](operations.md).
+
+## 15. Дальнейшее чтение
 
 - [docs/threat-model.md](threat-model.md) — какие угрозы покрывает
   каждый из этих fail-closed правил.
