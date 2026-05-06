@@ -56,3 +56,11 @@ override_dh_strip:
 
 override_dh_installsystemd:
 	dh_installsystemd --no-enable --no-start --no-restart-on-upgrade pam-certauth-monitord.service
+
+override_dh_installinit:
+	# SysV init script for hosts without systemd. --name selects the
+	# basename inside /etc/init.d so we get /etc/init.d/pam-certauth-monitord
+	# (matching the systemd unit), not /etc/init.d/pam-certauth.
+	# --no-enable + --no-start mirrors the systemd policy: admin must
+	# drop a config file before bringing the service up.
+	dh_installinit --name=pam-certauth-monitord --no-enable --no-start
