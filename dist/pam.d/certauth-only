@@ -1,0 +1,23 @@
+# /etc/pam.d/certauth-only — CERT-ONLY mode.
+#
+# Cert is the sole authentication factor: when this snippet is active in a
+# PAM service, the password / common-auth chain is BYPASSED entirely on
+# successful cert verification, and DIE'd on failure.
+#
+# How it works:
+#   `auth [success=done default=die] pam_certauth.so`
+#   - on success → PAM stops walking the auth stack with PAM_SUCCESS;
+#                  any later `@include common-auth` is skipped.
+#   - on failure → PAM stops with PAM_AUTH_ERR; later modules are skipped
+#                  too, so password is never offered as a fallback.
+#
+# Inclusion order matters: this snippet MUST appear BEFORE any
+# `@include common-auth` / `auth required pam_unix.so` line in the host
+# PAM config; integrate-pam.sh handles that placement automatically.
+#
+# WARNING: lost or blocked USB token = total lockout. See
+# docs/operations.md § 3.6 for the pre-deploy checklist.
+
+auth     [success=done default=die]  pam_certauth.so
+account  required                    pam_certauth.so
+session  required                    pam_certauth.so
