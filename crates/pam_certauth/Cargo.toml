@@ -26,6 +26,7 @@ pkcs11-tests = ["pam_certauth_core/pkcs11-tests"]
 pam_certauth_core = { path = "../pam_certauth_core", version = "0.1.0" }
 pam_certauth_proto = { path = "../pam_certauth_proto", version = "0.1.0" }
 tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
 syslog = { workspace = true }
 thiserror = { workspace = true }
 secrecy = { workspace = true }

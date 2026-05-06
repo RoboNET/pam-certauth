@@ -123,6 +123,7 @@ pub unsafe extern "C" fn pam_sm_authenticate(
     argv: *const *const std::ffi::c_char,
 ) -> i32 {
     crate::panic_guard::run_pam(|| {
+        crate::logging::init_once();
         // 1. Args + config.
         let args = unsafe { collect_args(argc, argv) };
         let cfg_path = config_path_from_args(&args);
@@ -269,7 +270,10 @@ pub unsafe extern "C" fn pam_sm_setcred(
     _argc: i32,
     _argv: *const *const std::ffi::c_char,
 ) -> i32 {
-    crate::panic_guard::run_pam(|| PAM_SUCCESS)
+    crate::panic_guard::run_pam(|| {
+        crate::logging::init_once();
+        PAM_SUCCESS
+    })
 }
 
 #[cfg(target_os = "linux")]
@@ -286,6 +290,7 @@ pub unsafe extern "C" fn pam_sm_acct_mgmt(
     _argv: *const *const std::ffi::c_char,
 ) -> i32 {
     crate::panic_guard::run_pam(|| {
+        crate::logging::init_once();
         let Some(ctx) = (unsafe { crate::data_handle::get_auth_context(pamh) }) else {
             return PAM_AUTHINFO_UNAVAIL;
         };
@@ -322,6 +327,7 @@ pub unsafe extern "C" fn pam_sm_open_session(
     argv: *const *const std::ffi::c_char,
 ) -> i32 {
     crate::panic_guard::run_pam(|| {
+        crate::logging::init_once();
         // 1. Args + config.
         let args = unsafe { collect_args(argc, argv) };
         let cfg_path = config_path_from_args(&args);
@@ -391,6 +397,7 @@ pub unsafe extern "C" fn pam_sm_close_session(
     argv: *const *const std::ffi::c_char,
 ) -> i32 {
     crate::panic_guard::run_pam(|| {
+        crate::logging::init_once();
         let args = unsafe { collect_args(argc, argv) };
         let cfg_path = config_path_from_args(&args);
         let cfg = match pam_certauth_core::config::load_validated_config(&cfg_path) {
