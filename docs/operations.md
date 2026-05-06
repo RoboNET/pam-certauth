@@ -242,7 +242,111 @@ sudo journalctl -xeu pam-certauth-monitord -n 200
   и прочитать stdout/stderr;
 - отсутствие `gost-engine`: проверить `openssl engine gost -t`.
 
-### 3.5 PAM-стек заблокирован после неудачной правки
+### 3.5 USB-токен заблокирован USBGuard или политикой ЗПС
+
+**Симптом:** аутентификация падает с
+`AUTHINFO_UNAVAIL` сразу после вставки токена; в `/var/log/auth.log`
+строка вида:
+
+```
+pam_certauth: WARN  pam_certauth.flow: usb device found ...
+pam_certauth: WARN  pam_certauth.auth: authentication failed
+              error=mount: mount(2) failed: Operation not permitted (os error 1)
+```
+
+**Причины:**
+
+- USBGuard в `block`-режиме и токен не в allowlist-rule;
+- ЗПС (`astra-digsig-control`) в `enforce`-режиме и
+  `/lib/security/pam_certauth.so` или `/usr/sbin/pam-certauth-monitord`
+  не подписаны валидным ключом из `/etc/digsig/keys/`.
+
+**Диагностика:**
+
+```bash
+# USBGuard
+sudo usbguard list-devices              # столбец "block" → токен заблокирован
+sudo usbguard list-rules
+journalctl -u usbguard.service -n 30 --no-pager
+
+# ЗПС
+sudo astra-digsig-control status        # "ВКЛЮЧЕНО"/"НЕАКТИВНО"
+sudo dmesg | grep -i digsig | tail
+```
+
+**Действие — USBGuard:**
+
+```bash
+# либо разрешить конкретный токен по vid:pid:
+sudo usbguard append-rule \
+    'allow id 0aca:1234 name "Rutoken ECP" hash "ABC..."'
+
+# либо вписать правило в /etc/usbguard/rules.conf и перезапустить:
+sudo systemctl restart usbguard
+```
+
+Дополнительно в systemd-юнит monitord следует добавить порядок запуска,
+чтобы наш демон не стартовал до USBGuard:
+
+```bash
+sudo mkdir -p /etc/systemd/system/pam-certauth-monitord.service.d
+sudo tee /etc/systemd/system/pam-certauth-monitord.service.d/usbguard.conf <<EOF
+[Unit]
+After=usbguard.service
+Wants=usbguard.service
+EOF
+sudo systemctl daemon-reload
+```
+
+**Действие — ЗПС:**
+
+`pam_certauth.so` и `pam-certauth-monitord` обязаны быть подписаны
+системой ЭЦП Astra. На машине разработки подпись устанавливается через
+`bsign` GPG-ключом из доверенного связки `/etc/digsig/keys/`. Production-
+сборки должны проходить через CI Astra-партнёра, который выдаёт
+подписанный `.deb`. Без подписи в `enforce`-режиме никакая
+PAM-аутентификация не пройдёт; logging-only режим не блокирует, но
+заполняет `/var/log/syslog` шумом `DIGSIG: NOT_ELF_SIGNED`.
+
+### 3.6 USB-токен утерян / заблокирован — пользователь не может войти
+
+**Это by-design**, но операторам сети надо понимать последствия.
+
+`pam_certauth` спроектирован как **жёсткий** второй фактор: без
+физического присутствия валидного токена с правильными расширениями
+`pam_cert_host_binding` и `pam_cert_user_binding` пользователь
+**не может пройти** PAM-стек, в который интегрирован модуль
+(`/etc/pam.d/sudo`, `/etc/pam.d/login`, `/etc/pam.d/fly-dm` и т. д.).
+Альтернативного пути аутентификации `pam_certauth` сам не предоставляет.
+
+**Что должен сделать админ ДО первого внедрения:**
+
+1. Сохранить локальный root-shell с выключенным `pam_certauth` или
+   оставить sudoers-правило для админ-аккаунта без второго фактора —
+   иначе блокировка единственного токена выводит из строя машину.
+2. Подготовить процесс выпуска **резервных** сертификатов: каждому
+   привилегированному пользователю — две физические флешки с разными
+   ключами, обе подписаны CA, обе с одинаковым `pam_cert_user_binding`.
+3. Документировать SLA на перевыпуск утерянного сертификата
+   (см. § 3.1 «Компрометация сертификата пользователя»).
+
+**Что произойдёт при потере токена:**
+
+- Все последующие попытки auth → `Authentication service cannot retrieve
+  authentication info` (PAM_AUTHINFO_UNAVAIL после `usb_wait_seconds`,
+  по умолчанию 10 c).
+- `monitord` продолжит работать, но не зарегистрирует ни одной активной
+  сессии — `on_usb_removed`-действие не сработает (нечего блокировать).
+
+**Что произойдёт при блокировке токена USBGuard'ом или ЗПС'ом:**
+
+- То же что при отсутствии токена + строки ошибки в `auth.log` (см. §
+  3.5).
+- Если блокировка случайная (новое правило USBGuard) — рекомендуется
+  держать админ-канал доступа (SSH с key-only auth, без PAM-цепочки
+  pam_certauth) до полной валидации развёртывания.
+
+### 3.7 PAM-стек заблокирован после неудачной правки
 
 **Симптом:** все пользователи (включая root) не могут войти.
 
