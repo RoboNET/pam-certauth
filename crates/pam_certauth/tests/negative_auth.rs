@@ -85,9 +85,9 @@ fn missing_p12_returns_authinfo_unavail() {
 
 #[test]
 fn subject_mismatch_returns_perm_denied() {
-    let _serial = leaf_serial("leaf_rsa.pem");
+    let _serial = leaf_serial("leaf_no_user_binding.pem");
     let err = run_flow_with(
-        "leaf_rsa.p12",
+        "leaf_no_user_binding.p12",
         vec![cn_mapping("alice", "ghost")], // expect CN=ghost; cert has CN=alice
         (),
         "alice",
