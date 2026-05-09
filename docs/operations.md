@@ -172,6 +172,38 @@ openssl crl -in /etc/pam_certauth/crl/staff.crl -noout -lastupdate -nextupdate
 `monitord` перечитывать конфиг не требуется — изменения вступают в
 силу при следующем `pam_sm_authenticate`.
 
+### 2.4 Раскатка клонированного образа
+
+**Когда:** установили один эталонный АРМ, сняли образ, разворачиваете
+по парку. На каждой железке `machine_id` / DMI / hostname уникальны и
+отличаются от эталонного.
+
+Workflow подробно — в [cert-issuance.md](cert-issuance.md), раздел
+«Workflow для клонированных образов». Краткий план:
+
+1. На эталоне `config.toml` — `[host_identity].sources = ["override"]`
+   + `override = "installation"`, в trust store — bootstrap-сертификат
+   с `host_binding = "installation"` (см. `dist/admin-tools/issue-service-cert.sh`,
+   режим `bootstrap`).
+2. Клон образа → новая железка → boot. Bootstrap-сертификат принят.
+3. Оператор на АРМ-е запускает:
+   ```bash
+   sudo /usr/share/pam-certauth/finish-bootstrap.sh
+   ```
+   Скрипт меняет `sources` на реальные (по умолчанию
+   `["dmi_board_serial", "machine_id"]`), валидирует конфиг,
+   перезапускает daemon, снимает дамп host_id'ов на USB.
+4. Оператор приносит USB CA-админу. Админ выписывает per-host
+   сертификат по `hash_hex` из строки `active_under_current_config=yes`,
+   кладёт через `dist/admin-tools/prepare-usb-flash.sh` обратно
+   на ту же флешку.
+5. Оператор возвращает USB на АРМ — bootstrap-сертификат больше
+   не валиден (host_id_hash изменился после flip-а), работает только
+   per-host цепочка.
+
+Для ansible-раскатки скрипт принимает `--non-interactive` и
+`--sources "dmi_board_serial,machine_id"`. Идемпотентен.
+
 ## 3. Действия при инцидентах
 
 ### 3.1 Компрометация сертификата пользователя
