@@ -226,6 +226,28 @@ jobs:
           if-no-files-found: error
           retention-days: 30
 
+      # ---- Admin-tools tarball: только на ubuntu-таргете и только на тегах v*.
+      # Скрипты не зависят от target/feature flags — собираем их один раз,
+      # чтобы избежать дубликата артефакта между matrix-job'ами.
+
+      - name: Create admin-tools tarball
+        if: matrix.target.id == 'ubuntu' && startsWith(github.ref, 'refs/tags/v')
+        run: |
+          set -euxo pipefail
+          VER=$(dpkg-parsechangelog -SVersion)
+          tar -czf "pam-certauth-admin-tools-${VER}.tar.gz" \
+              --transform "s|^dist/admin-tools|pam-certauth-admin-tools-${VER}|" \
+              dist/admin-tools
+          ls -la "pam-certauth-admin-tools-${VER}.tar.gz"
+
+      - name: Upload admin-tools artifact
+        if: matrix.target.id == 'ubuntu' && startsWith(github.ref, 'refs/tags/v')
+        uses: actions/upload-artifact@v4
+        with:
+          name: pam-certauth-admin-tools
+          path: pam-certauth-admin-tools-*.tar.gz
+          if-no-files-found: error
+
   # ---- Релиз: оба артефакта (astra + ubuntu) уходят в GitHub Release.
 
   release:
@@ -250,6 +272,12 @@ jobs:
           name: pam-certauth-deb-ubuntu
           path: ./artifacts/ubuntu
 
+      - name: Download admin-tools tarball
+        uses: actions/download-artifact@v4
+        with:
+          name: pam-certauth-admin-tools
+          path: ./artifacts/admin-tools
+
       - name: Suffix .deb files with target id
         # Оба .deb называются одинаково (pam-certauth_X.Y.Z-1_amd64.deb).
         # Перед заливкой в Release дописываем '-astra' / '-ubuntu' в имя,
@@ -268,6 +296,8 @@ jobs:
           # .changes/.buildinfo тоже кладём (без переименования —
           # пусть будут под подкаталогами для аудита).
           cp artifacts/astra/*.{changes,buildinfo} release/ 2>/dev/null || true
+          # Admin-tools tarball — имя уже содержит версию, кладём как есть.
+          cp artifacts/admin-tools/*.tar.gz release/ 2>/dev/null || true
           ls -la release/
 
       - name: Create GitHub release
