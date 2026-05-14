@@ -163,13 +163,14 @@ pub unsafe fn prompt_pin(
         // zeroing in place before free does not extend its lifetime.
         unsafe { std::ptr::write_bytes(resp.resp.cast::<u8>(), 0_u8, len) };
     }
-    // SAFETY: resp.resp and resp_ptr are both non-null libpam-owned
-    // allocations (malloc'd by the conv callback per the PAM contract);
-    // no other pointers derived from them are retained past these calls.
-    unsafe {
-        free(resp.resp.cast::<c_void>());
-        free(resp_ptr.cast::<c_void>());
-    }
+    // SAFETY: resp.resp is a non-null libpam-owned allocation (malloc'd
+    // by the conv callback per the PAM contract); no other pointers
+    // derived from it are retained past this call.
+    unsafe { free(resp.resp.cast::<c_void>()) };
+    // SAFETY: resp_ptr is a non-null libpam-owned allocation (malloc'd
+    // by the conv callback per the PAM contract); no other pointers
+    // derived from it are retained past this call.
+    unsafe { free(resp_ptr.cast::<c_void>()) };
 
     let pin_str = pin_result.map_err(|_| PamConvError::NonUtf8)?;
     Ok(SecretString::from(pin_str))

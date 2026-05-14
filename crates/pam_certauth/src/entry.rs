@@ -58,7 +58,9 @@ pub unsafe fn collect_args(
     for i in 0..argc {
         // SAFETY: `argv` points to `argc` valid C string pointers per the
         // function safety contract; `i` is bounded by `0..argc`.
-        let ptr = unsafe { *argv.add(i as usize) };
+        let slot = unsafe { argv.add(i as usize) };
+        // SAFETY: `slot` is a valid C string pointer slot derived above.
+        let ptr = unsafe { *slot };
         if ptr.is_null() {
             continue;
         }
@@ -93,7 +95,9 @@ pub unsafe fn collect_args_raw(
     for i in 0..argc {
         // SAFETY: `argv` points to `argc` valid C string pointers per the
         // function safety contract; `i` is bounded by `0..argc`.
-        let ptr = unsafe { *argv.add(i as usize) };
+        let slot = unsafe { argv.add(i as usize) };
+        // SAFETY: `slot` is a valid C string pointer slot derived above.
+        let ptr = unsafe { *slot };
         if ptr.is_null() {
             continue;
         }
