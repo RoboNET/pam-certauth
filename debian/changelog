@@ -17,7 +17,7 @@ pam-certauth (0.2.1-1) unstable; urgency=medium
   * Fix(misc): hooks docstring path corrected; scope-match dedup
     stable; fail-closed host_id_hash; monitord runs non-root cleanly.
 
- -- pam_certauth maintainers <maintainers@example.org>  Wed, 13 May 2026 00:00:00 +0000
+ -- pam_certauth maintainers <maintainers@example.org>  Thu, 14 May 2026 00:00:00 +0000
 
 pam-certauth (0.2.0-1) unstable; urgency=medium
 
