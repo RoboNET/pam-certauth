@@ -198,3 +198,74 @@ signing_time_skew_seconds = 60
     assert!(!raw.policy.require_approver_eku);
     assert_eq!(raw.policy.signing_time_skew_seconds, Some(60));
 }
+
+/// Regression: setup-mof-n-scenario.sh (pre-PR#3) used field names that
+/// don't exist in the schema. These TOML snippets MUST be rejected, not
+/// silently parsed. Catches future drift between docs/scripts and the
+/// validator.
+#[test]
+fn rejects_legacy_setup_logging_journald_bool() {
+    // The legacy setup-mof-n script wrote `journald = true` / `syslog = false`
+    // under [logging]; the real schema demands level / syslog_facility /
+    // journald_priority.  Build TOML with the bad fields and check parse fails.
+    let toml = r#"
+crypto_backend = "openssl"
+mode = "pkcs12"
+pkcs12_path_pattern = "/tmp/p.p12"
+pkcs12_pin_prompt = "PIN: "
+
+[host_identity]
+sources = ["machine_id"]
+
+[logging]
+journald = true
+syslog = false
+
+[trust]
+anchors = ["/etc/pam_certauth/ca.pem"]
+"#;
+    let err = toml::from_str::<RawConfig>(toml).unwrap_err().to_string();
+    assert!(
+        err.contains("journald") || err.contains("unknown field"),
+        "expected unknown field error mentioning journald, got: {err}"
+    );
+}
+
+#[test]
+fn rejects_legacy_monitor_ipc_socket_path() {
+    let toml = format!(
+        "{}\n[trust]\nanchors = [\"/etc/pam_certauth/ca.pem\"]\n[monitor]\nipc_socket_path = \"/run/x.sock\"\n",
+        base_config()
+    );
+    let err = toml::from_str::<RawConfig>(&toml).unwrap_err().to_string();
+    assert!(
+        err.contains("ipc_socket_path") || err.contains("unknown field"),
+        "expected unknown field error mentioning ipc_socket_path, got: {err}"
+    );
+}
+
+#[test]
+fn rejects_legacy_policy_forbid_self_approval_field() {
+    let toml = format!(
+        "{}\n[trust]\nanchors = [\"/etc/pam_certauth/ca.pem\"]\n[policy]\nforbid_self_approval = true\n",
+        base_config()
+    );
+    let err = toml::from_str::<RawConfig>(&toml).unwrap_err().to_string();
+    assert!(
+        err.contains("forbid_self_approval") || err.contains("unknown field"),
+        "expected unknown field error mentioning forbid_self_approval, got: {err}"
+    );
+}
+
+#[test]
+fn rejects_legacy_policy_retention_days_field() {
+    let toml = format!(
+        "{}\n[trust]\nanchors = [\"/etc/pam_certauth/ca.pem\"]\n[policy]\nretention_days = 7\n",
+        base_config()
+    );
+    let err = toml::from_str::<RawConfig>(&toml).unwrap_err().to_string();
+    assert!(
+        err.contains("retention_days") || err.contains("unknown field"),
+        "expected unknown field error mentioning retention_days, got: {err}"
+    );
+}

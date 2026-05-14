@@ -141,7 +141,10 @@ write_leaf_extfile() {
     local outfile=$1 is_approver=$2
     local eku_line=""
     if [[ "$is_approver" == "1" ]]; then
-        eku_line="extendedKeyUsage = clientAuth, $APPROVER_EKU_OID"
+        # emailProtection is required by OpenSSL's CMS_verify cert-purpose
+        # check; without it CMS_verify rejects signers with "unsuitable
+        # certificate purpose". Documented in docs/work-order.md.
+        eku_line="extendedKeyUsage = clientAuth, emailProtection, $APPROVER_EKU_OID"
     else
         eku_line="extendedKeyUsage = clientAuth"
     fi
