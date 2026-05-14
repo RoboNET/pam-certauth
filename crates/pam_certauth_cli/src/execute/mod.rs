@@ -544,6 +544,16 @@ fn max_level(a: AuditLevel, b: AuditLevel) -> AuditLevel {
 }
 
 fn current_uid() -> u32 {
+    // pam-certauth execute is invoked via sudo, which elevates the real and
+    // effective uid to 0. The monitor daemon registers PAM-authed engineer
+    // sessions under the engineer's own uid, not root. Sudo exports
+    // SUDO_UID with the invoking user's uid — prefer that when present so
+    // GetActiveSessionByUid finds the engineer's session.
+    if let Ok(raw) = std::env::var("SUDO_UID") {
+        if let Ok(uid) = raw.parse::<u32>() {
+            return uid;
+        }
+    }
     // SAFETY: `getuid` is a syscall wrapper with no preconditions.
     #[allow(unsafe_code)]
     unsafe {
