@@ -6,30 +6,18 @@
 JaCarta ГОСТ). Модуль рассчитан на защищённые контуры, банкоматные
 станции и автоматизированные рабочие места операторов АСУ ТП.
 
-## Что нового в 0.2.0
+## Что нового в 0.3.0
 
-В 0.2.0 поверх входа по сертификату добавляется **per-action M-of-N
-авторизация**. Новое X.509-расширение `pam_cert_scopes` объявляет
-список scope (например, `bios.flash`, `cluster.drain`), которые
-сертификат вправе запускать. Новая подкоманда
-`pam-certauth execute --scope=… --work-order=…` проверяет CMS
-SignedData work order, подписанный *N* подтверждающими, против
-TOML-политики `/etc/pam_certauth/policy.toml`, а затем запускает
-целевую команду. PAM-модуль получает параметр `require_scope=…`
-для scope-фильтра на этапе логина. См. [docs/index.md](docs/index.md)
-и [docs/migration.md](docs/migration.md) для апгрейда с 0.1.x.
+В 0.3.0 добавлена **интеграция мандатного контроля целостности (МКЦ)**
+для Astra SE strict mode. Новое X.509-расширение
+`pam_cert_max_integrity` задаёт верхний потолок целостности для
+сессии инженера; финальная метка накладывается на дерево процессов
+через libpdp/libparsec и аудитируется. Конфигурация — в новой
+секции `[mac]`. См. [docs/install.md](docs/install.md) и
+[docs/configuration.md](docs/configuration.md).
 
-- **На ATM нет интерактивного root.** Классические административные
-  сессии `sudo -i` заменены узкими M-of-N-одобренными вызовами
-  `pam-certauth execute`. Учётки инженеров на ATM — обычные
-  пользователи, без членства в `wheel` / `sudo` / `admin` и без
-  широких правил `NOPASSWD: ALL`. Единственное sudoers-правило —
-  `%atm_engineers ALL=(root) NOPASSWD: /usr/bin/pam-certauth
-  execute *`; других путей к root у инженера нет, а каждая
-  привилегированная операция подписана `N` независимыми
-  операторами и атрибутируется минимум трём людям (инженер +
-  ≥`M` одобряющих). См. [docs/threat-model.md §1.2](docs/threat-model.md)
-  и [docs/architecture.md §1.1.1](docs/architecture.md).
+Эксперимент 0.2.x (scopes / M-of-N work-order / approver-EKU)
+отозван; поверхность вернулась к базе 0.1.x cert-auth плюс МКЦ.
 
 ## Возможности
 
