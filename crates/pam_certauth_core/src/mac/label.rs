@@ -174,10 +174,10 @@ impl IntegrityLabel {
             buf[8 - bits.len()..].copy_from_slice(bits);
             u64::from_be_bytes(buf)
         };
-        // TODO(Phase 5 Task 5.1): if `categories >> 32 != 0`, call
-        // `crate::mac::audit::emit_categories_above_32bit(categories)`.
-        // This is a diagnostic Notice event, not a validation failure —
-        // parser intentionally returns Ok on high bits.
+        // N3: emit Notice for >32-bit categories (see audit::emit_categories_above_32bit).
+        if categories >> 32 != 0 {
+            crate::mac::audit::emit_categories_above_32bit(categories);
+        }
         Ok(Self { level, categories })
     }
 }

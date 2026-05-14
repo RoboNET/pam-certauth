@@ -561,6 +561,36 @@ graph TD
 - **9.1.5 host_id rebind.** Подменив `host_id`, атакующий
   перепривязывает сертификат к другому хосту.
 
+### 9.1.6 `irelax` + UID 0 = forge (in-scope, out-of-mitigation)
+
+monitord и pam_certauth.so применяют `irelax` к собственным файлам
+(`/run/pam_certauth/monitord.sock`, `/var/lib/pam_certauth/sessions.json`)
+через `PARSEC_CAP_CHMAC` privilege пользователя `pamcertauth`. Это
+необходимо: engineer с НКЦ=1 должен мочь писать receipt'ы в lvl=0
+daemon через socket, который и сам помечен `irelax`.
+
+Hostile UID-0 process (root-equivalent) с тем же `PARSEC_CAP_CHMAC`
+capability может attach identical `irelax` labels к собственным
+файлам и forge entries в `sessions.json`, либо подключаться к
+сокету из произвольного НКЦ. **Не блокируется в коде**: defense — UID
+boundary (root-equivalence axiomatically wins under МКЦ), не
+integrity.
+
+Mitigations за границами этой угрозы:
+
+- DAC `0600 root:root` на `sessions.json` + parent dir
+  `0750 pamcertauth:pamcertauth` ограничивают write-access non-CHMAC
+  процессам.
+- digsig verification на `pam-certauth(-monitord)` бинарях детектит
+  runtime tampering.
+- Audit log на каждый `mac_apply_failed` / `mac_caps_missing` exposes
+  unexpected backend behavior.
+
+Trust boundary этого дизайна — **UID 0 vs non-root**, не integrity
+level. Угроза признана in-scope и явно out-of-mitigation для PAM-слоя:
+защита от UID-0 forge — задача ОС (digsig, ЗПС, hardware root-of-trust),
+не модуля аутентификации.
+
 ### 9.2 Защиты
 
 - **9.2.1** Эффективная метка всегда пересекается с
