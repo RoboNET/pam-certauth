@@ -7,7 +7,7 @@ use std::time::Duration;
 use crate::config::raw::{
     RawCertIntegrityMode, RawConfig, RawCryptoBackend, RawHostIdFallback, RawHostIdentity,
     RawMacPolicy, RawMode, RawMonitor, RawMonitorFailMode, RawOnUsbRemoved, RawPkcs11LockingMode,
-    RawPolicySection, RawRevocationMode, RawTrust, RawTrustOverride, RawUserMapping,
+    RawRevocationMode, RawTrust, RawTrustOverride, RawUserMapping,
 };
 use crate::error::TrustError;
 use crate::hooks::{validate_hook, HookConfig};
@@ -64,14 +64,6 @@ pub struct ValidatedConfig {
     pub monitor: MonitorSection,
     /// Trust section.
     pub trust: TrustSection,
-    /// Optional approver-CA trust section (spec §2.2, m-of-n approvers).
-    /// `None` when `[approver_trust]` is absent in raw config.
-    pub approver_trust: Option<TrustSection>,
-    /// Optional TSA trust section (spec §2.3, RFC 3161 `TimestampToken`).
-    /// `None` when `[tsa_trust]` is absent in raw config.
-    pub tsa_trust: Option<TrustSection>,
-    /// Policy section (spec §5.4).
-    pub policy: PolicySection,
     /// Trust overrides.
     pub trust_overrides: Vec<TrustOverride>,
     /// Host identity.
@@ -311,33 +303,6 @@ pub enum UserMatchCriteria {
     SanUpn(String),
 }
 
-/// Validated `[policy]` section (spec §5.4).
-#[derive(Debug, Clone)]
-pub struct PolicySection {
-    /// Absolute path to the external policy TOML.  Defaults to
-    /// `/etc/pam_certauth/policy.toml`.
-    pub path: PathBuf,
-    /// How often to re-poll the KRL for changes.  Defaults to 5 minutes.
-    pub krl_poll_interval: Duration,
-    /// Whether approver certificates must carry the approver-EKU.
-    /// Defaults to `true`.
-    pub require_approver_eku: bool,
-    /// Allowed skew between approval signing time and verification
-    /// time.  Defaults to 5 minutes.
-    pub signing_time_skew: Duration,
-}
-
-impl Default for PolicySection {
-    fn default() -> Self {
-        Self {
-            path: PathBuf::from(DEFAULT_POLICY_PATH),
-            krl_poll_interval: Duration::from_secs(DEFAULT_KRL_POLL_INTERVAL_SECS),
-            require_approver_eku: true,
-            signing_time_skew: Duration::from_secs(DEFAULT_SIGNING_TIME_SKEW_SECS),
-        }
-    }
-}
-
 /// Logging section.
 #[derive(Debug, Clone)]
 pub struct LoggingSection {
@@ -373,13 +338,6 @@ impl TryFrom<&RawConfig> for ValidatedConfig {
 
     fn try_from(raw: &RawConfig) -> Result<Self, Self::Error> {
         let trust = validate_trust(&raw.trust)?;
-        let approver_trust = raw
-            .approver_trust
-            .as_ref()
-            .map(validate_trust)
-            .transpose()?;
-        let tsa_trust = raw.tsa_trust.as_ref().map(validate_trust).transpose()?;
-        let policy = validate_policy(&raw.policy)?;
         let host_identity = validate_host_identity(&raw.host_identity)?;
         let user_mappings = validate_user_mappings(&raw.user_mapping)?;
         let logging = LoggingSection {
@@ -433,9 +391,6 @@ impl TryFrom<&RawConfig> for ValidatedConfig {
             },
             monitor: validate_monitor(raw, &raw.monitor, raw.monitor_fail_mode)?,
             trust,
-            approver_trust,
-            tsa_trust,
-            policy,
             trust_overrides: raw
                 .trust_override
                 .iter()
@@ -466,7 +421,9 @@ fn validate_mac(raw: &RawMacPolicy) -> Result<MacPolicy, Error> {
     #[cfg(not(feature = "astra-mac"))]
     if matches!(cert_integrity, CertIntegrityMode::Required) {
         return Err(Error::ConfigInvalid {
-            reason: "[mac].cert_integrity = \"required\" but binary built without `astra-mac` feature".into(),
+            reason:
+                "[mac].cert_integrity = \"required\" but binary built without `astra-mac` feature"
+                    .into(),
         });
     }
     let fallback_max_integrity = raw
@@ -771,55 +728,6 @@ fn validate_pkcs11_section(raw: &RawConfig, mode: Mode) -> Result<(), Error> {
         }
     }
     Ok(())
-}
-
-/// Default external policy file path (spec §5.4).
-const DEFAULT_POLICY_PATH: &str = "/etc/pam_certauth/policy.toml";
-/// Default KRL re-poll interval (spec §5.4).  5 minutes.
-const DEFAULT_KRL_POLL_INTERVAL_SECS: u64 = 300;
-/// Default approval signing-time skew tolerance (spec §5.4).  5 minutes.
-const DEFAULT_SIGNING_TIME_SKEW_SECS: u64 = 300;
-/// Hard cap on `[policy].krl_poll_interval_seconds` (1 day).
-const POLICY_KRL_POLL_INTERVAL_MAX: u64 = 86_400;
-/// Hard cap on `[policy].signing_time_skew_seconds` (1 hour).
-const POLICY_SIGNING_TIME_SKEW_MAX: u64 = 3_600;
-
-fn validate_policy(raw: &RawPolicySection) -> Result<PolicySection, Error> {
-    let path = raw
-        .path
-        .clone()
-        .unwrap_or_else(|| PathBuf::from(DEFAULT_POLICY_PATH));
-    if !path.is_absolute() {
-        return Err(Error::ConfigInvalid {
-            reason: format!("policy.path must be absolute (got {})", path.display()),
-        });
-    }
-    let krl_secs = raw
-        .krl_poll_interval_seconds
-        .unwrap_or(DEFAULT_KRL_POLL_INTERVAL_SECS);
-    if krl_secs == 0 || krl_secs > POLICY_KRL_POLL_INTERVAL_MAX {
-        return Err(Error::ConfigInvalid {
-            reason: format!(
-                "policy.krl_poll_interval_seconds must be in 1..={POLICY_KRL_POLL_INTERVAL_MAX} (got {krl_secs})"
-            ),
-        });
-    }
-    let skew_secs = raw
-        .signing_time_skew_seconds
-        .unwrap_or(DEFAULT_SIGNING_TIME_SKEW_SECS);
-    if skew_secs > POLICY_SIGNING_TIME_SKEW_MAX {
-        return Err(Error::ConfigInvalid {
-            reason: format!(
-                "policy.signing_time_skew_seconds must be <= {POLICY_SIGNING_TIME_SKEW_MAX} (got {skew_secs})"
-            ),
-        });
-    }
-    Ok(PolicySection {
-        path,
-        krl_poll_interval: Duration::from_secs(krl_secs),
-        require_approver_eku: raw.require_approver_eku,
-        signing_time_skew: Duration::from_secs(skew_secs),
-    })
 }
 
 /// Default monitord socket path when `[monitor].socket_path` is unset.
