@@ -12,6 +12,7 @@ use clap::{Parser, Subcommand};
 use pam_certauth_cli::daemon::{self, DaemonArgs};
 use pam_certauth_cli::execute;
 use pam_certauth_cli::gc_cmd::{self, GcArgs};
+use pam_certauth_cli::logging;
 use pam_certauth_cli::policy_cmd::{self, PolicyArgs};
 
 #[derive(Debug, Parser)]
@@ -36,6 +37,16 @@ enum Cmd {
 
 fn main() -> ExitCode {
     let cli = Cli::parse();
+    // Initialise tracing once for every subcommand so audit events
+    // (`execute_start`, `execute_done`, `execute_denied`, GC sweep,
+    // policy explain, …) land in journald uniformly — not just when
+    // we run as a systemd unit child.  `daemon::run_async` calls
+    // `logging::init` again; the OnceLock guard inside makes that a
+    // no-op.  Failure is logged to stderr and the process continues
+    // — tracing is best-effort, not a hard prereq.
+    if let Err(e) = logging::init() {
+        eprintln!("pam-certauth: failed to initialise tracing: {e:#}");
+    }
     match cli.cmd {
         Cmd::Daemon(args) => daemon::run(args),
         Cmd::Execute(args) => execute::run(args),
