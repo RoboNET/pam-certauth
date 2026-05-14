@@ -95,8 +95,27 @@ scp work_order.cms atm-01:/tmp/
 | `messageDigest`  | `1.2.840.113549.1.9.4`  | автоматически                   |
 | `signing-time`   | `1.2.840.113549.1.9.5`  | автоматически                   |
 
-`signing-time` валидируется против `now ± signing_time_skew_seconds`
-(см. `configuration.md` → `[policy]`).
+`signing-time` сохраняется **только для аудита** и не сравнивается с
+часами ATM. Авторитативной временной границей служит срок действия
+сертификата подписанта (`notBefore`/`notAfter`).
+
+> **Почему не enforced (0.2.2+):** банковский workflow штатно
+> предполагает заблаговременную (за дни/недели) подпись work-order
+> для запланированных работ. Симметричная проверка `now ± skew`
+> ломает этот сценарий. Кроме того, эта проверка слабо защищает от
+> скомпрометированного approver-токена — атакующий, владеющий
+> ключом, контролирует и `signing-time`. Реальная защита от такого
+> сценария — оперативный KRL polling и короткий срок действия
+> approver-сертификата для чувствительных scope. См.
+> `threat-model.md` §3.15.
+>
+> Параметр `signing_time_skew_seconds` в `[policy]` сохраняется в
+> схеме конфигурации только ради обратной совместимости (старые
+> `config.toml` продолжают парситься); значение игнорируется.
+
+Само значение `signing-time` каждого подписанта пробрасывается в
+`VerifiedSigner.signing_time` и отдаётся в audit-события — SIEM
+видит, когда именно был подписан work-order.
 
 ## Optional unsigned-attrs
 
@@ -157,7 +176,8 @@ scp work_order.cms atm-01:/tmp/
 | Каждый сертификат подписанта валиден против `[approver_trust]`             | `config.toml`                       |
 | Каждый сертификат содержит EKU `approver_eku` (если `require_approver_eku`)| `[policy]` в `config.toml`          |
 | Каждый сертификат содержит расширение `pam_cert_scopes` со scope          | `x509-extensions.md`                |
-| `signing-time` в пределах `now ± signing_time_skew_seconds`                | `[policy]`                          |
+| `signing-time` распарсен и сохранён в `VerifiedSigner.signing_time` (audit-only, не enforced) | CMS signed-attrs |
+| EKU подписанта включает `emailProtection` (`1.3.6.1.5.5.7.3.4`) — требование OpenSSL `CMS_verify` | `cert-issuance.md`, `x509-extensions.md` |
 | KRL/CRL/OCSP для каждого подписанта — не отозван                           | `[approver_trust.revocation]`       |
 | Все SKI подписантов уникальны (нет дублей)                                 | hardcoded                           |
 | Если `forbid_self_approval = true` → ни один SKI не равен `engineer_ski`   | `policy.toml` + IPC GetActiveSession |

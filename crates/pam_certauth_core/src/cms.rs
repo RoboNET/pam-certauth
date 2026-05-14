@@ -106,6 +106,16 @@ pub enum CmsVerifyError {
     #[error("signer cert lacks approver EKU")]
     EkuMissing,
     /// `signingTime` attribute is outside the allowed skew window.
+    ///
+    /// Retained for source compatibility in the 0.2.x series; the
+    /// signing-time skew enforcement was dropped in 0.2.2 (the cert
+    /// validity window is the authoritative time bound — see
+    /// `docs/work-order.md`).  No code path constructs this variant
+    /// any more.
+    #[deprecated(
+        since = "0.2.2",
+        note = "signing-time skew enforcement was dropped; cert validity is the time bound"
+    )]
     #[error("signing-time outside skew window")]
     SigningTimeOutOfWindow,
     /// Policy requires an RFC 3161 timestamp token but none was present.
@@ -139,6 +149,12 @@ pub struct VerifyParams<'a> {
     /// unsigned attributes.
     pub require_timestamp_token: bool,
     /// Allowed clock skew (seconds) for the `signingTime` signed attr.
+    ///
+    /// **Unused since 0.2.2** — the symmetric skew check broke
+    /// legitimate pre-signing of work orders ahead of execution.  The
+    /// cert validity window is now the authoritative time bound.
+    /// Retained for source compatibility in 0.2.x callers; the value
+    /// is ignored by `verify`.
     pub signing_time_skew_seconds: u64,
     /// Optional TSA trust store.  Required when
     /// `require_timestamp_token` is set.
@@ -274,10 +290,13 @@ pub fn verify(
             signing_time_map.len()
         )));
     }
-    let now = chrono::Utc::now();
-    let skew = chrono::Duration::seconds(
-        i64::try_from(params.signing_time_skew_seconds).unwrap_or(i64::MAX),
-    );
+    // signing-time skew enforcement was dropped in 0.2.2 (see
+    // `docs/work-order.md` — pre-signing work orders ahead of
+    // execution is a supported workflow; cert validity is the
+    // authoritative time bound).  `params.signing_time_skew_seconds`
+    // is still accepted for source compatibility but ignored.  The
+    // signing-time per signer is still parsed below and surfaced via
+    // `VerifiedSigner.signing_time` for audit purposes.
 
     // Stash per-signer `SignerKey` candidates for the optional TSA-token
     // enforcement pass below.  We compute these inside the cert loop
@@ -328,10 +347,9 @@ pub fn verify(
                 serial_der: serial_der.clone(),
             },
         ]);
-        let diff = (signing_time - now).num_seconds().abs();
-        if diff > skew.num_seconds() {
-            return Err(CmsVerifyError::SigningTimeOutOfWindow);
-        }
+        // (signing-time skew check removed in 0.2.2 — see comment above
+        // the per-signer loop.)
+        //
         // Every signer must claim the requested scope.  We do not
         // accept "M of N have scope, the rest do not" — plan §4.3.
         let claimed_scopes = crate::x509::scopes_ext::parse(cert).map_err(|e| {

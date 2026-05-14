@@ -327,22 +327,35 @@ mitigation → evidence (код, конфиг, тест).
 - **Evidence:** `crates/pam_certauth_core/src/cms.rs` — отказ при
   повторяющихся SKI; tests `cms_*.rs`.
 
-### 3.15 Стэшеный approver-токен + подделка `signing-time` (0.2.0)
+### 3.15 Стэшеный approver-токен + произвольный `signing-time` (0.2.0 / 0.2.2)
 
 - **Описание:** атакующий с украденным approver-токеном подписывает
-  CMS «задним числом» — выставляет `signing-time` в прошлое, когда
-  approver был ещё активен (например, при истечении срока действия
-  cert'а).
+  CMS, выставив `signing-time` в любое значение (атакующий
+  контролирует часы — атрибут он подписывает сам).
 - **STRIDE:** Tampering.
 - **Mitigation:**
-  - `signing_time_skew_seconds` в `[policy]` (по умолчанию 300 сек):
-    `signing-time` должно быть в окне `now ± skew`.
+  - **Срок действия approver-сертификата** — авторитативная
+    временная граница. CMS `verify` падает, если цепочка
+    `notBefore`/`notAfter` не покрывает момент валидации.
+  - **KRL/CRL polling** (`krl_poll_interval`, по умолчанию 5 минут):
+    отозванный approver-сертификат теряет силу в пределах окна
+    polling-а.
   - RFC 3161 TSA TimeStampToken — для критических scope
-    (`require_timestamp_token = true`).
-- **Residual risk:** **0.2.0 TSA НЕ валидируется** — известное
-  ограничение. Защита держится только на skew-окне + быстрой
-  revocation. Для scope с `require_timestamp_token = true` модуль
-  отклоняет CMS до phase 2 (fail-closed). Подробности —
+    (`require_timestamp_token = true`). С 0.2.1+ TSA-цепочка и
+    привязка `TSTInfo.messageImprint` к `signatureValue` enforced.
+- **Что НЕ работает в этой угрозе:** симметричная проверка
+  `signing-time ∈ [now-skew, now+skew]`. Атакующий, владеющий
+  ключом, сам выставляет `signing-time`. До 0.2.2 модуль такую
+  проверку делал; с 0.2.2 она снята как security-theatre, к тому же
+  ломавшая штатное pre-signing work-order для запланированных работ
+  (см. `work-order.md`).
+- **Residual risk:** в окне между компрометацией approver-токена и
+  публикацией KRL атакующий может создать произвольный CMS — в том
+  числе с любым `signing-time`. Первичная защита — оперативный KRL
+  polling и короткий срок действия approver-сертификата для
+  чувствительных scope. Параметр `signing_time_skew_seconds` в
+  `[policy]` сохранён в схеме конфигурации только ради обратной
+  совместимости и игнорируется верификатором. Подробности —
   [docs/changelog.md](changelog.md), [docs/work-order.md](work-order.md).
 
 ### 3.16 Cross-role атака через общий trust-anchor (0.2.0)

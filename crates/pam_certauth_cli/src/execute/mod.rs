@@ -675,6 +675,10 @@ fn extract_argv_pattern(payload: Option<&[u8]>) -> Result<String, String> {
 }
 
 fn cms_error_summary(e: &CmsVerifyError) -> &'static str {
+    // `SigningTimeOutOfWindow` is no longer produced (0.2.2 dropped
+    // the skew enforcement) but is matched here for source-compat:
+    // callers using older `pam_certauth_core` could still surface it.
+    #[allow(deprecated)]
     match e {
         CmsVerifyError::TooLarge(_, _) => "work-order too large",
         CmsVerifyError::Parse(_) => "work-order parse failed",

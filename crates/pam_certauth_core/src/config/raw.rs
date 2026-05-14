@@ -432,6 +432,11 @@ pub struct RawPolicySection {
     pub require_approver_eku: bool,
     /// Allowed skew between approval signing time and verification
     /// time (seconds).  Default 300.
+    ///
+    /// **No-op since 0.2.2** — the signing-time skew enforcement was
+    /// dropped (cert validity is the authoritative time bound; see
+    /// `docs/work-order.md`).  Field retained so existing
+    /// `config.toml` files continue to parse without errors.
     #[serde(default)]
     pub signing_time_skew_seconds: Option<u64>,
 }

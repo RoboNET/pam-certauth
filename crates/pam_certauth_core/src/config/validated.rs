@@ -285,6 +285,12 @@ pub struct PolicySection {
     pub require_approver_eku: bool,
     /// Allowed skew between approval signing time and verification
     /// time.  Defaults to 5 minutes.
+    ///
+    /// Retained for back-compat in 0.2.x; signing-time skew
+    /// enforcement was dropped in 0.2.2 per the pre-signed work-order
+    /// workflow.  The field is still parsed and surfaced here, but
+    /// `cms::verify` ignores it — the cert validity window is the
+    /// authoritative time bound.
     pub signing_time_skew: Duration,
 }
 
