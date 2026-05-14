@@ -73,10 +73,7 @@ pub unsafe fn collect_args(
 ///
 /// `argv` must point to `argc` valid C string pointers, as provided by PAM.
 #[cfg(target_os = "linux")]
-pub unsafe fn collect_args_raw(
-    argc: i32,
-    argv: *const *const std::ffi::c_char,
-) -> Vec<String> {
+pub unsafe fn collect_args_raw(argc: i32, argv: *const *const std::ffi::c_char) -> Vec<String> {
     let mut out = Vec::new();
     if argc <= 0 || argv.is_null() {
         return out;
@@ -183,8 +180,8 @@ pub unsafe extern "C" fn pam_sm_authenticate(
                 tracing::warn!(target: "pam_certauth.auth", error = %err, "pam_get_item(PAM_SERVICE) failed; using 'unknown'");
                 "unknown".to_string()
             });
-        let pam_tty_value = unsafe { crate::pam_helpers::pam_get_tty_string(pamh) }
-            .unwrap_or_else(|err| {
+        let pam_tty_value =
+            unsafe { crate::pam_helpers::pam_get_tty_string(pamh) }.unwrap_or_else(|err| {
                 tracing::debug!(
                     target: "pam_certauth.auth",
                     error = %err,
@@ -266,7 +263,11 @@ pub unsafe extern "C" fn pam_sm_authenticate(
         // 9. Map outcome → PAM rc.
         match outcome {
             Ok(out) => {
-                let crate::flow::FlowOutcome { auth_ctx, mount, cert_scopes } = out;
+                let crate::flow::FlowOutcome {
+                    auth_ctx,
+                    mount,
+                    cert_scopes,
+                } = out;
                 // 9a. require_scope check (Phase 10). Runs AFTER cert
                 // validation succeeded so a denial here is structurally a
                 // policy decision, not an auth failure. Empty
@@ -403,6 +404,14 @@ pub unsafe extern "C" fn pam_sm_open_session(
         // PAM user (best-effort: fall back to cert_cn if PAM_USER is gone).
         let pam_user = unsafe { crate::pam_helpers::pam_get_user_string(pamh) }
             .unwrap_or_else(|_| ctx.cert_cn.clone().unwrap_or_default());
+
+        // MAC integrity — orchestrator decides whether to apply a label,
+        // skip (runtime inactive / policy ignore), or fail closed.  We
+        // always invoke it; the orchestrator honours the policy.
+        match crate::session::run_open_session_pipeline(&cfg, ctx, &pam_user) {
+            Ok(()) => {}
+            Err(rc) => return rc,
+        }
 
         let vars = pam_certauth_core::hooks::HookVars::for_session_open(&pam_user, ctx);
         let executor = pam_certauth_core::hooks::ForkExecExecutor::new();

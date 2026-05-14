@@ -28,9 +28,7 @@ use pam_certauth_core::challenge::{challenge_response, CryptoError};
 use pam_certauth_core::config::ValidatedConfig;
 use pam_certauth_core::discovery::{discover_credentials, DiscoveredCreds, DiscoveryError};
 use pam_certauth_core::hooks::{run_hooks_for_stage, HookError, HookExecutor, HookStage, HookVars};
-use pam_certauth_core::host_binding::{
-    verify_host_binding, verify_user_binding, HostBindingError,
-};
+use pam_certauth_core::host_binding::{verify_host_binding, verify_user_binding, HostBindingError};
 use pam_certauth_core::host_identity::HostIdSourceKind;
 use pam_certauth_core::ipc::{MonitorClient, OpenSessionInfo};
 use pam_certauth_core::mapping::{match_user, MappingError, MatchedMapping};
@@ -460,7 +458,7 @@ where
     }
 
     // Step 8 — trust verification (path build, signatures, CRLs, pinning).
-    let _verified = deps.trust.verify(&loaded.end_entity, &presented)?;
+    let verified = deps.trust.verify(&loaded.end_entity, &presented)?;
 
     // Step 9 — cert scope (cert authorises this host).
     //
@@ -488,6 +486,15 @@ where
     let cert_not_after = Some(loaded.end_entity.not_after());
     let usb_vid_pid = Some(format!("{:04x}:{:04x}", dev.vid, dev.pid));
 
+    // MAC integrity inputs captured for `pam_sm_open_session`.
+    let verified_leaf = verified.verified_leaf();
+    let cert_max_integrity =
+        pam_certauth_core::x509::max_integrity_ext::extract_max_integrity(&verified_leaf)
+            .ok()
+            .flatten();
+    let cert_ident = Some(pam_certauth_core::x509::CertIdent::from(&verified_leaf));
+    let home_dir = resolve_home_dir(pam_user);
+
     let auth_ctx = AuthContext {
         session_id,
         cert_cn,
@@ -499,6 +506,9 @@ where
         host_id_source: deps.host_id_source,
         authenticated_at: SystemTime::now(),
         cert_not_after,
+        cert_max_integrity,
+        cert_ident,
+        home_dir,
     };
 
     // Step 11b — post_auth_success hooks (Stage 5). Run after every
@@ -796,7 +806,7 @@ where
     // long as the cert chains to a configured anchor, which is the
     // common case for both Rutoken and JaCarta deployments.
     let presented_chain: Vec<Certificate> = Vec::new();
-    let _verified = deps.trust.verify(&cert.certificate, &presented_chain)?;
+    let verified = deps.trust.verify(&cert.certificate, &presented_chain)?;
 
     // Step 9 — cert scope (cert authorises this host).
     // `pam_cert_host_binding` is mandatory; user_binding is checked in
@@ -810,8 +820,7 @@ where
     if pam_certauth_core::x509::user_binding_ext::parse(cert.certificate.x509()).is_ok() {
         verify_user_binding(cert.certificate.x509(), pam_user)?;
     } else {
-        let _matched: MatchedMapping =
-            match_user(&cert.certificate, pam_user, deps.user_mappings)?;
+        let _matched: MatchedMapping = match_user(&cert.certificate, pam_user, deps.user_mappings)?;
     }
 
     // Step 11 — assemble AuthContext.  The token serial replaces the
@@ -819,6 +828,13 @@ where
     let cert_cn = cert.certificate.subject_cn().ok();
     let cert_serial = Some(cert.certificate.serial_hex().to_lowercase());
     let cert_not_after = Some(cert.certificate.not_after());
+    let verified_leaf = verified.verified_leaf();
+    let cert_max_integrity =
+        pam_certauth_core::x509::max_integrity_ext::extract_max_integrity(&verified_leaf)
+            .ok()
+            .flatten();
+    let cert_ident = Some(pam_certauth_core::x509::CertIdent::from(&verified_leaf));
+    let home_dir = resolve_home_dir(pam_user);
     let auth_ctx = AuthContext {
         session_id,
         cert_cn,
@@ -830,6 +846,9 @@ where
         host_id_source: deps.host_id_source,
         authenticated_at: SystemTime::now(),
         cert_not_after,
+        cert_max_integrity,
+        cert_ident,
+        home_dir,
     };
 
     // Drop the session here so `C_Logout` runs before we return.
@@ -950,6 +969,16 @@ fn resolve_uid(pam_user: &str) -> u32 {
             );
             0
         }
+    }
+}
+
+/// Resolve `pam_user`'s `$HOME` via NSS.  Returns `None` when the user
+/// is not in passwd or has no home set; the MAC orchestrator's
+/// home-label advisory tolerates `None`.
+fn resolve_home_dir(pam_user: &str) -> Option<PathBuf> {
+    match nix::unistd::User::from_name(pam_user) {
+        Ok(Some(u)) => Some(u.dir),
+        _ => None,
     }
 }
 
