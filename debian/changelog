@@ -12,15 +12,14 @@ pam-certauth (0.2.3-1) unstable; urgency=medium
     SIGKILL within the first ~200ms of pam-certauth execute left no trace
     in journald. The early event now also carries pid, uid, sudo_uid, and
     parent_pid so it stays correlatable across SIGKILL cycles.
-  * Fix(systemd): unit now runs `pkill -f` pre-start to reap leftover
-    daemons from pre-0.2.1 installs, with an anchored regex
-    (^/usr/sbin/pam-certauth-monitord( |$)) to avoid false-positive
-    substring matches. Adds a cleanup of any leaked
-    /run/pam_certauth/monitord.sock.tmp.* files left by pre-0.2.1
-    processes whose atomic rename was interrupted. KillMode changed to
-    control-group.
-  * Fix(packaging): debian/postinst migration kills any pre-0.2.1
-    monitord process on upgrade, using the same anchored pkill pattern.
+  * Fix(systemd): unit's pre-start cleanup of pre-0.2.1 monitord
+    orphans now runs as root (`+` prefix) so it can signal the
+    root-owned legacy daemon. Also purges stale
+    /run/pam_certauth/monitord.sock.tmp.* files.
+  * Fix(packaging): debian/postinst now reaps pre-0.2.1 monitord
+    on every configure, not only on upgrades from <0.2.1. Hosts
+    that already upgraded to 0.2.1/0.2.2 with the orphan still
+    present are now cleaned up by installing 0.2.3.
 
  -- Mikhail Korolev <mikhail@robonet.me>  Thu, 14 May 2026 13:30:00 +0300
 
