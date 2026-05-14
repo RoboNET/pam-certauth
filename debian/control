@@ -1,7 +1,7 @@
 Source: pam-certauth
 Section: admin
 Priority: optional
-Maintainer: pam_certauth maintainers <maintainers@example.org>
+Maintainer: Mikhail Korolev <mikhail@robonet.me>
 Build-Depends:
  debhelper-compat (= 13),
  dh-cargo (>= 25),
@@ -14,9 +14,9 @@ Build-Depends:
  libsystemd-dev,
  pkg-config
 Standards-Version: 4.6.2
-Homepage: https://github.com/your-org/pam_certauth
-Vcs-Git: https://github.com/your-org/pam_certauth.git
-Vcs-Browser: https://github.com/your-org/pam_certauth
+Homepage: https://github.com/RoboNET/pam-certauth
+Vcs-Git: https://github.com/RoboNET/pam-certauth.git
+Vcs-Browser: https://github.com/RoboNET/pam-certauth
 Rules-Requires-Root: binary-targets
 
 Package: pam-certauth
@@ -48,7 +48,7 @@ Description: USB-token PKI authentication PAM module for Astra Linux SE
  .
  The package ships:
    * /lib/security/pam_certauth.so  - the PAM module
-   * /usr/sbin/pam-certauth-monitord - userspace daemon for udev/D-Bus
+   * /usr/bin/pam-certauth - userspace CLI (daemon subcommand handles udev/D-Bus)
      events, OCSP/CRL caching, and inter-session screen-lock hooks
    * Example configuration under /etc/pam_certauth/
    * A drop-in PAM stack at /etc/pam.d/certauth

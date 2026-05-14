@@ -1,7 +1,7 @@
 //! IPC client surface used by the PAM cdylib.
 //!
 //! The PAM module is sync; we therefore expose a sync `MonitorClient` trait.
-//! [`MonitordClient`] talks to `pam-certauth-monitord` over a Unix socket
+//! [`MonitordClient`] talks to `pam-certauth` over a Unix socket
 //! using newline-delimited JSON frames. Each public method opens a fresh
 //! socket and performs a `Hello` handshake, with a single hard time budget
 //! covering connect → handshake → send → recv → close.
@@ -45,6 +45,22 @@ pub struct OpenSessionInfo<'a> {
     pub cert_cn: &'a str,
     /// Hex serial of the validated end-entity certificate.
     pub cert_serial: &'a str,
+    /// Lowercase hex of the engineer cert's `SubjectKeyIdentifier`.
+    ///
+    /// v2 IPC field — empty string when the PAM module did not extract
+    /// `CertClaims` (e.g. legacy callers).
+    pub engineer_ski: &'a str,
+    /// Lowercase hex of `SHA-256(cert DER)` of the engineer leaf cert.
+    ///
+    /// v2 IPC field — see [`Self::engineer_ski`].
+    pub engineer_cert_sha256: &'a str,
+    /// Engineer-cert scopes (`"*"` for wildcard, exact strings otherwise).
+    ///
+    /// Empty when the cert had no `pam_cert_scopes` extension.
+    pub scopes: &'a [&'a str],
+    /// Unix uid the PAM module authenticated (used by monitord to index
+    /// the active-session registry).
+    pub uid: u32,
 }
 
 /// Sync IPC client trait used by the PAM flow.

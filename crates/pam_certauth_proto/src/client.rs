@@ -31,11 +31,40 @@ pub struct SessionOpenPayload {
     pub cert_cn: String,
     /// Hex serial of the validated end-entity certificate.
     pub cert_serial: String,
+    /// Lowercase hex of the engineer cert's `SubjectKeyIdentifier`.
+    ///
+    /// v2 field — clients that omit it deserialise into the empty string
+    /// for backwards compatibility with v1 frames.
+    #[serde(default)]
+    pub engineer_ski: String,
+    /// Lowercase hex of `SHA-256(cert DER)` of the engineer's leaf cert.
+    ///
+    /// v2 field — see [`Self::engineer_ski`].
+    #[serde(default)]
+    pub engineer_cert_sha256: String,
+    /// Scopes parsed from the engineer cert's `pam_cert_scopes` extension.
+    ///
+    /// Empty when the extension was absent. `"*"` represents the wildcard
+    /// scope; everything else is an exact scope string.
+    ///
+    /// v2 field.
+    #[serde(default)]
+    pub scopes: Vec<String>,
+    /// Unix uid the PAM module authenticated.
+    ///
+    /// v2 field; `0` when omitted by a v1 client.
+    #[serde(default)]
+    pub uid: u32,
 }
 
 /// Client message.
+///
+/// The `SessionOpen` variant is intentionally large — boxing its body
+/// would only push allocation onto every send-path while saving a few
+/// stack bytes on the small-variant matches. Wire ergonomics win.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
+#[allow(clippy::large_enum_variant)]
 pub enum ClientMessage {
     /// Initial hello — must be the first frame on any connection.
     Hello {
@@ -67,6 +96,27 @@ pub enum ClientMessage {
         cert_cn: String,
         /// Cert serial (hex).
         cert_serial: String,
+        /// Lowercase hex of the engineer cert `SubjectKeyIdentifier`. v2.
+        #[serde(default)]
+        engineer_ski: String,
+        /// Lowercase hex of `SHA-256(cert DER)` of the engineer leaf. v2.
+        #[serde(default)]
+        engineer_cert_sha256: String,
+        /// Scopes parsed from the engineer cert (`"*"` for wildcard). v2.
+        #[serde(default)]
+        scopes: Vec<String>,
+        /// Unix uid the PAM module authenticated. v2.
+        #[serde(default)]
+        uid: u32,
+    },
+    /// Look up the active session for a given Unix uid.
+    ///
+    /// Used by `pam-certauth execute` to find the engineer cert SKI / scopes
+    /// recorded by the daemon at PAM authentication time, without re-prompting
+    /// for the USB token.
+    GetActiveSessionByUid {
+        /// Unix uid of the engineer's active session.
+        uid: u32,
     },
     /// Close an existing session.
     SessionClose {

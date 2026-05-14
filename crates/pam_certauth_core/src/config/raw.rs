@@ -69,6 +69,19 @@ pub struct RawConfig {
     pub monitor: RawMonitor,
     /// Trust.
     pub trust: RawTrust,
+    /// Optional approver-CA trust section (m-of-n approver chains).
+    /// Same shape as [`RawTrust`]; when absent the validated layer
+    /// resolves it to `None`.
+    #[serde(default)]
+    pub approver_trust: Option<RawTrust>,
+    /// Optional TSA trust section for RFC 3161 `TimestampToken`
+    /// verification.  Same shape as [`RawTrust`]; when absent the
+    /// validated layer resolves it to `None`.
+    #[serde(default)]
+    pub tsa_trust: Option<RawTrust>,
+    /// Policy section: external policy file path and runtime knobs.
+    #[serde(default)]
+    pub policy: RawPolicySection,
     /// Trust overrides.
     #[serde(default)]
     pub trust_override: Vec<RawTrustOverride>,
@@ -171,7 +184,7 @@ pub struct RawMonitor {
     #[serde(default)]
     pub fail_mode: Option<String>,
     /// Path to the persisted session-registry JSON. Default
-    /// `/var/lib/pam_certauth/sessions.json`. Read by `pam-certauth-monitord`.
+    /// `/var/lib/pam_certauth/sessions.json`. Read by `pam-certauth`.
     #[serde(default)]
     pub state_file_path: Option<PathBuf>,
     /// Action to take when the bound USB token is removed past the
@@ -399,4 +412,41 @@ pub struct RawHook {
 
 const fn default_hook_timeout() -> u64 {
     10
+}
+
+/// Raw `[policy]` section.  All fields optional; the validated layer
+/// applies defaults per spec §5.4.
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RawPolicySection {
+    /// Path to the external policy TOML.  Default
+    /// `/etc/pam_certauth/policy.toml` (applied in validated layer).
+    #[serde(default)]
+    pub path: Option<PathBuf>,
+    /// How often to re-poll the KRL for changes (seconds).  Default 300.
+    #[serde(default)]
+    pub krl_poll_interval_seconds: Option<u64>,
+    /// Whether approver certificates must carry the approver-EKU.
+    /// Default `true`.
+    #[serde(default = "default_require_approver_eku")]
+    pub require_approver_eku: bool,
+    /// Allowed skew between approval signing time and verification
+    /// time (seconds).  Default 300.
+    #[serde(default)]
+    pub signing_time_skew_seconds: Option<u64>,
+}
+
+impl Default for RawPolicySection {
+    fn default() -> Self {
+        Self {
+            path: None,
+            krl_poll_interval_seconds: None,
+            require_approver_eku: default_require_approver_eku(),
+            signing_time_skew_seconds: None,
+        }
+    }
+}
+
+const fn default_require_approver_eku() -> bool {
+    true
 }

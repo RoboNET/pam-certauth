@@ -49,6 +49,10 @@ fn open_info() -> OpenSessionInfo<'static> {
         usb_serial: None,
         cert_cn: "",
         cert_serial: "",
+        engineer_ski: "",
+        engineer_cert_sha256: "",
+        scopes: &[],
+        uid: 0,
     }
 }
 

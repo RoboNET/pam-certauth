@@ -2,10 +2,10 @@
 #
 # pam_certauth main configuration. Copy this file to
 # /etc/pam_certauth/config.toml and edit it for your site before enabling
-# pam-certauth-monitord.service.
+# pam-certauth.service.
 #
 # This file is parsed by both libpam_certauth.so (the PAM module) and
-# pam-certauth-monitord (the daemon). Both must read identical config.
+# pam-certauth (the daemon). Both must read identical config.
 #
 # All keys are validated by `pam_certauth_core::config::ValidatedConfig`.
 # If a key is missing here that the validator demands, the daemon and the
@@ -71,27 +71,28 @@ usb_removed_grace_seconds = 5
 # seconds (suspend transients on some hubs raise spurious removals).
 suspend_grace_seconds = 30
 # Daemon-failure handling for the PAM module.
-#   "strict"     — any monitord I/O / timeout error fails auth.
+#   "strict"     — any daemon I/O / timeout error fails auth.
 #   "permissive" — transient I/O errors are tolerated; typed failures
 #                  (DeviceGone / Unauthorized) always propagate.
 monitor_fail_mode = "strict"
 
-# --- Monitor (PAM client + monitord daemon) ---------------------------------
-# Both pam_certauth.so AND pam-certauth-monitord read this section. Any field
+# --- Monitor (PAM client + pam-certauth daemon) -----------------------------
+# Both pam_certauth.so AND pam-certauth read this section. Any field
 # left unset falls back to the legacy top-level option above (where one
 # exists) or to the documented default.
 [monitor]
-# Path to the monitord Unix socket. Default `/run/pam_certauth/monitord.sock`.
+# Path to the monitor daemon Unix socket. Default
+# `/run/pam_certauth/monitord.sock` (filename is kept for ABI compatibility).
 # socket_path = "/run/pam_certauth/monitord.sock"
 # Per-RPC connect+IO timeout (PAM client side), in milliseconds. Default 2000.
 # timeout_ms = 2000
 # Per-section fail-mode override. When unset, falls back to the top-level
 # `monitor_fail_mode` above. One of "strict" | "permissive" | "degraded".
 # fail_mode = "strict"
-# Path to the persisted session-registry JSON written by monitord. Default
+# Path to the persisted session-registry JSON written by the daemon. Default
 # `/var/lib/pam_certauth/sessions.json`.
 # state_file_path = "/var/lib/pam_certauth/sessions.json"
-# Action monitord takes after a confirmed USB removal past the grace
+# Action the daemon takes after a confirmed USB removal past the grace
 # window. One of "lock" | "logout" | "shutdown" | "hook". Default "lock".
 # When unset, falls back to the top-level `on_usb_removed`.
 # on_usb_removed = "lock"

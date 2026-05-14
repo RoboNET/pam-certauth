@@ -79,7 +79,7 @@ openssl dgst -engine gost -md_gost12_256 /etc/hostname
 
 Перед установкой полезно убедиться, что окружение не заблокирует ни
 сам токен на USB-шине, ни запуск `pam_certauth.so` /
-`pam-certauth-monitord` через ЭЦП-контроль.
+`pam-certauth` через ЭЦП-контроль.
 
 #### USBGuard
 
@@ -110,7 +110,7 @@ allow id 0aca:0030 name "Rutoken ECP" hash "ABC..."
 1. **`astra-digsig-control`** переведён в `logging-only`-режим
    (модуль не блокирует выполнение неподписанных ELF, но шумит в
    `/var/log/syslog` сообщениями `DIGSIG: NOT_ELF_SIGNED`); либо
-2. бинари `pam_certauth.so` и `pam-certauth-monitord` подписаны
+2. бинари `pam_certauth.so` и `pam-certauth` подписаны
    через сервис подписи Astra-партнёра (`bsign` GPG-ключом из
    доверенной связки в `/etc/digsig/keys/`) — обычно это шаг сборки
    `.deb` в Astra-CI.
@@ -160,8 +160,16 @@ sha256sum -c pam-certauth_0.1.1-1_amd64.deb.sha256
 ### 2.4 Установка
 
 ```bash
-sudo apt install ./pam-certauth_0.1.1-1_amd64.deb
+# 0.2.0:
+sudo apt install ./pam-certauth_0.2.0-1_amd64.deb
+# или legacy 0.1.x:
+# sudo apt install ./pam-certauth_0.1.1-1_amd64.deb
 ```
+
+> **0.2.0:** бинарь `pam-certauth-monitord` переименован в
+> `pam-certauth` (мульти-команда). Daemon-режим запускается
+> как `pam-certauth daemon`; systemd-юнит `pam-certauth.service`
+> уже использует новое имя. См. [docs/migration.md](migration.md).
 
 `apt` подтянет недостающие зависимости (`libgost-engine | gost-engine`,
 `libpkcs11-helper1`, `librtpkcs11ecp`).
@@ -169,25 +177,101 @@ sudo apt install ./pam-certauth_0.1.1-1_amd64.deb
 ### 2.5 Проверка systemd-юнита
 
 ```bash
-systemctl status pam-certauth-monitord
+systemctl status pam-certauth
 ```
 
 Ожидание: `Active: active (running)`. Если `inactive (dead)` —
 запустить вручную:
 
 ```bash
-sudo systemctl enable --now pam-certauth-monitord
+sudo systemctl enable --now pam-certauth
 ```
 
 ### Verification (раздел 2)
 
 ```bash
-pam-certauth-monitord --version
+pam-certauth --version
 test -d /run/pam_certauth && echo "runtime dir OK"
 test -S /run/pam_certauth/monitord.sock && echo "socket OK"
 ```
 
-Ожидание: версия `0.1.1`, обе строки `OK`.
+Ожидание: версия `0.2.0` (или `0.1.1` для legacy), обе строки `OK`.
+
+### 2.6 (опционально) GC-timer для work-order retention (0.2.0)
+
+Если планируется использовать `pam-certauth execute`, включите
+сборку мусора:
+
+```bash
+sudo systemctl enable --now pam-certauth-gc.timer
+systemctl list-timers pam-certauth-gc.timer
+```
+
+Подробности — [docs/operations.md](operations.md).
+
+### 2.7 Отключение интерактивного sudo на ATM
+
+Целевая модель развёртывания — **на ATM нет аккаунтов с правом
+`sudo -i` / `sudo bash`**. Инженеры остаются обычными пользователями;
+единственный путь к root — через `pam-certauth execute` с M-of-N CMS
+work order. См. архитектурное обоснование в
+[architecture.md §1.1.1](architecture.md) и
+[threat-model.md §1.2](threat-model.md).
+
+1. **Убрать инженерские аккаунты из admin-групп** (если они там
+   оказались на этапе провижининга):
+
+   ```bash
+   for u in $(getent group atm_engineers | cut -d: -f4 | tr ',' ' '); do
+       sudo gpasswd -d "$u" sudo  2>/dev/null || true
+       sudo gpasswd -d "$u" wheel 2>/dev/null || true
+       sudo gpasswd -d "$u" admin 2>/dev/null || true
+   done
+   ```
+
+2. **Проверить, что в sudoers нет broad-правил** для инженеров.
+   Любое `NOPASSWD: ALL` или `(ALL) ALL` для группы `atm_engineers`
+   (или конкретного инженерского UID) недопустимо:
+
+   ```bash
+   sudo grep -rE 'NOPASSWD:\s*ALL|\(ALL\)\s*ALL' /etc/sudoers /etc/sudoers.d/
+   ```
+
+   Ожидание: либо пусто, либо только строки, не относящиеся к
+   `atm_engineers` (например, recovery-аккаунт, см. ниже).
+
+3. **Оставить единственное узкое правило** `pam-certauth execute`
+   в `/etc/sudoers.d/pam-certauth-execute` (поставляется пакетом,
+   см. [execute.md](execute.md) §sudoers):
+
+   ```text
+   %atm_engineers ALL=(root) NOPASSWD: /usr/bin/pam-certauth execute *
+   ```
+
+4. **Проверка для конкретного пользователя** — должна показывать
+   **только** разрешение на `pam-certauth execute`:
+
+   ```bash
+   sudo -l -U <engineer_user>
+   ```
+
+   Ожидаемая строка вида:
+   `(root) NOPASSWD: /usr/bin/pam-certauth execute *` и ничего больше.
+
+5. **Аварийный доступ (out-of-band).** Для break-glass-сценариев
+   используются отдельные пути, **не доступные** из обычной
+   инженерской сессии:
+
+   - Ansible push с bastion-хоста под отдельной service-identity
+     (см. runbook оператора, вне scope этого документа);
+   - оффлайн-сейф с root-паролем (вскрытие — оператор + аудит-журнал);
+   - recovery USB с подписанным initramfs (физический доступ).
+
+   Эти пути документируются и проверяются отдельно; в день-to-day
+   эксплуатации инженер с ATM не имеет к ним доступа.
+
+Периодический аудит этих инвариантов описан в
+[operations.md §1.6](operations.md).
 
 ## 3. Создание тестового CA (ГОСТ)
 
@@ -539,7 +623,7 @@ pamtester sudo alice authenticate
 Сразу после ввода извлечь USB. Ожидание: `monitord` пишет в журнал:
 
 ```bash
-sudo journalctl -u pam-certauth-monitord -n 20 -g 'medium absent'
+sudo journalctl -u pam-certauth -n 20 -g 'medium absent'
 ```
 
 ## 10. Что делать, если…
@@ -566,7 +650,7 @@ openssl engine gost -t
 
 ```bash
 cat /etc/machine-id
-journalctl -u pam-certauth-monitord -g host_id -n 20
+journalctl -u pam-certauth -g host_id -n 20
 openssl x509 -in /tmp/ca/alice.pem -noout -text \
     | grep -A1 '2\.25\.183976554325829274683049824615098'
 ```
@@ -595,8 +679,8 @@ openssl x509 -in /tmp/ca/alice.pem -noout -text \
 Диагностика:
 
 ```bash
-sudo systemctl status pam-certauth-monitord
-sudo journalctl -xeu pam-certauth-monitord -n 200
+sudo systemctl status pam-certauth
+sudo journalctl -xeu pam-certauth -n 200
 sudo ls -la /run/pam_certauth/
 ```
 
@@ -604,11 +688,11 @@ sudo ls -la /run/pam_certauth/
 
 - сокет `/run/pam_certauth/monitord.sock` не создан → проверить
   `RuntimeDirectory=pam_certauth` в юните
-  [pam-certauth-monitord.service](../dist/systemd/pam-certauth-monitord.service);
+  [pam-certauth.service](../dist/systemd/pam-certauth.service);
 - права на `/run/pam_certauth/` неверны → должно быть
   `drwxr-x--- root root` (0750);
 - `config.toml` повреждён → запустить `monitord` в ручном режиме
-  (`sudo /usr/sbin/pam-certauth-monitord`) и прочитать
+  (`sudo /usr/bin/pam-certauth`) и прочитать
   диагностический вывод.
 
 ### `pcscd not running`
@@ -682,25 +766,25 @@ Recovery:
 
 Пакет `pam-certauth` ставит **оба** init-варианта:
 
-- systemd-юнит `pam-certauth-monitord.service` — основной, на хостах с
+- systemd-юнит `pam-certauth.service` — основной, на хостах с
   systemd активируется автоматически через `dh_installsystemd`;
-- SysV init-скрипт `/etc/init.d/pam-certauth-monitord` — для
+- SysV init-скрипт `/etc/init.d/pam-certauth` — для
   non-systemd окружений (чистый sysvinit, OpenRC). Включается через
   `update-rc.d` или вручную:
 
   ```bash
-  sudo update-rc.d pam-certauth-monitord defaults
-  sudo service pam-certauth-monitord start
-  sudo service pam-certauth-monitord status
+  sudo update-rc.d pam-certauth defaults
+  sudo service pam-certauth start
+  sudo service pam-certauth status
   ```
 
-Скрипт оборачивает запуск `/usr/sbin/pam-certauth-monitord` через
-`start-stop-daemon`, кладёт PID-файл в `/run/pam_certauth/pam-certauth-monitord.pid`
+Скрипт оборачивает запуск `/usr/bin/pam-certauth` через
+`start-stop-daemon`, кладёт PID-файл в `/run/pam_certauth/pam-certauth.pid`
 и читает `/etc/pam_certauth/config.toml`. На хостах без systemd
 hardening-сэндбокса (cgroups, ProtectSystem) — нет, оператор
 принимает этот компромисс осознанно. На systemd-хостах править
 SysV-скрипт не требуется — авторитативный источник конфигурации
-службы — `pam-certauth-monitord.service`.
+службы — `pam-certauth.service`.
 
 ## Дальнейшие шаги
 

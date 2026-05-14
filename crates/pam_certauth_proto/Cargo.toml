@@ -6,7 +6,7 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 authors.workspace = true
-description = "Wire-protocol types shared between libpam_certauth.so and pam-certauth-monitord."
+description = "Wire-protocol types shared between libpam_certauth.so and pam-certauth."
 
 [lib]
 crate-type = ["rlib"]

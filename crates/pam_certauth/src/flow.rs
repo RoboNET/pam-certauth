@@ -23,6 +23,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::SystemTime;
 
+use pam_certauth_core::cert_claims::CertClaims;
 use pam_certauth_core::challenge::{challenge_response, CryptoError};
 use pam_certauth_core::config::ValidatedConfig;
 use pam_certauth_core::discovery::{discover_credentials, DiscoveredCreds, DiscoveryError};
@@ -308,6 +309,12 @@ pub struct FlowOutcome<O: MountOps + 'static> {
     pub auth_ctx: AuthContext,
     /// Owns the lifetime of the USB mount.  `None` for PKCS#11 mode.
     pub mount: Option<MountGuard<O>>,
+    /// Scopes claimed by the validated engineer cert
+    /// (`pam_cert_scopes` X.509 extension), normalised to their string
+    /// form (`"*"`, `"bios.*"`, `"bios.flash"`). Empty when the extension
+    /// is absent or could not be parsed — callers MUST treat that as the
+    /// cert claiming no scopes (so any `require_scope` PAM arg denies).
+    pub cert_scopes: Vec<String>,
 }
 
 impl<O: MountOps + 'static> std::fmt::Debug for FlowOutcome<O> {
@@ -315,6 +322,7 @@ impl<O: MountOps + 'static> std::fmt::Debug for FlowOutcome<O> {
         f.debug_struct("FlowOutcome")
             .field("auth_ctx", &self.auth_ctx)
             .field("mount", &self.mount.as_ref().map(|_| "<MountGuard>"))
+            .field("cert_scopes", &self.cert_scopes)
             .finish()
     }
 }
@@ -376,7 +384,7 @@ where
 ///
 /// Propagates [`FlowError`] for every failure path — see
 /// [`FlowError::pam_code`] for the PAM return-code mapping.
-#[allow(clippy::needless_pass_by_value)]
+#[allow(clippy::needless_pass_by_value, clippy::too_many_lines)]
 pub fn authenticate_pkcs12<I: FlowIo, P>(
     deps: Deps<'_>,
     io: &I,
@@ -512,6 +520,8 @@ where
     // the production client decides whether to swallow IPC errors.
     let cert_cn_str = auth_ctx.cert_cn.as_deref().unwrap_or("");
     let cert_serial_str = auth_ctx.cert_serial.as_deref().unwrap_or("");
+    let extras = session_open_extras(&loaded.end_entity, pam_user);
+    let scope_refs: Vec<&str> = extras.scopes.iter().map(String::as_str).collect();
     let info = OpenSessionInfo {
         session_id: &auth_ctx.session_id,
         pam_user,
@@ -521,6 +531,10 @@ where
         usb_serial: dev.serial.as_deref(),
         cert_cn: cert_cn_str,
         cert_serial: cert_serial_str,
+        engineer_ski: &extras.engineer_ski,
+        engineer_cert_sha256: &extras.engineer_cert_sha256,
+        scopes: &scope_refs,
+        uid: extras.uid,
     };
     if let Err(e) = deps.monitor.open_session(&info) {
         tracing::warn!(
@@ -533,6 +547,7 @@ where
     Ok(FlowOutcome {
         auth_ctx,
         mount: Some(mount),
+        cert_scopes: extras.scopes,
     })
 }
 
@@ -835,6 +850,8 @@ where
     // daemon keys removal enforcement on.
     let cert_cn_str = auth_ctx.cert_cn.as_deref().unwrap_or("");
     let cert_serial_str = auth_ctx.cert_serial.as_deref().unwrap_or("");
+    let extras = session_open_extras(&cert.certificate, pam_user);
+    let scope_refs: Vec<&str> = extras.scopes.iter().map(String::as_str).collect();
     let info = OpenSessionInfo {
         session_id: &auth_ctx.session_id,
         pam_user,
@@ -844,6 +861,10 @@ where
         usb_serial: auth_ctx.usb_serial.as_deref(),
         cert_cn: cert_cn_str,
         cert_serial: cert_serial_str,
+        engineer_ski: &extras.engineer_ski,
+        engineer_cert_sha256: &extras.engineer_cert_sha256,
+        scopes: &scope_refs,
+        uid: extras.uid,
     };
     if let Err(e) = deps.monitor.open_session(&info) {
         tracing::warn!(
@@ -856,7 +877,80 @@ where
     Ok(FlowOutcome {
         auth_ctx,
         mount: None,
+        cert_scopes: extras.scopes,
     })
+}
+
+/// v2 IPC fields derived from the validated engineer cert.
+///
+/// Bundled together so the two emission sites in this module (USB-PKCS#12
+/// and PKCS#11) build them identically. Owned strings + owned scope vec
+/// so the consumer can borrow with the right lifetime when constructing
+/// [`OpenSessionInfo`].
+#[derive(Debug, Default)]
+pub(crate) struct SessionOpenExtras {
+    pub engineer_ski: String,
+    pub engineer_cert_sha256: String,
+    pub scopes: Vec<String>,
+    pub uid: u32,
+}
+
+/// Best-effort extraction of v2 `SessionOpen` fields. Logs at `warn` and
+/// returns defaults on failure — the daemon will see empty strings and
+/// the IPC will continue to work for the legacy fields. This matches the
+/// existing "monitor failures are non-fatal" policy.
+pub(crate) fn session_open_extras(cert: &Certificate, pam_user: &str) -> SessionOpenExtras {
+    let mut out = SessionOpenExtras::default();
+    match CertClaims::from_cert(cert.x509()) {
+        Ok(c) => {
+            out.engineer_ski = c.subject_key_identifier;
+            out.engineer_cert_sha256 = c.cert_sha256;
+            out.scopes = c
+                .scopes
+                .into_iter()
+                .map(|s| match s {
+                    pam_certauth_core::x509::scopes_ext::Scope::Wildcard => "*".to_string(),
+                    pam_certauth_core::x509::scopes_ext::Scope::Exact(s) => s,
+                })
+                .collect();
+        }
+        Err(e) => {
+            tracing::warn!(
+                target: "pam_certauth.flow",
+                error = %e,
+                "failed to extract CertClaims for SessionOpen v2 fields (non-fatal)"
+            );
+        }
+    }
+    out.uid = resolve_uid(pam_user);
+    out
+}
+
+/// Resolve `pam_user` to a Unix uid for IPC payload purposes. Returns 0
+/// when the lookup fails — monitord stores the uid as-is and the
+/// active-session lookup will simply miss for uid 0 (root is never the
+/// PAM-target user in production).
+fn resolve_uid(pam_user: &str) -> u32 {
+    match nix::unistd::User::from_name(pam_user) {
+        Ok(Some(u)) => u.uid.as_raw(),
+        Ok(None) => {
+            tracing::warn!(
+                target: "pam_certauth.flow",
+                pam_user,
+                "uid lookup returned None — defaulting to 0 in SessionOpen"
+            );
+            0
+        }
+        Err(errno) => {
+            tracing::warn!(
+                target: "pam_certauth.flow",
+                pam_user,
+                errno = errno as i32,
+                "uid lookup failed — defaulting to 0 in SessionOpen"
+            );
+            0
+        }
+    }
 }
 
 /// Helper to keep `flow::authenticate` body short.  Public so tests can

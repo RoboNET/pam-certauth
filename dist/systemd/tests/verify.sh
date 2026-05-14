@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 HERE="$(cd "$(dirname "$0")/.." && pwd)"
-UNIT="$HERE/pam-certauth-monitord.service"
+UNIT="$HERE/pam-certauth.service"
 if ! command -v systemd-analyze >/dev/null; then
   echo "skip: systemd-analyze missing on this host"
   exit 0
