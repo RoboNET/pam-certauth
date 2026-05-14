@@ -306,10 +306,12 @@ pub unsafe fn child_setup(
 
     // Step 7: PR_SET_NO_NEW_PRIVS on Linux. macOS has no equivalent.
     #[cfg(target_os = "linux")]
-    // SAFETY: prctl is async-signal-safe.
-    unsafe {
-        if libc::prctl(libc::PR_SET_NO_NEW_PRIVS, 1u64, 0u64, 0u64, 0u64) != 0 {
-            die(b"hook child: prctl(NO_NEW_PRIVS) failed\n");
+    {
+        // SAFETY: prctl is async-signal-safe.
+        let rc = unsafe { libc::prctl(libc::PR_SET_NO_NEW_PRIVS, 1u64, 0u64, 0u64, 0u64) };
+        if rc != 0 {
+            // SAFETY: die is async-signal-safe (write+_exit only).
+            unsafe { die(b"hook child: prctl(NO_NEW_PRIVS) failed\n") };
         }
     }
 
