@@ -6,6 +6,7 @@
 //! PAM symbols.
 
 use pam_certauth_core::config::ValidatedConfig;
+use pam_certauth_core::ipc::{ConnectPerCall, FailModeWrapper, MonitorClient, MonitorClientFactory};
 use pam_certauth_core::mac::backend::MacBackend;
 #[cfg(feature = "astra-mac")]
 use pam_certauth_core::mac::backend::ParsecBackend;
@@ -53,16 +54,57 @@ pub fn run_open_session_pipeline(
     pam_user: &str,
 ) -> Result<(), i32> {
     let backend = build_backend();
-    run_open_session_pipeline_with_backend(backend.as_ref(), cfg, ctx, pam_user)
+    // Build a production monitor client matching `di::wire`'s policy so we
+    // can pair the `open_session` registered during `pam_sm_authenticate`
+    // with a `close_session` on MAC denial. Without this, a session whose
+    // open-session pipeline is rejected stays "active" in monitord's
+    // registry — see entry.rs `pam_sm_open_session` for the upstream
+    // `open_session` call site.
+    let factory = MonitorClientFactory::new(cfg.monitor.socket_path.clone(), cfg.monitor.timeout);
+    let connect_per_call = ConnectPerCall::new(factory);
+    let monitor: Box<dyn MonitorClient> =
+        Box::new(FailModeWrapper::new(connect_per_call, cfg.monitor.fail_mode.into()));
+    run_open_session_pipeline_with_backend_and_monitor(
+        backend.as_ref(),
+        Some(monitor.as_ref()),
+        cfg,
+        ctx,
+        pam_user,
+    )
 }
 
 /// Test-friendly variant accepting a `&dyn MacBackend`.
+///
+/// Cleanup of an upstream `monitor.open_session` is not performed by this
+/// overload; tests that want to observe `close_session` on MAC denial
+/// should call [`run_open_session_pipeline_with_backend_and_monitor`].
 ///
 /// # Errors
 ///
 /// See [`run_open_session_pipeline`].
 pub fn run_open_session_pipeline_with_backend(
     backend: &dyn MacBackend,
+    cfg: &ValidatedConfig,
+    ctx: &AuthContext,
+    pam_user: &str,
+) -> Result<(), i32> {
+    run_open_session_pipeline_with_backend_and_monitor(backend, None, cfg, ctx, pam_user)
+}
+
+/// Test-friendly variant accepting both a `&dyn MacBackend` and an
+/// optional `&dyn MonitorClient`. On a MAC orchestrator error, before
+/// returning the PAM code, we call `monitor.close_session(session_id,
+/// "mac_denied")` to release the registry entry that
+/// `pam_sm_authenticate` opened. A monitor cleanup failure is logged
+/// at warn level and does **not** override the original MAC error
+/// (don't mask the root cause).
+///
+/// # Errors
+///
+/// See [`run_open_session_pipeline`].
+pub fn run_open_session_pipeline_with_backend_and_monitor(
+    backend: &dyn MacBackend,
+    monitor: Option<&dyn MonitorClient>,
     cfg: &ValidatedConfig,
     ctx: &AuthContext,
     pam_user: &str,
@@ -80,7 +122,7 @@ pub fn run_open_session_pipeline_with_backend(
         home_dir: ctx.home_dir.clone(),
     };
 
-    match apply_session_policy(backend, &cfg.mac, ctx.cert_max_integrity, &sctx) {
+    let result = match apply_session_policy(backend, &cfg.mac, ctx.cert_max_integrity, &sctx) {
         Ok(_) => Ok(()),
         Err(OrchestratorError::CertLacksExt | OrchestratorError::RuntimeRequired(_)) => {
             tracing::error!(
@@ -99,7 +141,26 @@ pub fn run_open_session_pipeline_with_backend(
             );
             Err(PAM_SESSION_ERR)
         }
+    };
+
+    // Pair the upstream `monitor.open_session` (registered during
+    // `pam_sm_authenticate`) with a `close_session` on any MAC denial so
+    // we don't leak an "active" session entry in monitord's registry.
+    // A cleanup failure is logged but never masks the underlying MAC
+    // error — the root cause must reach PAM unaltered.
+    if result.is_err() {
+        if let Some(m) = monitor {
+            if let Err(e) = m.close_session(&ctx.session_id, "mac_denied") {
+                tracing::warn!(
+                    target: "pam_certauth.session",
+                    session_id = %ctx.session_id,
+                    error = %e,
+                    "monitor close_session cleanup failed after MAC denial (non-fatal)",
+                );
+            }
+        }
     }
+    result
 }
 
 /// Test-only re-exports.  Available only under `mac-tests`.
@@ -109,5 +170,7 @@ pub mod test_only {
     pub const PAM_AUTH_ERR: i32 = super::PAM_AUTH_ERR;
     /// `PAM_SESSION_ERR` numeric value.
     pub const PAM_SESSION_ERR: i32 = super::PAM_SESSION_ERR;
-    pub use super::run_open_session_pipeline_with_backend;
+    pub use super::{
+        run_open_session_pipeline_with_backend, run_open_session_pipeline_with_backend_and_monitor,
+    };
 }
