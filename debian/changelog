@@ -1,5 +1,12 @@
 pam-certauth (0.2.3-1) unstable; urgency=medium
 
+  * **REQUIRES RESTART:** After upgrading run
+    `sudo systemctl restart pam-certauth.service` to activate the new daemon
+    code (flock singleton + early audit event). The package intentionally
+    keeps `--no-restart-on-upgrade` to avoid dropping in-flight USB-removal
+    monitoring; the new `pam-certauth execute` binary is active immediately
+    but the daemon side waits for manual restart. See docs/operations.md
+    section "Обновление пакета (upgrade)".
   * Fix(daemon): acquire exclusive flock on /var/lib/pam_certauth/daemon.lock
     at startup. Prevents stale orphan daemon from previous installs from
     running alongside the new one. Logs CRITICAL and exits with code 1 if

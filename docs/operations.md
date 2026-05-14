@@ -695,3 +695,68 @@ journalctl _SYSTEMD_UNIT=pam-certauth.service \
 
 Для конфиденциальных сообщений о безопасности — см. контакты в
 [README.md](../README.md#безопасность-и-сообщения-об-уязвимостях).
+
+## 10. Обновление пакета (upgrade)
+
+> **ВАЖНО.** `debian/rules` использует `dh_installsystemd --no-restart-on-upgrade`
+> сознательно: автоматический рестарт daemon'а во время апгрейда может пропустить
+> USB-removal udev event и оставить engineer-сессию без screen-lock в момент когда
+> токен уже извлечён. Operator должен делать рестарт явно в maintenance window.
+
+### Стандартный flow upgrade
+
+```bash
+# 1. Скачать новую версию.
+sudo apt-get update
+sudo apt-get install --download-only pam-certauth
+
+# 2. (Опционально) объявить maintenance window операторам.
+
+# 3. Установить пакет. Postinst прибьёт legacy /usr/sbin/pam-certauth-monitord
+#    orphan от pre-0.2.1 версий, но НЕ перезапустит сам сервис.
+sudo apt-get install pam-certauth
+
+# 4. ОБЯЗАТЕЛЬНО: перезапустить daemon чтобы активировать новую версию.
+sudo systemctl restart pam-certauth.service
+
+# 5. Verify version actually running.
+pam-certauth --version
+sudo readlink /proc/$(pgrep -f "pam-certauth daemon")/exe
+# Должно показать "/usr/bin/pam-certauth" БЕЗ "(deleted)" суффикса.
+```
+
+Между шагами 3 и 4 на хосте установлена новая версия binary, **но в памяти
+работает старый daemon** (старый inode держится через open fd). Это нормально:
+
+- Старый daemon продолжает мониторить USB events корректно.
+- Новые `pam-certauth execute` вызовы используют **новый** binary с диска —
+  получают новые fixes (например `execute_attempt` audit event).
+- IPC между новым execute и старым daemon обратно-совместим в пределах
+  одной major-серии.
+
+Что **не активируется** до шага 4:
+- Singleton flock на `/var/lib/pam_certauth/daemon.lock`.
+- Свежий код мониторинга USB events.
+- Любые daemon-side fixes из новой версии.
+
+### Verify что upgrade прошёл
+
+```bash
+# Process running new binary (inode не deleted):
+sudo readlink /proc/$(pgrep -f "pam-certauth daemon")/exe
+
+# flock lock file принадлежит running daemon:
+sudo cat /var/lib/pam_certauth/daemon.lock
+# PID должен совпадать с `pgrep -f "pam-certauth daemon"`.
+
+# Старого pre-0.2.1 monitord нет:
+pgrep -af "/usr/sbin/pam-certauth-monitord" || echo "ok — no legacy orphan"
+```
+
+Если `readlink ... exe` показывает `(deleted)` — daemon не перезапущен после
+upgrade. Сделай `systemctl restart pam-certauth.service`.
+
+### Rollback
+
+`apt-get install pam-certauth=<старая-версия>` + `systemctl restart`. State
+directory совместим вперёд и назад в пределах одной major-версии.
