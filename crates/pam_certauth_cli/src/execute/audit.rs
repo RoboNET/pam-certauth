@@ -61,7 +61,7 @@ pub struct AuditCtx<'a> {
     /// PID of the `pam-certauth execute` process emitting the event.
     /// Pure syscall — no I/O. Populated on `execute_attempt` so the
     /// early audit record stays correlatable across SIGKILL cycles
-    /// (M4 forensic-completeness fix).
+    /// (forensic-completeness field).
     pub pid: u32,
     /// Real uid of the emitting process (`getuid(2)`).
     pub uid: u32,
@@ -215,7 +215,7 @@ mod tests {
         assert!(captured.contains("execute_attempt"), "{captured}");
         assert!(captured.contains("/wo/path"), "{captured}");
         assert!(captured.contains("test.scope"), "{captured}");
-        // M4: verify forensic fields make it into the rendered output so
+        // Verify forensic fields make it into the rendered output so
         // the journald layer will receive them at runtime.
         assert!(
             captured.contains("pid") && captured.contains("4242"),

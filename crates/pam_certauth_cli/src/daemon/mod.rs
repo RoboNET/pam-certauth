@@ -145,7 +145,7 @@ async fn run_async(args: DaemonArgs) -> anyhow::Result<()> {
     // is held in `daemon_lock` for the lifetime of `run_async`; the
     // kernel releases it automatically on process exit.
     //
-    // M2: the binding is intentionally NOT named `_daemon_lock`. A
+    // The binding is intentionally NOT named `_daemon_lock`. A
     // leading underscore signals "intentionally unused" to clippy and
     // to readers, but this binding is load-bearing — dropping it
     // releases the singleton flock. A future refactor that "tidies"
@@ -333,7 +333,7 @@ async fn run_async(args: DaemonArgs) -> anyhow::Result<()> {
     }
     shutdown::graceful_finish(handles, Duration::from_secs(5), &socket_path).await;
 
-    // M2: keep `daemon_lock` visibly used so a future refactor cannot
+    // Keep `daemon_lock` visibly used so a future refactor cannot
     // silently demote it to `let _ = DaemonLock::acquire(...)` (which
     // would drop the guard immediately and lose the singleton flock).
     let _ = &daemon_lock;

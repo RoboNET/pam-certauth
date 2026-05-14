@@ -33,7 +33,7 @@ use std::path::{Path, PathBuf};
 use nix::errno::Errno;
 use nix::fcntl::{Flock, FlockArg};
 
-// H3 (defence-in-depth): we set `O_CLOEXEC` explicitly on the lock fd
+// Defence-in-depth: we set `O_CLOEXEC` explicitly on the lock fd
 // even though Rust std defaults to that already. Future refactors that
 // drop down to raw `libc::open()` would lose the default; the explicit
 // flag documents the invariant. See `acquire()` below.
@@ -113,7 +113,7 @@ impl DaemonLock {
             .create(true)
             .truncate(false)
             .mode(0o600)
-            // H3: explicit O_CLOEXEC. Std already sets this by default,
+            // Explicit O_CLOEXEC. Std already sets this by default,
             // but the explicit flag documents the singleton invariant.
             .custom_flags(O_CLOEXEC);
         let file = opts.open(path).map_err(|e| LockError::Open {
@@ -139,7 +139,7 @@ impl DaemonLock {
             }
         };
 
-        // H2: write our PID through the lock-holding fd itself, NOT via
+        // Write our PID through the lock-holding fd itself, NOT via
         // a second `OpenOptions::open(path)` re-open. The re-open path
         // had a TOCTOU window: between successful `flock(LOCK_EX)` and
         // the second open's `truncate(true)` completing, a concurrent
@@ -243,7 +243,7 @@ mod tests {
         }
     }
 
-    /// Regression test for H2 TOCTOU: after a daemon acquires the lock,
+    /// Regression test for the TOCTOU window: after a daemon acquires the lock,
     /// the file MUST contain the current holder's PID, not the previous
     /// holder's. This proves the truncate+write happens through the
     /// locked fd before any potential concurrent reader can race in.

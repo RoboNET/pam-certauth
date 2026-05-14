@@ -54,7 +54,7 @@ const ENV_CONFIG_PATH: &str = "PAM_CERTAUTH_CONFIG";
 /// truncated to the low byte to fit `u8`.
 #[allow(clippy::too_many_lines, clippy::needless_pass_by_value)]
 pub fn run(args: ExecuteArgs) -> ExitCode {
-    // -- early audit (F2 forensic-gap fix) -------------------------------
+    // -- early audit emission --------------------------------------------
     // Emit `execute_attempt` BEFORE any I/O: no config load, no policy
     // load, no session lookup, no CMS read. This event records the
     // attempt so that a SIGKILL within the ~50-200 ms verify window
@@ -71,7 +71,7 @@ pub fn run(args: ExecuteArgs) -> ExitCode {
             .as_ref()
             .map(|p| p.display().to_string())
             .unwrap_or_default();
-        // M4: forensic fields. Pure syscalls — no I/O, no allocations
+        // Forensic fields. Pure syscalls — no I/O, no allocations
         // beyond the SUDO_UID string copy. Captured here so the early
         // audit event remains correlatable across SIGKILL cycles even
         // if every subsequent verify step is killed.
