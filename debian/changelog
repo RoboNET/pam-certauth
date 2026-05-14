@@ -17,7 +17,7 @@ pam-certauth (0.2.1-1) unstable; urgency=medium
   * Fix(misc): hooks docstring path corrected; scope-match dedup
     stable; fail-closed host_id_hash; monitord runs non-root cleanly.
 
- -- pam_certauth maintainers <maintainers@example.org>  Thu, 14 May 2026 00:00:00 +0000
+ -- Mikhail Korolev <mikhail@robonet.me>  Thu, 14 May 2026 00:00:00 +0000
 
 pam-certauth (0.2.0-1) unstable; urgency=medium
 
@@ -57,7 +57,7 @@ pam-certauth (0.2.0-1) unstable; urgency=medium
     `[policy]`. Old configs still parse. See
     `docs/migration.md` for upgrade.
 
- -- pam_certauth maintainers <maintainers@example.org>  Wed, 13 May 2026 00:00:00 +0000
+ -- Mikhail Korolev <mikhail@robonet.me>  Wed, 13 May 2026 00:00:00 +0000
 
 pam-certauth (0.1.1-1) unstable; urgency=medium
 
@@ -92,10 +92,10 @@ pam-certauth (0.1.1-1) unstable; urgency=medium
     PAM-caller context (root for sudo/login) — that is an architectural
     constraint of Linux PAM and outside this change.
 
- -- pam_certauth maintainers <maintainers@example.org>  Wed, 06 May 2026 19:30:00 +0000
+ -- Mikhail Korolev <mikhail@robonet.me>  Wed, 06 May 2026 19:30:00 +0000
 
 pam-certauth (0.1.0-1) unstable; urgency=medium
 
   * Initial release.
 
- -- pam_certauth maintainers <maintainers@example.org>  Tue, 05 May 2026 00:00:00 +0000
+ -- Mikhail Korolev <mikhail@robonet.me>  Tue, 05 May 2026 00:00:00 +0000

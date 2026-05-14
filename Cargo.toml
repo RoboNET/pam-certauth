@@ -14,7 +14,7 @@ edition = "2021"
 rust-version = "1.95"
 license = "Apache-2.0"
 repository = "https://github.com/RoboNET/pam-certauth"
-authors = ["pam_certauth maintainers"]
+authors = ["Mikhail Korolev <mikhail@robonet.me>"]
 
 [workspace.dependencies]
 serde = { version = "1.0", features = ["derive"] }
