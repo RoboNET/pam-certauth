@@ -4,11 +4,16 @@
 
 pub mod audit;
 pub mod backend;
+#[cfg(feature = "astra-mac")]
+pub mod ffi;
 pub mod label;
 #[cfg(not(feature = "astra-mac"))]
 mod stub;
+pub(crate) mod text_codec;
 
 #[cfg(feature = "mac-tests")]
 pub use backend::MockMacBackend;
+#[cfg(feature = "astra-mac")]
+pub use backend::ParsecBackend;
 pub use backend::{MacBackend, MacError, MacRuntime, StubBackend};
 pub use label::IntegrityLabel;

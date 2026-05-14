@@ -80,6 +80,16 @@ pub trait MacBackend: Send + Sync {
         label: IntegrityLabel,
         irelax: bool,
     ) -> Result<(), MacError>;
+
+    /// Set the МКЦ label on an open file descriptor.  Used by callers that
+    /// hold an exclusive `fd` (e.g. the sessions.json writer) to close the
+    /// path-based TOCTOU window between `open()` and `set_file_label()`.
+    fn set_fd_label(
+        &self,
+        fd: std::os::unix::io::RawFd,
+        label: IntegrityLabel,
+        irelax: bool,
+    ) -> Result<(), MacError>;
 }
 
 /// No-op [`MacBackend`] implementation used on hosts without `libpdp`.
@@ -129,5 +139,67 @@ impl MacBackend for StubBackend {
         _irelax: bool,
     ) -> Result<(), MacError> {
         Ok(())
+    }
+
+    fn set_fd_label(
+        &self,
+        _fd: std::os::unix::io::RawFd,
+        _label: IntegrityLabel,
+        _irelax: bool,
+    ) -> Result<(), MacError> {
+        Ok(())
+    }
+}
+
+/// Real Astra МКЦ backend backed by `libpdp` text-API FFI.  Available only
+/// under the `astra-mac` cargo feature.  Task 4.2 will extend [`Self::new`]
+/// with a `parsec_capget` self-check.
+#[cfg(feature = "astra-mac")]
+#[derive(Debug, Default)]
+pub struct ParsecBackend;
+
+#[cfg(feature = "astra-mac")]
+impl ParsecBackend {
+    /// Construct a new `ParsecBackend`.
+    #[must_use]
+    pub fn new() -> Self {
+        Self
+    }
+}
+
+#[cfg(feature = "astra-mac")]
+impl MacBackend for ParsecBackend {
+    fn probe(&self) -> MacRuntime {
+        crate::mac::ffi::probe_runtime()
+    }
+
+    fn get_user_mnkc(&self, user: &str) -> Result<IntegrityLabel, MacError> {
+        crate::mac::ffi::get_user_mnkc(user)
+    }
+
+    fn apply_session(&self, label: IntegrityLabel) -> Result<(), MacError> {
+        crate::mac::ffi::set_proc(label)
+    }
+
+    fn get_file_label(&self, p: &std::path::Path) -> Result<IntegrityLabel, MacError> {
+        crate::mac::ffi::get_file_label(p)
+    }
+
+    fn set_file_label(
+        &self,
+        p: &std::path::Path,
+        label: IntegrityLabel,
+        irelax: bool,
+    ) -> Result<(), MacError> {
+        crate::mac::ffi::set_file_label(p, label, irelax)
+    }
+
+    fn set_fd_label(
+        &self,
+        fd: std::os::unix::io::RawFd,
+        label: IntegrityLabel,
+        irelax: bool,
+    ) -> Result<(), MacError> {
+        crate::mac::ffi::set_fd_label(fd, label, irelax)
     }
 }
