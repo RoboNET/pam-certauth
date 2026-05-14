@@ -212,9 +212,15 @@ mod tests {
         use std::os::unix::process::CommandExt;
         let mut cmd = std::process::Command::new("/bin/sh");
         cmd.arg("-c").arg(script);
+        #[allow(
+            unsafe_code,
+            clippy::multiple_unsafe_ops_per_block,
+            reason = "test helper: pre_exec registers the closure, whose body's \
+                      setpgid call shares the post-fork async-signal-safety \
+                      invariant."
+        )]
         // SAFETY: pre_exec runs only in the child after fork, before exec.
         // Calling setpgid is async-signal-safe.
-        #[allow(unsafe_code)]
         unsafe {
             cmd.pre_exec(|| {
                 if libc::setpgid(0, 0) != 0 {

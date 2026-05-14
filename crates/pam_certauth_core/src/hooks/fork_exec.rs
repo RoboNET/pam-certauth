@@ -163,8 +163,13 @@ impl HookExecutor for ForkExecExecutor {
             Err(e) => Err(HookError::Fork(e)),
             Ok(ForkResult::Child) => {
                 // Close our copies of read ends; child only needs write ends.
+                #[allow(
+                    unsafe_code,
+                    clippy::multiple_unsafe_ops_per_block,
+                    reason = "post-fork child: two close(2) calls share \
+                              async-signal-safety invariant."
+                )]
                 // SAFETY: child path; close is async-signal-safe.
-                #[allow(unsafe_code)]
                 unsafe {
                     libc::close(out_r);
                     libc::close(err_r);
@@ -237,8 +242,13 @@ fn supervise_parent(args: SuperviseArgs) -> Result<HookOutcome, HookError> {
     } = args;
 
     // Close write ends; spawn readers; supervise.
+    #[allow(
+        unsafe_code,
+        clippy::multiple_unsafe_ops_per_block,
+        reason = "parent path: two close(2) calls share the same fd-ownership \
+                  invariant (parent owns both pipe write ends)."
+    )]
     // SAFETY: out_w/err_w are pipe write ends owned by parent.
-    #[allow(unsafe_code)]
     unsafe {
         libc::close(out_w);
         libc::close(err_w);

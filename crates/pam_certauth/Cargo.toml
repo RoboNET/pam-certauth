@@ -59,6 +59,7 @@ unimplemented = "deny"
 missing_safety_doc = "deny"
 # Unsafe hardening — every unsafe block must carry a `// SAFETY:` line.
 undocumented_unsafe_blocks = "deny"
+multiple_unsafe_ops_per_block = "deny"
 # Pointer / cast hygiene.
 transmute_ptr_to_ptr = "warn"
 ptr_as_ptr = "warn"

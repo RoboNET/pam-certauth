@@ -51,8 +51,14 @@ use crate::hooks::user::UserInfo;
 /// May only be called from a child process after `fork()`. Performs
 /// async-signal-safe `write(2)` and `_exit(2)` only.
 unsafe fn die(msg: &[u8]) -> ! {
+    #[allow(
+        clippy::multiple_unsafe_ops_per_block,
+        reason = "post-fork child path: write + _exit share the single \
+                  async-signal-safety invariant."
+    )]
     // SAFETY: write/_exit are async-signal-safe; we pass a stable byte
-    // slice we own and a small length.
+    // slice we own and a small length.  Both calls share the same
+    // post-fork-child invariant (only async-signal-safe ops permitted).
     unsafe {
         let _ = libc::write(
             2,
@@ -198,7 +204,14 @@ unsafe fn close_high_fds_via_rlimit() {
 ///
 /// The function will not allocate, will not call any non-async-signal-safe
 /// libc/nix function, and will either `execve()` or `_exit(127)`.
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    clippy::too_many_lines,
+    reason = "post-fork child setup is intentionally one linear sequence: \
+              each step is annotated with a SAFETY comment + allow block; \
+              splitting into helpers risks accidental non-async-signal-safe \
+              calls slipping in via inlining boundaries."
+)]
 pub unsafe fn child_setup(
     argv_ptrs: &[*const c_char],
     env_ptrs: &[*const c_char],
@@ -210,7 +223,11 @@ pub unsafe fn child_setup(
     groups_len: usize,
 ) -> ! {
     // Step 1: own process group.
-    // SAFETY: setpgid is async-signal-safe.
+    #[allow(
+        clippy::multiple_unsafe_ops_per_block,
+        reason = "post-fork child: setpgid + die share async-signal-safety invariant."
+    )]
+    // SAFETY: setpgid + die(_exit) are async-signal-safe.
     unsafe {
         if libc::setpgid(0, 0) != 0 {
             die(b"hook child: setpgid failed\n");
@@ -226,7 +243,13 @@ pub unsafe fn child_setup(
 
     // Step 3: redirect stdin to /dev/null, stdout/stderr to provided FDs.
     // open(/dev/null) is async-signal-safe.
-    // SAFETY: open/dup2/close are async-signal-safe.
+    #[allow(
+        clippy::multiple_unsafe_ops_per_block,
+        reason = "post-fork child: open + dup2 + close + die share \
+                  async-signal-safety invariant; sequencing matters."
+    )]
+    // SAFETY: open/dup2/close + die are async-signal-safe.  All ops in
+    // this block share the post-fork-child async-signal-safety invariant.
     unsafe {
         let devnull_path = b"/dev/null\0";
         let dn_fd = libc::open(
@@ -295,9 +318,15 @@ pub unsafe fn child_setup(
     // NO allocations — Vec::clone here would deadlock on the heap mutex if a
     // sibling parent thread held it at fork() time.
     if let Some(user) = run_as {
-        // SAFETY: setgroups/setgid/setuid are async-signal-safe. `groups_ptr`
-        // points into stable parent-owned memory for `groups_len` `gid_t`
-        // values (caller contract).
+        #[allow(
+            clippy::multiple_unsafe_ops_per_block,
+            reason = "post-fork child: ordered privilege drop (setgroups → setgid \
+                      → setuid) must occur atomically; all share async-signal- \
+                      safety invariant and caller-supplied groups_ptr lifetime."
+        )]
+        // SAFETY: setgroups/setgid/setuid + die are async-signal-safe.
+        // `groups_ptr` points into stable parent-owned memory for
+        // `groups_len` `gid_t` values (caller contract).
         unsafe {
             if groups_len > 0 {
                 #[cfg(target_os = "linux")]
@@ -331,7 +360,12 @@ pub unsafe fn child_setup(
         }
     }
 
-    // SAFETY: execve is async-signal-safe.
+    #[allow(
+        clippy::multiple_unsafe_ops_per_block,
+        reason = "post-fork child: execve + die share async-signal-safety \
+                  invariant; if execve returns, die handles the failure."
+    )]
+    // SAFETY: execve + die are async-signal-safe.
     unsafe {
         libc::execve(argv_ptrs[0], argv_ptrs.as_ptr(), env_ptrs.as_ptr());
         // execve returned ⇒ failure.

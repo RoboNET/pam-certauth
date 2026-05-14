@@ -220,10 +220,17 @@ impl EngineHandle {
         // into LoadFailed.  We close over `raw` and `_guard` by reference;
         // any failure must drop the engine before returning.
         //
+        #[allow(
+            clippy::multiple_unsafe_ops_per_block,
+            reason = "three ENGINE_ctrl_cmd_string calls share one invariant: \
+                      valid CString pointers and a valid ENGINE handle."
+        )]
         // SAFETY: every pointer passed to `ENGINE_ctrl_cmd_string` below
         // is a valid NUL-terminated string from a `CString` whose lifetime
         // outlives the call; `raw` is a valid ENGINE handle we hold a
-        // reference to.
+        // reference to.  All three calls share that single invariant, so
+        // grouping them in one `unsafe` block keeps the SAFETY comment
+        // honest (one rationale, one block).
         let cmd_results = unsafe {
             let r1 = ENGINE_ctrl_cmd_string(raw.as_ptr(), so_path_cmd.as_ptr(), path_c.as_ptr(), 0);
             let r2 = if r1 == 1 {
@@ -299,10 +306,17 @@ impl Drop for EngineHandle {
         // mutex.
         let _guard = LOAD_MUTEX.lock();
 
+        #[allow(
+            clippy::multiple_unsafe_ops_per_block,
+            reason = "ENGINE_finish + ENGINE_free are the matched teardown pair \
+                      for the structural/functional refs taken in `load`; one \
+                      shared invariant (handle validity)."
+        )]
         // SAFETY: `self.raw` is a valid ENGINE handle that we initialised;
         // the matching pair of (`ENGINE_finish`, `ENGINE_free`) releases
         // the functional and structural references taken in the
-        // constructors.
+        // constructors.  Both calls share one invariant (validity of
+        // `self.raw`), so they live in one block.
         unsafe {
             let _ = ENGINE_finish(self.raw.as_ptr());
             let _ = ENGINE_free(self.raw.as_ptr());
