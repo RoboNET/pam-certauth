@@ -134,6 +134,11 @@ impl HookExecutor for ForkExecExecutor {
         let err_w = stderr_pipe_w.into_raw_fd();
 
         // Compute basename for log tagging.
+        // hook.command[0] is safe: hook.command.is_empty() rejected at line 99.
+        #[allow(
+            clippy::indexing_slicing,
+            reason = "hook.command guaranteed non-empty by guard at top of execute."
+        )]
         let basename = Path::new(&hook.command[0]).file_name().map_or_else(
             || hook.command[0].clone(),
             |s| s.to_string_lossy().into_owned(),

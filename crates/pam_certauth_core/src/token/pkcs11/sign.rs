@@ -197,8 +197,15 @@ fn ecdsa_raw_to_der(raw: &[u8]) -> Result<Vec<u8>, CryptoError> {
         return Err(CryptoError::BadSignature);
     }
     let half = raw.len() / 2;
-    let r = BigNum::from_slice(&raw[..half])?;
-    let s = BigNum::from_slice(&raw[half..])?;
+    // raw[..half] / raw[half..] safe: `raw.len()` is non-zero and even
+    // (guard above), so 0 < half < raw.len().
+    #[allow(
+        clippy::indexing_slicing,
+        reason = "half bounded by `is_empty()` and `is_multiple_of(2)` guards above."
+    )]
+    let (r_bytes, s_bytes) = (&raw[..half], &raw[half..]);
+    let r = BigNum::from_slice(r_bytes)?;
+    let s = BigNum::from_slice(s_bytes)?;
     let sig = EcdsaSig::from_private_components(r, s)?;
     let der = sig.to_der()?;
     Ok(der)

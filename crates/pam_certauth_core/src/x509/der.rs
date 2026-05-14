@@ -5,6 +5,24 @@
 //! This is intentionally tiny: it covers only the tags and length encodings
 //! used by the few extensions consumed in this crate.  No allocation-heavy
 //! validation, no support for indefinite lengths.
+//!
+//! # Indexing policy
+//!
+//! Every byte/slice index in this module is preceded by an explicit
+//! length check that returns `TrustError::CertParse` on truncation
+//! (see `read_tlv`, `oid_to_dotted`, etc.).  `clippy::indexing_slicing`
+//! cannot prove those checks span across the multiple `if` arms, so we
+//! suppress it module-wide rather than peppering every site with
+//! `#[allow]`. Any future code touching this module MUST follow the
+//! same "check-then-index" idiom — reviewers should flag any naked
+//! index without a preceding bounds guard.
+
+#![allow(
+    clippy::indexing_slicing,
+    reason = "DER parser: every index is guarded by an explicit length \
+              check that returns CertParse on truncation; see module \
+              docs and `read_tlv` for the invariant."
+)]
 
 use super::TrustError;
 

@@ -4,7 +4,8 @@
     clippy::expect_used,
     clippy::panic,
     clippy::missing_panics_doc,
-    clippy::pedantic
+    clippy::pedantic,
+    clippy::indexing_slicing
 )]
 
 use pam_certauth_proto::wire::{decode_line, encode_message, MAX_FRAME_BYTES};

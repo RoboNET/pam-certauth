@@ -37,7 +37,15 @@ pub fn self_check(cfg: &ValidatedConfig) -> Result<(), SelfCheckError> {
         }
     }
     for hook in &cfg.hooks {
-        let path = std::path::PathBuf::from(&hook.command[0]);
+        // Empty command would have failed runtime spawn anyway; surface
+        // it here as a self-check error rather than panicking.
+        let Some(cmd0) = hook.command.first() else {
+            return Err(SelfCheckError::HookCommandMissing {
+                stage: hook.stage,
+                path: std::path::PathBuf::new(),
+            });
+        };
+        let path = std::path::PathBuf::from(cmd0);
         if !path.exists() {
             return Err(SelfCheckError::HookCommandMissing {
                 stage: hook.stage,

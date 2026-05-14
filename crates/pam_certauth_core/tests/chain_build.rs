@@ -1,6 +1,7 @@
 #![allow(missing_docs)]
 #![allow(clippy::unwrap_used)]
 #![allow(clippy::expect_used)]
+#![allow(clippy::indexing_slicing)]
 
 use pam_certauth_core::x509::chain::build_chain;
 use pam_certauth_core::x509::{Certificate, TrustError};

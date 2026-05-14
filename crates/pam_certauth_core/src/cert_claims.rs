@@ -113,7 +113,12 @@ fn sha256_hex_of_der(cert: &X509Ref) -> Result<String, CertClaimsError> {
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::indexing_slicing
+)]
 mod tests {
     use super::*;
     use crate::x509::oids::{HOST_BINDING_OID, SCOPES_OID, USER_BINDING_OID};

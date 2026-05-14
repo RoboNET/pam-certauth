@@ -2,6 +2,24 @@
 //!
 //! See `docs/work-order.md` and spec §4.
 //!
+//! # Indexing policy
+//!
+//! Every byte/slice index in this module operates on a buffer whose
+//! length has already been validated by an upstream `read_tlv` /
+//! `read_tlv_expect` call (the canonical DER bounds check, see
+//! `crate::x509::der`).  Where we slice directly (e.g. stripping the
+//! leading-zero of a DER INTEGER), the length is checked in the
+//! surrounding `if` guard.  `clippy::indexing_slicing` cannot prove
+//! these cross-statement invariants, so we suppress the lint
+//! module-wide.  Reviewers MUST flag any new naked index without an
+//! adjacent bounds guard.
+
+#![allow(
+    clippy::indexing_slicing,
+    reason = "CMS/DER parser: every index is bounded by a prior read_tlv \
+              length check or an explicit `len() > N` guard; see module docs."
+)]
+//!
 //! # Status
 //!
 //! Full M-of-N verifier.  `verify()` enforces signature chain, scope,

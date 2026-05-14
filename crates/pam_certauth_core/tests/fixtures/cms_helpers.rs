@@ -40,7 +40,12 @@
 //!   `-resign`; Task 4.7 will reach into the DER to read it back.
 
 #![allow(dead_code)] // Helpers consumed by future integration tests.
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+#![allow(
+    clippy::indexing_slicing,
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic
+)]
 #![allow(missing_docs)]
 
 use std::fs;

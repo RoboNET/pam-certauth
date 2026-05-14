@@ -76,9 +76,15 @@ pub fn decode_bytes<T: DeserializeOwned>(bytes: &[u8]) -> Result<T, WireError> {
     if bytes.len() > MAX_FRAME_BYTES {
         return Err(WireError::FrameTooLarge(bytes.len()));
     }
-    let mut end = bytes.len();
-    while end > 0 && (bytes[end - 1] == b'\n' || bytes[end - 1] == b'\r') {
-        end -= 1;
-    }
-    serde_json::from_slice(&bytes[..end]).map_err(WireError::Decode)
+    // Trim trailing CR/LF without panic-on-OOB indexing: count trailing
+    // newline-class bytes via the iterator's take_while-from-the-back
+    // pattern, then slice with `.get(..end)`.
+    let trim_count = bytes
+        .iter()
+        .rev()
+        .take_while(|b| **b == b'\n' || **b == b'\r')
+        .count();
+    let end = bytes.len().saturating_sub(trim_count);
+    let trimmed = bytes.get(..end).unwrap_or(&[]);
+    serde_json::from_slice(trimmed).map_err(WireError::Decode)
 }

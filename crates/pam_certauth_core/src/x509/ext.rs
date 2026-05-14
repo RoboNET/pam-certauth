@@ -6,6 +6,14 @@
 //!
 //! Keep all DER manipulation here so the rest of the crate sees a typed
 //! façade only.
+//!
+//! Indexing policy: see `super::der` module docs.  Every index here is
+//! guarded by an explicit length check via `read_tlv`/`read_tlv_expect`.
+
+#![allow(
+    clippy::indexing_slicing,
+    reason = "X.509 ext parser: bounds validated by upstream read_tlv calls."
+)]
 
 use super::der::{
     oid_to_dotted, read_tlv, read_tlv_expect, TAG_BIT_STRING, TAG_BOOLEAN, TAG_INTEGER,

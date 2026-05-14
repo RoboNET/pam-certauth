@@ -1,6 +1,12 @@
 //! Cryptographic verification of every link in a built certificate chain.
 //! See `T05` in the stage-2 plan.
 
+#![allow(
+    clippy::indexing_slicing,
+    reason = "pair[0]/pair[1] safe by windows(2) contract; last_idx computed \
+              from `chain.len() - 1` after `< 2` guard above."
+)]
+
 use super::{Certificate, TrustError};
 
 /// Verifies that each child in the chain was signed by its parent's public

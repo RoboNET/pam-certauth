@@ -1117,7 +1117,8 @@ impl FlowIo for InMemoryFlowIo {
     clippy::unwrap_used,
     clippy::err_expect,
     clippy::panic,
-    clippy::duration_suboptimal_units
+    clippy::duration_suboptimal_units,
+    clippy::indexing_slicing
 )]
 mod tests {
     use super::*;

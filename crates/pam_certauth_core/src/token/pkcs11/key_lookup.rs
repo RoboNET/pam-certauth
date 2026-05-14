@@ -91,6 +91,11 @@ fn cka_id_log_prefix(id: &[u8]) -> String {
     use std::fmt::Write as _;
     let take = id.len().min(4);
     let mut out = String::with_capacity(take * 2 + 4);
+    // &id[..take] safe: take = id.len().min(4) ≤ id.len().
+    #[allow(
+        clippy::indexing_slicing,
+        reason = "take bounded by id.len().min(4); slice always in bounds."
+    )]
     for byte in &id[..take] {
         // Hex formatting into a String never errors.
         _ = write!(out, "{byte:02x}");

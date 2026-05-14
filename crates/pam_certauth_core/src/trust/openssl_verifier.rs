@@ -205,6 +205,10 @@ impl OpensslVerifier {
         let end_entity = end_entity_ref.clone();
         let anchor = anchor_ref.clone();
         // intermediates: chain[1..len-1]
+        #[allow(
+            clippy::indexing_slicing,
+            reason = "chain.len() > 2 ensures the [1..len-1] slice is valid and non-empty."
+        )]
         let middle: Vec<Certificate> = if chain.len() > 2 {
             chain[1..chain.len() - 1].to_vec()
         } else {

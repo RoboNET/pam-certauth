@@ -3,7 +3,12 @@
 //! `cms_helpers` fixture and asserts that `verify` returns two distinct
 //! `VerifiedSigner` records.
 
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::indexing_slicing
+)]
 
 #[path = "fixtures/cms_helpers.rs"]
 mod cms_helpers;

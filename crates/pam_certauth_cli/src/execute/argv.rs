@@ -40,13 +40,19 @@ pub fn canonicalize_and_validate(argv: &[String]) -> Result<CanonicalArgv, ArgvE
             return Err(ArgvError::NonNfc);
         }
     }
-    let argv0 = resolve_in_path(&argv[0])?;
+    // argv[0] / argv[1..] safe: argv.is_empty() rejected at top of function.
+    #[allow(
+        clippy::indexing_slicing,
+        reason = "argv non-empty by guard at function entry."
+    )]
+    let (argv0_src, tail) = (&argv[0], &argv[1..]);
+    let argv0 = resolve_in_path(argv0_src)?;
     let argv0_resolved =
-        std::fs::canonicalize(&argv0).map_err(|_| ArgvError::NotFound(argv[0].clone()))?;
+        std::fs::canonicalize(&argv0).map_err(|_| ArgvError::NotFound(argv0_src.clone()))?;
 
     let mut parts: Vec<String> = Vec::with_capacity(argv.len());
     parts.push(argv0_resolved.to_string_lossy().into_owned());
-    for arg in &argv[1..] {
+    for arg in tail {
         parts.push(shell_escape(arg));
     }
     Ok(CanonicalArgv {

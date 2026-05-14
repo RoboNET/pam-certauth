@@ -13,6 +13,16 @@
 //!
 //! Lines longer than [`MAX_LINE_BYTES`] are truncated and appended with a
 //! `… [truncated]` marker so a hook flooding the pipe can't blow up syslog.
+//!
+//! Indexing policy: all slice indices in this module are bounded either
+//! by `read(2)`'s contract (`n <= buf.len()`), `Vec::len().min(_)`, or
+//! an explicit `raw.len() > N` guard immediately preceding the slice.
+
+#![allow(
+    clippy::indexing_slicing,
+    reason = "pipe reader: slice indices bounded by read(2) contract, \
+              len().min(_) or explicit `len > N` guard."
+)]
 
 use std::fmt;
 use std::fs::File;

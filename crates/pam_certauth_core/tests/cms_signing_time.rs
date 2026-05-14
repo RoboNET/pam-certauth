@@ -14,7 +14,12 @@
 //!   * a CMS whose `signingTime` is far in the past still verifies
 //!     successfully (the regression that 0.2.2 fixes).
 
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::indexing_slicing
+)]
 
 #[path = "fixtures/cms_helpers.rs"]
 mod cms_helpers;

@@ -353,6 +353,10 @@ pub unsafe fn child_setup(
     }
 
     // Step 9: execve.
+    #[allow(
+        clippy::indexing_slicing,
+        reason = "argv_ptrs[0] guarded by the is_empty() check immediately above."
+    )]
     if argv_ptrs.is_empty() || argv_ptrs[0].is_null() {
         // SAFETY: die is async-signal-safe.
         unsafe {
@@ -362,8 +366,9 @@ pub unsafe fn child_setup(
 
     #[allow(
         clippy::multiple_unsafe_ops_per_block,
+        clippy::indexing_slicing,
         reason = "post-fork child: execve + die share async-signal-safety \
-                  invariant; if execve returns, die handles the failure."
+                  invariant; argv_ptrs[0] guarded by is_empty() check above."
     )]
     // SAFETY: execve + die are async-signal-safe.
     unsafe {
@@ -374,7 +379,12 @@ pub unsafe fn child_setup(
 }
 
 #[cfg(test)]
-#[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
+#[allow(
+    clippy::expect_used,
+    clippy::unwrap_used,
+    clippy::panic,
+    clippy::indexing_slicing
+)]
 mod tests {
     use super::*;
 
