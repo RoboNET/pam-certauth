@@ -229,10 +229,15 @@ issue_approver approver-b
 log "signing work order (approver-a then approver-b -resign)"
 # Since 0.2.1 argv_pattern lives in the *signed* CMS encapContent as a TOML
 # body. Verifier reads it from the encap eContent and ignores any sidecar.
-# Pattern matches `/bin/echo hello*` so happy-path argv "/bin/echo hello from <host>"
-# passes the glob check.
+#
+# Pattern matches the canonical argv of `echo`. On Astra Linux (and most
+# modern coreutils packagings) `/bin/echo` is a symlink onto
+# `/usr/bin/echo`; PAM-CertAuth resolves the binary via realpath(3) before
+# the argv glob check, so the pattern MUST reference the canonical
+# `/usr/bin/echo`, not the symlink path — otherwise test-happy.sh fails
+# on real hardware with "argv does not match argv_pattern".
 cat > payload.toml <<'EOF'
-argv_pattern = "/bin/echo hello*"
+argv_pattern = "/usr/bin/echo *"
 EOF
 
 # First signer: produces a SignedData with 1 signer and embedded eContent.
