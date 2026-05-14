@@ -5,6 +5,9 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
+use pam_certauth_core::mac::audit as mac_audit;
+use pam_certauth_core::mac::backend::MacBackend;
+use pam_certauth_core::mac::IntegrityLabel;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{UnixListener, UnixStream};
 use tokio::sync::{mpsc, oneshot, Semaphore};
@@ -65,19 +68,67 @@ pub async fn bind_listener(path: &Path) -> io::Result<UnixListener> {
         std::fs::create_dir_all(parent)?;
     }
 
+    #[cfg(feature = "astra-mac")]
+    let backend = pam_certauth_core::mac::backend::ParsecBackend::new();
+    #[cfg(not(feature = "astra-mac"))]
+    let backend = pam_certauth_core::mac::backend::StubBackend::new();
+
+    // Apply МКЦ irelax label on a per-PID temp path, then atomically
+    // rename into place. The same temp path is used to fix permissions
+    // before the socket becomes observable at the final path.
     let tmp_path = build_tmp_socket_path(path);
     // Safe: tmp_path embeds our PID, so any leftover here is from a
     // prior aborted run of THIS process — never from a concurrent
     // observer. We deliberately drop the `if path.exists()` race.
     let _ = std::fs::remove_file(&tmp_path);
 
-    let listener = UnixListener::bind(&tmp_path)?;
+    let std_listener = bind_with_label_tmp(&tmp_path, &backend)?;
     let mut perms = std::fs::metadata(&tmp_path)?.permissions();
     perms.set_mode(0o660);
     std::fs::set_permissions(&tmp_path, perms)?;
     // Atomic publish: from this instant on, the socket at `path` is
     // guaranteed to have 0660 mode for any peer that connects.
     std::fs::rename(&tmp_path, path)?;
+    std_listener.set_nonblocking(true)?;
+    UnixListener::from_std(std_listener)
+}
+
+/// Bind a Unix-domain socket at `final_path` with МКЦ irelax label
+/// applied atomically: bind on `.tmp.$PID`, label via [`MacBackend::set_file_label`]
+/// (`level=0`, `irelax=true`), emit `mac_socket_label_set`, then rename
+/// into place. Returns the standard-library listener so callers may
+/// adopt it into any async runtime.
+///
+/// # Errors
+/// Returns I/O error on bind/rename, or a wrapped `MacError` when the
+/// label set fails.
+pub fn bind_with_label<B: MacBackend>(
+    final_path: &Path,
+    backend: &B,
+) -> io::Result<std::os::unix::net::UnixListener> {
+    let tmp_path = build_tmp_socket_path(final_path);
+    let _ = std::fs::remove_file(&tmp_path);
+    let listener = bind_with_label_tmp(&tmp_path, backend)?;
+    std::fs::rename(&tmp_path, final_path)?;
+    Ok(listener)
+}
+
+/// Bind on `tmp_path`, label via backend with irelax, emit the audit
+/// breadcrumb, and return the still-temp listener. Caller is responsible
+/// for the subsequent rename onto the final path.
+fn bind_with_label_tmp<B: MacBackend>(
+    tmp_path: &Path,
+    backend: &B,
+) -> io::Result<std::os::unix::net::UnixListener> {
+    let listener = std::os::unix::net::UnixListener::bind(tmp_path)?;
+    let label = IntegrityLabel {
+        level: 0,
+        categories: 0,
+    };
+    backend
+        .set_file_label(tmp_path, label, true)
+        .map_err(|e| io::Error::other(format!("set_file_label: {e}")))?;
+    mac_audit::emit_socket_label(&tmp_path.to_string_lossy());
     Ok(listener)
 }
 

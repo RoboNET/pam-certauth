@@ -50,6 +50,12 @@ pub const EVENT_CERT_MAX_INT_CATS_ABOVE_32BIT: &str =
 /// `cert_max_integrity_parse_failed` — the `MAX_INTEGRITY` extension
 /// was present but failed to decode.
 pub const EVENT_CERT_EXT_PARSE_FAILED: &str = "cert_max_integrity_parse_failed";
+/// `mac_socket_label_set` — daemon set the irelax label on its IPC
+/// socket prior to atomic-rename publication.
+pub const EVENT_MAC_SOCKET_LABEL: &str = "mac_socket_label_set";
+/// `mac_sessions_file_label_warning` — fd-based irelax labeling of the
+/// `sessions.json` tempfile failed; write continued best-effort.
+pub const EVENT_MAC_SESSIONS_FILE_WARN: &str = "mac_sessions_file_label_warning";
 
 /// Emit `mac_skipped`.
 pub fn emit_mac_skipped(reason: &str) {
@@ -265,6 +271,28 @@ pub fn emit_cert_ext_parse_failed(pam_user: &str, ident: &CertIdent, err: &str) 
         F_cert_fingerprint = ident.fingerprint.as_str(),
         F_error = err,
         "MAX_INTEGRITY ext parse failed"
+    );
+}
+
+/// Emit `mac_socket_label_set` — debug-level breadcrumb that the daemon
+/// successfully labeled its IPC socket tempfile before rename.
+pub fn emit_socket_label(path: &str) {
+    tracing::debug!(
+        target: "mac.audit",
+        F_event = EVENT_MAC_SOCKET_LABEL,
+        F_path = path,
+    );
+}
+
+/// Emit `mac_sessions_file_label_warning` — fd-based label of the
+/// `sessions.json` tempfile could not be applied; the write continues
+/// best-effort and DAC + parent-dir inheritance remain the guardrails.
+pub fn emit_sessions_file_warn(path: &str, err: Option<&str>) {
+    tracing::warn!(
+        target: "mac.audit",
+        F_event = EVENT_MAC_SESSIONS_FILE_WARN,
+        F_path = path,
+        F_error = err.unwrap_or("-"),
     );
 }
 
