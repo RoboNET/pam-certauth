@@ -1,3 +1,21 @@
+pam-certauth (0.2.3-1) unstable; urgency=medium
+
+  * Fix(daemon): acquire exclusive flock on /var/lib/pam_certauth/daemon.lock
+    at startup. Prevents stale orphan daemon from previous installs from
+    running alongside the new one. Logs CRITICAL and exits with code 1 if
+    another instance holds the lock.
+  * Fix(audit): emit `execute_attempt` audit event immediately on CLI entry,
+    before session lookup or CMS verification. Closes the forensic gap where
+    SIGKILL within the first ~200ms of pam-certauth execute left no trace
+    in journald.
+  * Fix(systemd): unit now runs `pkill -f /usr/sbin/pam-certauth-monitord`
+    pre-start to reap leftover daemons from pre-0.2.1 installs. KillMode
+    changed to control-group.
+  * Fix(packaging): debian/postinst migration kills any pre-0.2.1
+    monitord process on upgrade.
+
+ -- Mikhail Korolev <mikhail@robonet.me>  Thu, 14 May 2026 13:30:00 +0300
+
 pam-certauth (0.2.1-1) unstable; urgency=medium
 
   * Security: RFC 3161 TimeStampToken is now actually enforced when
