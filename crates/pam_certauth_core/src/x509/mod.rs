@@ -19,6 +19,7 @@ pub(crate) mod der_helpers;
 pub mod error;
 pub(crate) mod ext;
 pub mod host_binding_ext;
+pub mod max_integrity_ext;
 pub mod oids;
 pub mod pinning;
 pub mod pre_validate;
@@ -38,6 +39,38 @@ use openssl::nid::Nid;
 use openssl::pkey::{PKey, Public};
 use openssl::x509::{X509NameRef, X509};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+/// A leaf certificate whose trust chain, EKU, and signature have already
+/// been validated by the main authentication flow.
+///
+/// This is a trust-boundary marker: callers that consume a `VerifiedX509`
+/// (e.g. `max_integrity_ext::extract_max_integrity`) can assume the
+/// underlying [`X509`] is safe to inspect for extension values.  Production
+/// callers must construct it via the verifier pipeline; tests can use the
+/// `from_trusted_for_test` escape hatch.
+pub struct VerifiedX509(X509);
+
+impl VerifiedX509 {
+    /// Production constructor — calls only from the verifier pipeline after
+    /// successful validation.
+    #[allow(dead_code)]
+    pub(crate) fn new(cert: X509) -> Self {
+        Self(cert)
+    }
+
+    /// Read-only access to the underlying [`X509`].
+    #[must_use]
+    pub fn as_x509(&self) -> &X509 {
+        &self.0
+    }
+
+    /// Test-only escape hatch.  Use ONLY in unit tests with self-signed
+    /// fixtures or under the `mac-tests` feature for cross-crate test helpers.
+    #[cfg(any(test, feature = "mac-tests"))]
+    pub fn from_trusted_for_test(cert: X509) -> Self {
+        Self(cert)
+    }
+}
 
 /// A parsed X.509 certificate plus a cached DER serialization.
 ///
