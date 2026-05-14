@@ -58,6 +58,20 @@ pub struct AuditCtx<'a> {
     /// `execute_attempt`; `None` for later events that already carry
     /// the cryptographic SHA-256 of the file content.
     pub work_order_path: Option<&'a str>,
+    /// PID of the `pam-certauth execute` process emitting the event.
+    /// Pure syscall — no I/O. Populated on `execute_attempt` so the
+    /// early audit record stays correlatable across SIGKILL cycles
+    /// (M4 forensic-completeness fix).
+    pub pid: u32,
+    /// Real uid of the emitting process (`getuid(2)`).
+    pub uid: u32,
+    /// `$SUDO_UID` from the environment, if pam-certauth was invoked
+    /// via sudo. Lets the auditor reconstruct which engineer launched
+    /// the command even after the elevated wrapper has died.
+    pub sudo_uid: Option<&'a str>,
+    /// Parent pid (`getppid(2)`). Useful when correlating against
+    /// systemd, sudo, or a remote SSH session.
+    pub parent_pid: i32,
 }
 
 /// Emit a single audit event for `ctx` via `tracing::info!`.
@@ -77,6 +91,10 @@ pub fn emit(ctx: &AuditCtx<'_>) {
         exit_code = ?ctx.exit_code,
         denied_reason = ?ctx.denied_reason,
         work_order_path = ?ctx.work_order_path,
+        pid = ctx.pid,
+        uid = ctx.uid,
+        sudo_uid = ?ctx.sudo_uid,
+        parent_pid = ctx.parent_pid,
         "execute audit event"
     );
 }
@@ -127,6 +145,10 @@ mod tests {
             exit_code: None,
             denied_reason: None,
             work_order_path: Some(&wo_path),
+            pid: 1,
+            uid: 1000,
+            sudo_uid: None,
+            parent_pid: 1,
         };
         emit(&ctx);
     }
@@ -182,6 +204,10 @@ mod tests {
             exit_code: None,
             denied_reason: None,
             work_order_path: Some(&wo_path),
+            pid: 4242,
+            uid: 1001,
+            sudo_uid: Some("1234"),
+            parent_pid: 999,
         };
         tracing::subscriber::with_default(subscriber, || emit(&ctx));
 
@@ -189,6 +215,16 @@ mod tests {
         assert!(captured.contains("execute_attempt"), "{captured}");
         assert!(captured.contains("/wo/path"), "{captured}");
         assert!(captured.contains("test.scope"), "{captured}");
+        // M4: verify forensic fields make it into the rendered output so
+        // the journald layer will receive them at runtime.
+        assert!(
+            captured.contains("pid") && captured.contains("4242"),
+            "missing pid: {captured}"
+        );
+        assert!(
+            captured.contains("sudo_uid") && captured.contains("1234"),
+            "missing sudo_uid: {captured}"
+        );
     }
 
     #[test]
@@ -216,6 +252,10 @@ mod tests {
             exit_code: None,
             denied_reason: None,
             work_order_path: None,
+            pid: 0,
+            uid: 0,
+            sudo_uid: None,
+            parent_pid: 0,
         };
         emit(&ctx);
     }

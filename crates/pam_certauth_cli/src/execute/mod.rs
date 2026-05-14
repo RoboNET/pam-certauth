@@ -71,6 +71,17 @@ pub fn run(args: ExecuteArgs) -> ExitCode {
             .as_ref()
             .map(|p| p.display().to_string())
             .unwrap_or_default();
+        // M4: forensic fields. Pure syscalls — no I/O, no allocations
+        // beyond the SUDO_UID string copy. Captured here so the early
+        // audit event remains correlatable across SIGKILL cycles even
+        // if every subsequent verify step is killed.
+        let sudo_uid_env = std::env::var("SUDO_UID").ok();
+        // SAFETY: getuid/getppid are syscall wrappers with no
+        // preconditions; both are documented as always succeeding.
+        #[allow(unsafe_code)]
+        let uid = unsafe { libc::getuid() };
+        #[allow(unsafe_code)]
+        let parent_pid = unsafe { libc::getppid() };
         let ctx_attempt = AuditCtx {
             event: "execute_attempt",
             scope: scope_str,
@@ -85,6 +96,10 @@ pub fn run(args: ExecuteArgs) -> ExitCode {
             exit_code: None,
             denied_reason: None,
             work_order_path: Some(&wo_path_str),
+            pid: std::process::id(),
+            uid,
+            sudo_uid: sudo_uid_env.as_deref(),
+            parent_pid,
         };
         audit::emit(&ctx_attempt);
     }
@@ -418,6 +433,10 @@ pub fn run(args: ExecuteArgs) -> ExitCode {
         exit_code: None,
         denied_reason: None,
         work_order_path: None,
+        pid: 0,
+        uid: 0,
+        sudo_uid: None,
+        parent_pid: 0,
     };
     audit::emit(&ctx_start);
 
@@ -475,6 +494,10 @@ pub fn run(args: ExecuteArgs) -> ExitCode {
                 exit_code: Some(i32::from(EXIT_SPAWN_FAILED)),
                 denied_reason: Some(&format!("spawn failed: {e}")),
                 work_order_path: None,
+                pid: 0,
+                uid: 0,
+                sudo_uid: None,
+                parent_pid: 0,
             };
             audit::emit(&ctx_err);
             return ExitCode::from(EXIT_SPAWN_FAILED);
@@ -521,6 +544,10 @@ pub fn run(args: ExecuteArgs) -> ExitCode {
         exit_code: Some(exit_code),
         denied_reason: None,
         work_order_path: None,
+        pid: 0,
+        uid: 0,
+        sudo_uid: None,
+        parent_pid: 0,
     };
     audit::emit(&ctx_done);
 
@@ -560,6 +587,10 @@ fn audit_denied(
         exit_code: Some(i32::from(EXIT_DENIED)),
         denied_reason: Some(reason),
         work_order_path: None,
+        pid: 0,
+        uid: 0,
+        sudo_uid: None,
+        parent_pid: 0,
     };
     audit::emit(&ctx);
     eprintln!("Execute denied: {reason}: {detail}");
