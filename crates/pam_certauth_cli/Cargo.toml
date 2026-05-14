@@ -19,14 +19,14 @@ default = []
 test-support = []
 
 [dependencies]
-pam_certauth_core = { path = "../pam_certauth_core", version = "0.2.3" }
-pam_certauth_proto = { path = "../pam_certauth_proto", version = "0.2.3" }
-pam_certauth_policy = { path = "../pam_certauth_policy", version = "0.2.3" }
+pam_certauth_core = { path = "../pam_certauth_core", version = "0.2.4" }
+pam_certauth_proto = { path = "../pam_certauth_proto", version = "0.2.4" }
+pam_certauth_policy = { path = "../pam_certauth_policy", version = "0.2.4" }
 # Used solely by `gc_cmd` so the retention-store layout (paths, sweep
 # rules, ENV override) stays defined in exactly one place — the
 # execute crate. The dep edge introduces no extra heavy deps because
 # `pam_certauth_execute` only depends on core / policy / proto.
-pam_certauth_execute = { path = "../pam_certauth_execute", version = "0.2.3" }
+pam_certauth_execute = { path = "../pam_certauth_execute", version = "0.2.4" }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "signal", "io-util", "time", "sync", "process"] }
 tokio-util = { workspace = true, features = ["rt"] }
 tracing = { workspace = true }

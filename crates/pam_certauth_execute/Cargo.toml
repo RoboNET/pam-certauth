@@ -20,9 +20,9 @@ path = "src/lib.rs"
 # from core; the proto crate is only required transitively via core, but
 # we declare it explicitly so an accidental break of that path surfaces
 # at compile time in this crate, not deep in core.
-pam_certauth_core = { path = "../pam_certauth_core", version = "0.2.3" }
-pam_certauth_policy = { path = "../pam_certauth_policy", version = "0.2.3" }
-pam_certauth_proto = { path = "../pam_certauth_proto", version = "0.2.3" }
+pam_certauth_core = { path = "../pam_certauth_core", version = "0.2.4" }
+pam_certauth_policy = { path = "../pam_certauth_policy", version = "0.2.4" }
+pam_certauth_proto = { path = "../pam_certauth_proto", version = "0.2.4" }
 
 # CLI surface.
 clap = { workspace = true }

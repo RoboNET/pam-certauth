@@ -1,3 +1,20 @@
+pam-certauth (0.2.4-1) unstable; urgency=medium
+
+  * **BREAKING (deployment topology):** `pam-certauth execute` subcommand
+    is now a separate binary at `/usr/bin/pam-certauth-execute`. Sudoers
+    rules and integration scripts must reference the new binary path.
+  * Refactor: split execute into standalone crate `pam_certauth_execute`
+    to shrink the dependency closure of the root-privileged path. The
+    new binary does not link zbus, libudev, multi-threaded tokio runtime,
+    sd-notify, or futures-util — only the CMS verifier, IPC client,
+    and CLI surface needed for executing a signed work-order.
+  * Operator action required on upgrade: update sudoers entries from
+    `/usr/bin/pam-certauth execute *` to `/usr/bin/pam-certauth-execute *`
+    after install. The old subcommand prints an actionable error and
+    exits 2, so scripts fail loudly rather than silently.
+
+ -- Mikhail Korolev <mikhail@robonet.me>  Thu, 14 May 2026 14:00:00 +0300
+
 pam-certauth (0.2.3-1) unstable; urgency=medium
 
   * **REQUIRES RESTART:** After upgrading run
