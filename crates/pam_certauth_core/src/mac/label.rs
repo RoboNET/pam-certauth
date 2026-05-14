@@ -122,6 +122,9 @@ impl IntegrityLabel {
         if 2 + seq_len > der.len() || der[1] & 0x80 != 0 {
             return Err(LabelDerError::Malformed("bad seq length"));
         }
+        if 2 + seq_len != der.len() {
+            return Err(LabelDerError::Malformed("trailing bytes after SEQUENCE"));
+        }
         let body = &der[2..2 + seq_len];
         // INTEGER
         if body.len() < 3 || body[0] != 0x02 {
@@ -150,11 +153,17 @@ impl IntegrityLabel {
             if bs_len == 0 || 2 + bs_len > bs.len() {
                 return Err(LabelDerError::Malformed("bad BIT STRING length"));
             }
+            if 2 + bs_len != bs.len() {
+                return Err(LabelDerError::Malformed("trailing bytes after BIT STRING"));
+            }
             let payload = &bs[2..2 + bs_len];
             if payload.is_empty() {
                 return Err(LabelDerError::Malformed(
                     "BIT STRING missing unused-bits byte",
                 ));
+            }
+            if payload[0] > 7 {
+                return Err(LabelDerError::Malformed("BIT STRING unused-bits > 7"));
             }
             // payload[0] = unused bits
             let bits = &payload[1..];

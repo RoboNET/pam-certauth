@@ -75,6 +75,20 @@ fn categories_above_32bit_round_trip_preserves_high_bits() {
     assert_eq!(back, l);
 }
 
+#[test]
+fn rejects_bit_string_unused_bits_above_seven() {
+    // SEQ { INT 0, BIT STRING (unused_bits=0xFF, payload=0x01) }
+    let der = [0x30, 0x06, 0x02, 0x01, 0x00, 0x03, 0x02, 0xFF, 0x01];
+    assert!(IntegrityLabel::from_der(&der).is_err());
+}
+
+#[test]
+fn rejects_trailing_bytes_after_bit_string() {
+    // SEQ { INT 0, BIT STRING (1 byte payload), trailing 0xAA }
+    let der = [0x30, 0x07, 0x02, 0x01, 0x00, 0x03, 0x02, 0x00, 0x01, 0xAA];
+    assert!(IntegrityLabel::from_der(&der).is_err());
+}
+
 proptest! {
     #[test]
     fn proptest_roundtrip(level in any::<i8>(), cats in any::<u64>()) {
