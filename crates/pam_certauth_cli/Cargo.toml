@@ -51,7 +51,7 @@ openssl = { workspace = true }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 udev = { workspace = true }
-zbus = { version = "4", default-features = false, features = ["tokio"] }
+zbus = { version = "5", default-features = false, features = ["tokio"] }
 
 [dev-dependencies]
 tempfile = { workspace = true }
