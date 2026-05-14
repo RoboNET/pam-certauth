@@ -2,6 +2,7 @@
 #![allow(clippy::unwrap_used)]
 #![allow(clippy::expect_used)]
 #![allow(clippy::doc_markdown)]
+#![allow(clippy::panic_in_result_fn)]
 
 use pam_certauth_core::config::{RawConfig, ValidatedConfig};
 use pam_certauth_core::Error;

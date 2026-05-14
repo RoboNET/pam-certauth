@@ -92,7 +92,8 @@ mod tests {
         clippy::expect_used,
         clippy::err_expect,
         clippy::panic,
-        clippy::unwrap_used
+        clippy::unwrap_used,
+        clippy::panic_in_result_fn
     )]
 
     use super::*;

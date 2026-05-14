@@ -62,6 +62,7 @@ undocumented_unsafe_blocks = "deny"
 multiple_unsafe_ops_per_block = "deny"
 let_underscore_must_use = "deny"
 mem_forget = "deny"
+panic_in_result_fn = "deny"
 # Pointer / cast hygiene.
 transmute_ptr_to_ptr = "warn"
 ptr_as_ptr = "warn"
