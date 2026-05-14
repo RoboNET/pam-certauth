@@ -43,12 +43,19 @@ enum Cmd {
 fn main() -> ExitCode {
     let cli = Cli::parse();
     // Initialise tracing once for every subcommand so audit events
-    // (`execute_start`, `execute_done`, `execute_denied`, GC sweep,
-    // policy explain, …) land in journald uniformly — not just when
-    // we run as a systemd unit child.  `daemon::run_async` calls
-    // `logging::init` again; the OnceLock guard inside makes that a
-    // no-op.  Failure is logged to stderr and the process continues
-    // — tracing is best-effort, not a hard prereq.
+    // (`execute_attempt`, `execute_start`, `execute_done`,
+    // `execute_denied`, GC sweep, policy explain, …) land in journald
+    // uniformly — not just when we run as a systemd unit child.
+    // `daemon::run_async` calls `logging::init` again; the OnceLock
+    // guard inside makes that a no-op.  Failure is logged to stderr
+    // and the process continues — tracing is best-effort, not a hard
+    // prereq.
+    //
+    // ORDERING REQUIREMENT: this must run BEFORE subcommand dispatch.
+    // The early `execute_attempt` audit event is emitted as the very
+    // first I/O-free statement inside `execute::run`; if tracing
+    // weren't already initialised, that event would drop on the floor
+    // before any subscriber attached.
     if let Err(e) = logging::init() {
         eprintln!("pam-certauth: failed to initialise tracing: {e:#}");
     }
