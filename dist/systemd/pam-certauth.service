@@ -8,12 +8,24 @@ Requires=systemd-logind.service
 
 [Service]
 Type=notify
+# Defence-in-depth: reap any stale pre-0.2.1 monitord process that may still
+# be running as root from a previous install. The new daemon binary lives at
+# /usr/bin/pam-certauth (subcommand `daemon`), so the absolute-path pattern
+# below cannot match this unit's own ExecStart. The leading `-` tells
+# systemd to ignore non-zero exits (the common no-match case).
+ExecStartPre=-/usr/bin/pkill --signal TERM -f "/usr/sbin/pam-certauth-monitord"
+ExecStartPre=-/bin/sleep 1
+ExecStartPre=-/usr/bin/pkill --signal KILL -f "/usr/sbin/pam-certauth-monitord"
 # Batch 4 (P1-D): the daemon reads its operational knobs from the SAME shared
 # config the PAM cdylib parses, so operators only edit one file. Keep CLI
 # flags in mind only as on-the-fly overrides for staging / debugging.
 ExecStart=/usr/bin/pam-certauth daemon --config /etc/pam_certauth/config.toml
 Restart=on-failure
 RestartSec=5s
+# Kill the whole cgroup on stop so no children outlive the unit and survive
+# as orphan root processes after an upgrade.
+KillMode=control-group
+TimeoutStopSec=10s
 # Run as a dedicated system user (created by postinst). The daemon does
 # NOT need root: mount(2) is performed by pam_certauth.so inside the PAM
 # caller's context; the daemon's privileged actions (LockSession /
