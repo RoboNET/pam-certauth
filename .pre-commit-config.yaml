@@ -58,3 +58,9 @@ repos:
         entry: bash -n
         language: system
         types: [shell]
+
+      - id: no-max-integrity-placeholder
+        name: Forbid MAX_INTEGRITY OID placeholders in fixtures and code
+        language: system
+        entry: bash -c '! git grep -InE "<MAX_OID>|<TBD-uuid>" -- "*.cnf" "*.cnf.in" "crates/**/*.rs" ":(exclude)crates/pam_certauth_core/src/x509/oids.rs" 2>/dev/null'
+        pass_filenames: false

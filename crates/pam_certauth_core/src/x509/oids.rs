@@ -18,6 +18,13 @@ pub const HOST_BINDING_OID: &str = "2.25.183976554325829274683049824615098";
 /// (matches any user) or an exact PAM username.
 pub const USER_BINDING_OID: &str = "2.25.215438916728501023845629178354627";
 
+/// OID of the `pam_cert_max_integrity` X.509 extension.
+///
+/// `extnValue ::= SEQUENCE { level INTEGER (-128..127), categories BIT STRING DEFAULT ''B }`.
+/// Marks the upper bound of Astra МКЦ integrity for the engineer session.
+/// Non-critical. See `docs/superpowers/specs/2026-05-14-mac-integrity-design.md`.
+pub const MAX_INTEGRITY_OID: &str = "2.25.273824307386008814506455310913083078403";
+
 /// OID of the `pam_cert_scopes` X.509 extension.
 ///
 /// `extnValue ::= SEQUENCE OF UTF8String`, where each entry is a scope name
