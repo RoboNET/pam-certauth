@@ -37,7 +37,6 @@ fn session_with_logind_id(uuid_seed: u128, logind_id: &str) -> ActiveSession {
         cert_serial: "01".into(),
         engineer_ski: String::new(),
         engineer_cert_sha256: String::new(),
-        scopes: Vec::new(),
         uid: 0,
     }
 }

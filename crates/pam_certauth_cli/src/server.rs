@@ -458,7 +458,6 @@ async fn dispatch(msg: ClientMessage, event_tx: &mpsc::UnboundedSender<Event>) -
             cert_serial,
             engineer_ski,
             engineer_cert_sha256,
-            scopes,
             uid,
         } => {
             let session = ActiveSession {
@@ -473,7 +472,6 @@ async fn dispatch(msg: ClientMessage, event_tx: &mpsc::UnboundedSender<Event>) -
                 cert_serial,
                 engineer_ski,
                 engineer_cert_sha256,
-                scopes,
                 uid,
             };
             let (tx, rx) = oneshot::channel();

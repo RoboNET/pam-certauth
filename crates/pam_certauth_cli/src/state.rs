@@ -236,7 +236,6 @@ async fn handle_ipc(
                     cert_cn: rec.cert_cn,
                     engineer_ski: rec.engineer_ski,
                     engineer_cert_sha256: rec.engineer_cert_sha256,
-                    scopes: rec.scopes,
                     host_id_hash: rec.host_id_hash,
                 },
                 None => ServerMessage::Error {

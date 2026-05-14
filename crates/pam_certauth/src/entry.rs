@@ -263,37 +263,7 @@ pub unsafe extern "C" fn pam_sm_authenticate(
         // 9. Map outcome → PAM rc.
         match outcome {
             Ok(out) => {
-                let crate::flow::FlowOutcome {
-                    auth_ctx,
-                    mount,
-                    cert_scopes,
-                } = out;
-                // 9a. require_scope check (Phase 10). Runs AFTER cert
-                // validation succeeded so a denial here is structurally a
-                // policy decision, not an auth failure. Empty
-                // `required_scopes` skips the check entirely.
-                if !parsed_args.required_scopes.is_empty()
-                    && !crate::pam_args::satisfies_required_scopes(
-                        &cert_scopes,
-                        &parsed_args.required_scopes,
-                        parsed_args.scope_match,
-                    )
-                {
-                    tracing::warn!(
-                        target: "pam_certauth.auth.require_scope",
-                        required = ?parsed_args.required_scopes,
-                        scope_match = ?parsed_args.scope_match,
-                        claimed = ?cert_scopes,
-                        session_id = %auth_ctx.session_id,
-                        cert_cn = ?auth_ctx.cert_cn,
-                        "require_scope_violation"
-                    );
-                    // Drop the mount guard explicitly so /run/.../mounts
-                    // is unmounted before we return — leaving it would
-                    // surface as a stray bind-mount after a denied login.
-                    drop(mount);
-                    return PAM_AUTH_ERR;
-                }
+                let crate::flow::FlowOutcome { auth_ctx, mount } = out;
                 // For PKCS#11 mode `mount` is `None`; for PKCS#12 it
                 // owns the USB mountpoint.
                 if let Err(err) = unsafe { crate::data_handle::set_auth_context(pamh, auth_ctx) } {

@@ -23,7 +23,6 @@ pub mod max_integrity_ext;
 pub mod oids;
 pub mod pinning;
 pub mod pre_validate;
-pub mod scopes_ext;
 pub mod sig_alg;
 pub mod signatures;
 #[cfg(test)]
