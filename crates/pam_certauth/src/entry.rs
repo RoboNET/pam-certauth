@@ -56,10 +56,15 @@ pub unsafe fn collect_args(
         return args;
     }
     for i in 0..argc {
+        // SAFETY: `argv` points to `argc` valid C string pointers per the
+        // function safety contract; `i` is bounded by `0..argc`.
         let ptr = unsafe { *argv.add(i as usize) };
         if ptr.is_null() {
             continue;
         }
+        // SAFETY: `ptr` is non-null (checked above) and per PAM contract
+        // points to a NUL-terminated C string supplied by the PAM caller
+        // for the lifetime of this call.
         let s = unsafe { std::ffi::CStr::from_ptr(ptr) }.to_string_lossy();
         if let Some((k, v)) = s.split_once('=') {
             args.insert(k.to_string(), v.to_string());
@@ -86,10 +91,15 @@ pub unsafe fn collect_args_raw(
         return out;
     }
     for i in 0..argc {
+        // SAFETY: `argv` points to `argc` valid C string pointers per the
+        // function safety contract; `i` is bounded by `0..argc`.
         let ptr = unsafe { *argv.add(i as usize) };
         if ptr.is_null() {
             continue;
         }
+        // SAFETY: `ptr` is non-null (checked above) and per PAM contract
+        // points to a NUL-terminated C string supplied by the PAM caller
+        // for the lifetime of this call.
         let s = unsafe { std::ffi::CStr::from_ptr(ptr) }.to_string_lossy();
         out.push(s.into_owned());
     }
@@ -157,7 +167,11 @@ pub unsafe extern "C" fn pam_sm_authenticate(
     crate::panic_guard::run_pam(|| {
         crate::logging::init_once();
         // 1. Args + config.
+        // SAFETY: `argc`/`argv` are the C-style argument vector libpam
+        // passes to pam_sm_authenticate; they are valid for the call.
         let args = unsafe { collect_args(argc, argv) };
+        // SAFETY: Same `argc`/`argv` provided by libpam to this entry
+        // point are still valid for the duration of this call.
         let raw_args = unsafe { collect_args_raw(argc, argv) };
         let raw_arg_refs: Vec<&str> = raw_args.iter().map(String::as_str).collect();
         let parsed_args = crate::pam_args::parse_pam_args(&raw_arg_refs);
@@ -175,6 +189,8 @@ pub unsafe extern "C" fn pam_sm_authenticate(
         }
 
         // 2. PAM_USER / PAM_SERVICE.
+        // SAFETY: `pamh` is the live PAM handle libpam handed to this
+        // pam_sm_authenticate entry point.
         let pam_user = match unsafe { crate::pam_helpers::pam_get_user_string(pamh) } {
             Ok(s) => s,
             Err(err) => {
@@ -182,11 +198,13 @@ pub unsafe extern "C" fn pam_sm_authenticate(
                 return PAM_AUTH_ERR;
             }
         };
+        // SAFETY: Same live `pamh` from libpam is still valid here.
         let pam_service = unsafe { crate::pam_helpers::pam_get_service_string(pamh) }
             .unwrap_or_else(|err| {
                 tracing::warn!(target: "pam_certauth.auth", error = %err, "pam_get_item(PAM_SERVICE) failed; using 'unknown'");
                 "unknown".to_string()
             });
+        // SAFETY: Same live `pamh` from libpam is still valid here.
         let pam_tty_value = unsafe { crate::pam_helpers::pam_get_tty_string(pamh) }
             .unwrap_or_else(|err| {
                 tracing::debug!(
@@ -222,6 +240,9 @@ pub unsafe extern "C" fn pam_sm_authenticate(
         // are the sole source of authorisation. See docs/cert-issuance.md.
 
         // 6. Build the PIN prompter against the live PAM handle.
+        // SAFETY: `pamh` is the live PAM handle for this call; the
+        // resulting closure is consumed below within the same stack
+        // frame, so it does not outlive the handle.
         let mut prompt_pin = unsafe { crate::pam_conv::closure_from_pamh(pamh) };
 
         // 7. RealFlowIo wires udev + mount(2).
@@ -299,6 +320,8 @@ pub unsafe extern "C" fn pam_sm_authenticate(
                 }
                 // For PKCS#11 mode `mount` is `None`; for PKCS#12 it
                 // owns the USB mountpoint.
+                // SAFETY: `pamh` is the live PAM handle libpam handed
+                // to this pam_sm_authenticate entry point.
                 if let Err(err) = unsafe { crate::data_handle::set_auth_context(pamh, auth_ctx) } {
                     tracing::error!(target: "pam_certauth.auth", error = %err, "set_auth_context failed");
                     return PAM_SYSTEM_ERR;
@@ -352,6 +375,8 @@ pub unsafe extern "C" fn pam_sm_acct_mgmt(
 ) -> i32 {
     crate::panic_guard::run_pam(|| {
         crate::logging::init_once();
+        // SAFETY: `pamh` is the live PAM handle libpam handed to
+        // pam_sm_acct_mgmt; the borrow is dropped at end of this block.
         let Some(ctx) = (unsafe { crate::data_handle::get_auth_context(pamh) }) else {
             return PAM_AUTHINFO_UNAVAIL;
         };
@@ -390,6 +415,8 @@ pub unsafe extern "C" fn pam_sm_open_session(
     crate::panic_guard::run_pam(|| {
         crate::logging::init_once();
         // 1. Args + config.
+        // SAFETY: `argc`/`argv` are the C-style argument vector libpam
+        // passes to pam_sm_open_session; valid for this call.
         let args = unsafe { collect_args(argc, argv) };
         let cfg_path = config_path_from_args(&args);
         let cfg = match pam_certauth_core::config::load_validated_config(&cfg_path) {
@@ -400,11 +427,14 @@ pub unsafe extern "C" fn pam_sm_open_session(
             }
         };
 
+        // SAFETY: `pamh` is the live PAM handle libpam handed to
+        // pam_sm_open_session; the borrow is bounded by this block.
         let Some(ctx) = (unsafe { crate::data_handle::get_auth_context(pamh) }) else {
             return PAM_AUTHINFO_UNAVAIL;
         };
 
         // PAM user (best-effort: fall back to cert_cn if PAM_USER is gone).
+        // SAFETY: Same live `pamh` from libpam is still valid here.
         let pam_user = unsafe { crate::pam_helpers::pam_get_user_string(pamh) }
             .unwrap_or_else(|_| ctx.cert_cn.clone().unwrap_or_default());
 
@@ -459,6 +489,8 @@ pub unsafe extern "C" fn pam_sm_close_session(
 ) -> i32 {
     crate::panic_guard::run_pam(|| {
         crate::logging::init_once();
+        // SAFETY: `argc`/`argv` are the C-style argument vector libpam
+        // passes to pam_sm_close_session; valid for this call.
         let args = unsafe { collect_args(argc, argv) };
         let cfg_path = config_path_from_args(&args);
         let cfg = match pam_certauth_core::config::load_validated_config(&cfg_path) {
@@ -469,7 +501,10 @@ pub unsafe extern "C" fn pam_sm_close_session(
             }
         };
 
+        // SAFETY: `pamh` is the live PAM handle libpam handed to
+        // pam_sm_close_session; the borrow is bounded by this if-let.
         if let Some(ctx) = unsafe { crate::data_handle::get_auth_context(pamh) } {
+            // SAFETY: Same live `pamh` from libpam is still valid here.
             let pam_user = unsafe { crate::pam_helpers::pam_get_user_string(pamh) }
                 .unwrap_or_else(|_| ctx.cert_cn.clone().unwrap_or_default());
 

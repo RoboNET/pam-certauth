@@ -98,17 +98,17 @@ pub unsafe fn prompt_pin(
     pamh: *mut pam_sys::pam_handle_t,
     prompt: &str,
 ) -> Result<SecretString, PamConvError> {
-    // SAFETY: PAM guarantees `pamh` is non-null and `pam_get_item` accepts a
-    // valid out-pointer.  We initialise `conv_ptr` to NULL and check the rc
-    // before dereferencing.
     let mut conv_ptr: *const c_void = std::ptr::null();
-    let rc = pam_get_item(pamh, PAM_CONV, &raw mut conv_ptr);
+    // SAFETY: `pamh` is the live PAM handle (function safety contract);
+    // `conv_ptr` is a stack-local out-pointer that libpam writes to.
+    let rc = unsafe { pam_get_item(pamh, PAM_CONV, &raw mut conv_ptr) };
     if rc != PAM_SUCCESS || conv_ptr.is_null() {
         return Err(PamConvError::NoConv);
     }
-    // SAFETY: `conv_ptr` is non-null and points to a `struct pam_conv`
-    // owned by the PAM application.  The lifetime is tied to `pamh`.
-    let conv: &PamConv = &*(conv_ptr.cast::<PamConv>());
+    // SAFETY: pam_get_item returned PAM_SUCCESS and conv_ptr is non-null;
+    // libpam guarantees it points to a `struct pam_conv` owned by the
+    // PAM application for the lifetime of `pamh`.
+    let conv: &PamConv = unsafe { &*(conv_ptr.cast::<PamConv>()) };
     let Some(conv_fn) = conv.conv else {
         return Err(PamConvError::NoConv);
     };
@@ -125,22 +125,31 @@ pub unsafe fn prompt_pin(
     let mut msg_arr: [*const PamMessage; 1] = [msg_ptr];
     let mut resp_ptr: *mut PamResponse = std::ptr::null_mut();
 
-    // SAFETY: `msg_arr` and `resp_ptr` are both valid for the duration of
-    // this call.  PAM allocates `*resp_ptr` on success — we own freeing it.
-    let rc = conv_fn(1, msg_arr.as_mut_ptr(), &raw mut resp_ptr, conv.appdata_ptr);
+    // SAFETY: `msg_arr` and `resp_ptr` are valid for the duration of this
+    // call; `conv_fn` is the application-supplied callback obtained from
+    // pam_get_item(PAM_CONV) and `conv.appdata_ptr` is opaque app state
+    // owned by libpam. On success libpam allocates *resp_ptr and we
+    // assume ownership of freeing it via libc::free.
+    let rc = unsafe { conv_fn(1, msg_arr.as_mut_ptr(), &raw mut resp_ptr, conv.appdata_ptr) };
     if rc != PAM_SUCCESS || resp_ptr.is_null() {
         return Err(PamConvError::ConvFailed);
     }
 
-    // SAFETY: `resp_ptr` is non-null and points to a `pam_response` owned by
-    // PAM.  `resp.resp` may be NULL if the user cancelled the prompt.
-    let resp = &*resp_ptr;
+    // SAFETY: conv_fn returned PAM_SUCCESS and resp_ptr is non-null; it
+    // points to a heap-allocated `pam_response` owned by libpam that we
+    // are now responsible for freeing.
+    let resp = unsafe { &*resp_ptr };
     if resp.resp.is_null() {
-        free(resp_ptr.cast::<c_void>());
+        // SAFETY: resp_ptr is a non-null pointer to a libpam allocation
+        // (libpam allocates pam_response with malloc); we did not retain
+        // any other pointer derived from it.
+        unsafe { free(resp_ptr.cast::<c_void>()) };
         return Err(PamConvError::ConvFailed);
     }
 
-    let pin_cstr = CStr::from_ptr(resp.resp);
+    // SAFETY: resp.resp is non-null (checked above) and libpam guarantees
+    // it is a NUL-terminated C string holding the PIN reply.
+    let pin_cstr = unsafe { CStr::from_ptr(resp.resp) };
     let pin_result = pin_cstr.to_str().map(str::to_string);
 
     // Always overwrite the PAM-allocated buffer before freeing — even on the
@@ -149,10 +158,18 @@ pub unsafe fn prompt_pin(
     // terminator).
     let len = pin_cstr.to_bytes().len();
     if len > 0 {
-        std::ptr::write_bytes(resp.resp.cast::<u8>(), 0_u8, len);
+        // SAFETY: resp.resp points to `len` bytes of writable libpam-owned
+        // memory (we just read exactly that many via CStr::from_ptr above);
+        // zeroing in place before free does not extend its lifetime.
+        unsafe { std::ptr::write_bytes(resp.resp.cast::<u8>(), 0_u8, len) };
     }
-    free(resp.resp.cast::<c_void>());
-    free(resp_ptr.cast::<c_void>());
+    // SAFETY: resp.resp and resp_ptr are both non-null libpam-owned
+    // allocations (malloc'd by the conv callback per the PAM contract);
+    // no other pointers derived from them are retained past these calls.
+    unsafe {
+        free(resp.resp.cast::<c_void>());
+        free(resp_ptr.cast::<c_void>());
+    }
 
     let pin_str = pin_result.map_err(|_| PamConvError::NonUtf8)?;
     Ok(SecretString::from(pin_str))

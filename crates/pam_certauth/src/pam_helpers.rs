@@ -58,17 +58,19 @@ extern "C" {
 /// * [`PamHelperError::NonUtf8`] if PAM returned non-UTF-8 bytes.
 pub unsafe fn pam_get_user_string(pamh: *mut pam_sys::pam_handle_t) -> Result<String, PamHelperError> {
     let mut user_ptr: *const c_char = std::ptr::null();
-    // SAFETY: `pamh` is owned by PAM; `user_ptr` is a valid out-pointer.
-    let rc = pam_get_user(pamh, &raw mut user_ptr, std::ptr::null());
+    // SAFETY: `pamh` is the live PAM handle (function safety contract);
+    // `user_ptr` is a stack-local out-pointer that libpam writes to.
+    let rc = unsafe { pam_get_user(pamh, &raw mut user_ptr, std::ptr::null()) };
     if rc != PAM_SUCCESS {
         return Err(PamHelperError::PamRc(rc));
     }
     if user_ptr.is_null() {
         return Err(PamHelperError::Null);
     }
-    // SAFETY: PAM guarantees `user_ptr` is a NUL-terminated C string for
-    // the lifetime of `pamh`.
-    let cstr = CStr::from_ptr(user_ptr);
+    // SAFETY: pam_get_user returned PAM_SUCCESS and user_ptr is non-null;
+    // libpam guarantees it points to a NUL-terminated C string owned by
+    // PAM for the lifetime of `pamh`.
+    let cstr = unsafe { CStr::from_ptr(user_ptr) };
     cstr.to_str()
         .map(str::to_owned)
         .map_err(|_| PamHelperError::NonUtf8)
@@ -87,17 +89,19 @@ pub unsafe fn pam_get_service_string(
     pamh: *mut pam_sys::pam_handle_t,
 ) -> Result<String, PamHelperError> {
     let mut item_ptr: *const c_void = std::ptr::null();
-    // SAFETY: `pamh` is owned by PAM; `item_ptr` is a valid out-pointer.
-    let rc = pam_get_item(pamh, PAM_SERVICE, &raw mut item_ptr);
+    // SAFETY: `pamh` is the live PAM handle (function safety contract);
+    // `item_ptr` is a stack-local out-pointer that libpam writes to.
+    let rc = unsafe { pam_get_item(pamh, PAM_SERVICE, &raw mut item_ptr) };
     if rc != PAM_SUCCESS {
         return Err(PamHelperError::PamRc(rc));
     }
     if item_ptr.is_null() {
         return Err(PamHelperError::Null);
     }
-    // SAFETY: For PAM_SERVICE the item is a `const char *` valid for the
-    // lifetime of `pamh`.
-    let cstr = CStr::from_ptr(item_ptr.cast::<c_char>());
+    // SAFETY: pam_get_item returned PAM_SUCCESS and item_ptr is non-null;
+    // for PAM_SERVICE libpam guarantees the item is a `const char *`
+    // valid for the lifetime of `pamh`.
+    let cstr = unsafe { CStr::from_ptr(item_ptr.cast::<c_char>()) };
     cstr.to_str()
         .map(str::to_owned)
         .map_err(|_| PamHelperError::NonUtf8)
@@ -123,17 +127,19 @@ pub unsafe fn pam_get_tty_string(
     pamh: *mut pam_sys::pam_handle_t,
 ) -> Result<Option<String>, PamHelperError> {
     let mut item_ptr: *const c_void = std::ptr::null();
-    // SAFETY: `pamh` is owned by PAM; `item_ptr` is a valid out-pointer.
-    let rc = pam_get_item(pamh, PAM_TTY, &raw mut item_ptr);
+    // SAFETY: `pamh` is the live PAM handle (function safety contract);
+    // `item_ptr` is a stack-local out-pointer that libpam writes to.
+    let rc = unsafe { pam_get_item(pamh, PAM_TTY, &raw mut item_ptr) };
     if rc != PAM_SUCCESS {
         return Err(PamHelperError::PamRc(rc));
     }
     if item_ptr.is_null() {
         return Ok(None);
     }
-    // SAFETY: For PAM_TTY the item is a `const char *` valid for the
-    // lifetime of `pamh`.
-    let cstr = CStr::from_ptr(item_ptr.cast::<c_char>());
+    // SAFETY: pam_get_item returned PAM_SUCCESS and item_ptr is non-null;
+    // for PAM_TTY libpam guarantees the item is a `const char *` valid
+    // for the lifetime of `pamh`.
+    let cstr = unsafe { CStr::from_ptr(item_ptr.cast::<c_char>()) };
     let s = cstr
         .to_str()
         .map(str::to_owned)

@@ -57,8 +57,11 @@ unsafe extern "C" fn auth_context_cleanup(
     if data.is_null() {
         return;
     }
-    // SAFETY: caller contract — `data` came from `Box::into_raw`.
-    let _ = Box::from_raw(data.cast::<AuthContext>());
+    // SAFETY: function contract — `data` is the same pointer previously
+    // produced by `Box::into_raw` in `set_auth_context`; PAM hands it back
+    // exactly once at handle teardown, so reconstructing the Box and
+    // dropping it is sound and frees the AuthContext exactly once.
+    let _ = unsafe { Box::from_raw(data.cast::<AuthContext>()) };
 }
 
 /// Errors raised by [`set_auth_context`] / [`get_auth_context`].
@@ -88,14 +91,19 @@ pub unsafe fn set_auth_context(
     let key = CString::new(DATA_KEY).map_err(|_| DataHandleError::BadKey)?;
     let boxed = Box::new(ctx);
     let raw = Box::into_raw(boxed).cast::<c_void>();
-    // SAFETY: `pamh` is live; `raw` is owned by PAM after this call —
-    // the cleanup callback `auth_context_cleanup` will free it.
-    let rc = pam_set_data(pamh, key.as_ptr(), raw, Some(auth_context_cleanup));
+    // SAFETY: `pamh` is the live PAM handle (function safety contract);
+    // `key.as_ptr()` is a NUL-terminated C string valid for the call
+    // duration; `raw` is a heap pointer from `Box::into_raw` and
+    // ownership transfers to libpam on PAM_SUCCESS (freed via the
+    // `auth_context_cleanup` callback at handle teardown).
+    let rc = unsafe { pam_set_data(pamh, key.as_ptr(), raw, Some(auth_context_cleanup)) };
     if rc == PAM_SUCCESS {
         Ok(())
     } else {
-        // PAM didn't take ownership; drop the box ourselves.
-        let _ = Box::from_raw(raw.cast::<AuthContext>());
+        // SAFETY: PAM did not accept ownership (rc != PAM_SUCCESS), so
+        // `raw` is still the live pointer from `Box::into_raw` above and
+        // reconstructing the Box here drops the AuthContext exactly once.
+        let _ = unsafe { Box::from_raw(raw.cast::<AuthContext>()) };
         Err(DataHandleError::PamRc(rc))
     }
 }
@@ -113,12 +121,17 @@ pub unsafe fn set_auth_context(
 pub unsafe fn get_auth_context<'a>(pamh: *mut pam_sys::pam_handle_t) -> Option<&'a AuthContext> {
     let key = CString::new(DATA_KEY).ok()?;
     let mut data_ptr: *const c_void = std::ptr::null();
-    // SAFETY: `pamh` is live; `data_ptr` is a valid out-pointer.
-    let rc = pam_get_data(pamh.cast_const(), key.as_ptr(), &raw mut data_ptr);
+    // SAFETY: `pamh` is the live PAM handle (function safety contract);
+    // `key.as_ptr()` is a NUL-terminated C string valid for the call;
+    // `data_ptr` is a stack-local out-pointer that libpam writes to.
+    let rc = unsafe { pam_get_data(pamh.cast_const(), key.as_ptr(), &raw mut data_ptr) };
     if rc != PAM_SUCCESS || data_ptr.is_null() {
         return None;
     }
-    // SAFETY: contract — the only setter is `set_auth_context`, which
-    // stores a `Box<AuthContext>`; PAM hands the same pointer back here.
-    Some(&*data_ptr.cast::<AuthContext>())
+    // SAFETY: the only setter for this key is `set_auth_context`, which
+    // hands libpam a `Box<AuthContext>::into_raw`; libpam owns the
+    // allocation for the lifetime of `pamh` and we borrow it immutably
+    // bounded by the caller's safety contract that the returned ref does
+    // not outlive the surrounding pam_sm_* call.
+    Some(unsafe { &*data_ptr.cast::<AuthContext>() })
 }
