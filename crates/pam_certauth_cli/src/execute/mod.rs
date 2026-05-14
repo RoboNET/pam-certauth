@@ -54,6 +54,41 @@ const ENV_CONFIG_PATH: &str = "PAM_CERTAUTH_CONFIG";
 /// truncated to the low byte to fit `u8`.
 #[allow(clippy::too_many_lines, clippy::needless_pass_by_value)]
 pub fn run(args: ExecuteArgs) -> ExitCode {
+    // -- early audit (F2 forensic-gap fix) -------------------------------
+    // Emit `execute_attempt` BEFORE any I/O: no config load, no policy
+    // load, no session lookup, no CMS read. This event records the
+    // attempt so that a SIGKILL within the ~50-200 ms verify window
+    // still leaves a journald trace. All cert/CMS/policy fields are
+    // empty here — they get populated by the subsequent
+    // `execute_start` / `execute_denied` / `execute_done` events on
+    // the verify path. `execute_attempt` is additive; the existing
+    // events are unchanged.
+    {
+        let early_argv: Vec<String> = args.cmd.clone();
+        let scope_str = args.scope.as_deref().unwrap_or("");
+        let wo_path_str = args
+            .work_order
+            .as_ref()
+            .map(|p| p.display().to_string())
+            .unwrap_or_default();
+        let ctx_attempt = AuditCtx {
+            event: "execute_attempt",
+            scope: scope_str,
+            engineer_cn: "",
+            engineer_ski: "",
+            engineer_session_id: "",
+            policy_sha256_hex: "",
+            work_order_cms_sha256: "",
+            approver_skis: &[],
+            argv: &early_argv,
+            audit_level: AuditLevel::Notice,
+            exit_code: None,
+            denied_reason: None,
+            work_order_path: Some(&wo_path_str),
+        };
+        audit::emit(&ctx_attempt);
+    }
+
     let Some(scope) = args.scope.as_deref() else {
         return explain_mode(&args);
     };
@@ -382,6 +417,7 @@ pub fn run(args: ExecuteArgs) -> ExitCode {
         audit_level: rule.audit_level,
         exit_code: None,
         denied_reason: None,
+        work_order_path: None,
     };
     audit::emit(&ctx_start);
 
@@ -438,6 +474,7 @@ pub fn run(args: ExecuteArgs) -> ExitCode {
                 audit_level: AuditLevel::Critical,
                 exit_code: Some(i32::from(EXIT_SPAWN_FAILED)),
                 denied_reason: Some(&format!("spawn failed: {e}")),
+                work_order_path: None,
             };
             audit::emit(&ctx_err);
             return ExitCode::from(EXIT_SPAWN_FAILED);
@@ -483,6 +520,7 @@ pub fn run(args: ExecuteArgs) -> ExitCode {
         audit_level: rule.audit_level,
         exit_code: Some(exit_code),
         denied_reason: None,
+        work_order_path: None,
     };
     audit::emit(&ctx_done);
 
@@ -521,6 +559,7 @@ fn audit_denied(
         audit_level: max_level(rule.audit_level, AuditLevel::Notice),
         exit_code: Some(i32::from(EXIT_DENIED)),
         denied_reason: Some(reason),
+        work_order_path: None,
     };
     audit::emit(&ctx);
     eprintln!("Execute denied: {reason}: {detail}");
