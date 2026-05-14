@@ -24,6 +24,11 @@ gost-tests = []
 # but no module is available at runtime (e.g. on macOS dev hosts), each test
 # prints `skipped: ...` and returns `Ok`.
 pkcs11-tests = []
+# Links libpdp and enables real МКЦ FFI. Required for Astra deb build.
+astra-mac = []
+# Enables in-process MacBackend mock for unit tests on dev hosts without
+# libpdp. Independent of astra-mac.
+mac-tests = []
 
 [dependencies]
 pam_certauth_proto = { path = "../pam_certauth_proto", version = "0.2.1" }

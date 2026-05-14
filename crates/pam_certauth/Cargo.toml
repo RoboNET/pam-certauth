@@ -21,6 +21,12 @@ gost-tests = ["pam_certauth_core/gost-tests"]
 # Re-export of `pam_certauth_core/pkcs11-tests` so `cargo test --workspace
 # --features pkcs11-tests` activates both crates' integration tests in lockstep.
 pkcs11-tests = ["pam_certauth_core/pkcs11-tests"]
+# Re-export of `pam_certauth_core/astra-mac` so workspace builds with this
+# feature link libpdp end-to-end.
+astra-mac = ["pam_certauth_core/astra-mac"]
+# Re-export of `pam_certauth_core/mac-tests` so `--features mac-tests`
+# activates in-process MacBackend mocks across crates.
+mac-tests = ["pam_certauth_core/mac-tests"]
 
 [dependencies]
 pam_certauth_core = { path = "../pam_certauth_core", version = "0.2.1" }

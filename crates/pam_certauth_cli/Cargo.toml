@@ -17,6 +17,11 @@ default = []
 # Pull in `testing` helpers (mock UdevQuery, in-process server) for use from
 # integration tests in this and dependent crates.
 test-support = []
+# Re-export of `pam_certauth_core/astra-mac` so the monitord binary links
+# libpdp when built for Astra.
+astra-mac = ["pam_certauth_core/astra-mac"]
+# Re-export of `pam_certauth_core/mac-tests` for in-process MacBackend mocks.
+mac-tests = ["pam_certauth_core/mac-tests"]
 
 [dependencies]
 pam_certauth_core = { path = "../pam_certauth_core", version = "0.2.1" }
