@@ -43,7 +43,6 @@ rand = { workspace = true }
 hex = { workspace = true }
 secrecy = { workspace = true }
 zeroize = { workspace = true }
-rustix = { workspace = true }
 subtle = { workspace = true }
 chrono = { workspace = true }
 cryptoki = { workspace = true }

@@ -33,7 +33,6 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 toml = { workspace = true }
 clap = { workspace = true }
-rustix = { workspace = true }
 parking_lot = { workspace = true }
 tempfile = { workspace = true }
 uuid = { workspace = true }
