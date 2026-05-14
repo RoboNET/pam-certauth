@@ -23,8 +23,8 @@ gost-tests = ["pam_certauth_core/gost-tests"]
 pkcs11-tests = ["pam_certauth_core/pkcs11-tests"]
 
 [dependencies]
-pam_certauth_core = { path = "../pam_certauth_core", version = "0.1.1" }
-pam_certauth_proto = { path = "../pam_certauth_proto", version = "0.1.1" }
+pam_certauth_core = { path = "../pam_certauth_core", version = "0.2.1" }
+pam_certauth_proto = { path = "../pam_certauth_proto", version = "0.2.1" }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 syslog = { workspace = true }
@@ -34,6 +34,7 @@ openssl = { workspace = true }
 sha2 = { workspace = true }
 hex = { workspace = true }
 rand = { workspace = true }
+nix = { workspace = true }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 pam-sys = { workspace = true }

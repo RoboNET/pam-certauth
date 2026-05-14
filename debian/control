@@ -48,7 +48,7 @@ Description: USB-token PKI authentication PAM module for Astra Linux SE
  .
  The package ships:
    * /lib/security/pam_certauth.so  - the PAM module
-   * /usr/sbin/pam-certauth-monitord - userspace daemon for udev/D-Bus
+   * /usr/bin/pam-certauth - userspace CLI (daemon subcommand handles udev/D-Bus)
      events, OCSP/CRL caching, and inter-session screen-lock hooks
    * Example configuration under /etc/pam_certauth/
    * A drop-in PAM stack at /etc/pam.d/certauth

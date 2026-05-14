@@ -24,7 +24,7 @@ OK 1735689600
 ### 1.2 systemd-сервис
 
 ```bash
-systemctl is-active pam-certauth-monitord
+systemctl is-active pam-certauth
 ```
 
 Ожидание: `active`. Любое другое значение — алерт.
@@ -43,7 +43,7 @@ UserParameter=pam_certauth.health,
 UserParameter=pam_certauth.timestamp,
     awk '{print $2}' /run/pam_certauth/health
 UserParameter=pam_certauth.active,
-    systemctl is-active pam-certauth-monitord
+    systemctl is-active pam-certauth
 ```
 
 ### 1.5 Snippet для Prometheus textfile collector
@@ -85,6 +85,76 @@ TMP=$(mktemp)
 } > "$TMP"
 mv "$TMP" /var/lib/node_exporter/textfile_collector/pam_certauth.prom
 ```
+
+### 1.6 Контроль инварианта «нет интерактивного sudo на ATM»
+
+Архитектурное свойство развёртывания (см.
+[architecture.md §1.1.1](architecture.md) и
+[threat-model.md §1.2](threat-model.md)): инженеры на ATM **не имеют**
+прав запускать что-либо от root, кроме `pam-certauth execute`. Этот
+инвариант проверяется при post-deploy верификации и периодически
+(Ansible compliance-check, раз в сутки).
+
+**Проверка 1 — инженерские UID не входят в admin-группы:**
+
+```bash
+getent group sudo wheel admin | cut -d: -f4
+```
+
+Ожидание: пусто, либо в выводе нет ни одного аккаунта из
+`atm_engineers`. Контр-пример (FAIL): в группе `sudo` числится
+`alice`, `bob` — это означает, что инвариант нарушен.
+
+**Проверка 2 — в sudoers нет broad-правил:**
+
+```bash
+sudo grep -rnE 'NOPASSWD:\s*ALL|\(ALL\)\s*ALL' \
+    /etc/sudoers /etc/sudoers.d/ 2>/dev/null
+```
+
+Ожидание: либо пусто, либо найденные строки относятся только к
+явно задокументированным recovery-аккаунтам (не к инженерам).
+
+**Проверка 3 — для конкретного инженера разрешено только
+`pam-certauth execute`:**
+
+```bash
+sudo -l -U <engineer_user>
+```
+
+Ожидание: единственная разрешённая команда вида
+`(root) NOPASSWD: /usr/bin/pam-certauth execute *`. Любой иной
+вывод (включая `(ALL) ALL`, `/bin/bash`, `/usr/bin/cat`) — это
+нарушение инварианта, в этот момент уже возможен lateral root из
+украденного токена.
+
+**Snippet для compliance-check (Ansible / cron):**
+
+```bash
+#!/usr/bin/env bash
+set -eu
+FAIL=0
+# 1. Инженеров не должно быть в admin-группах.
+ENG=$(getent group atm_engineers | cut -d: -f4 | tr ',' '\n' | sort -u)
+for g in sudo wheel admin; do
+    M=$(getent group "$g" 2>/dev/null | cut -d: -f4 | tr ',' '\n' | sort -u)
+    BAD=$(comm -12 <(echo "$ENG") <(echo "$M") | tr '\n' ' ')
+    if [[ -n "${BAD// /}" ]]; then
+        echo "FAIL: $BAD in group $g" >&2; FAIL=1
+    fi
+done
+# 2. Никаких broad sudoers-правил для инженеров.
+if sudo grep -rnE 'atm_engineers.*NOPASSWD:\s*ALL|atm_engineers.*\(ALL\)\s*ALL' \
+        /etc/sudoers /etc/sudoers.d/ 2>/dev/null; then
+    echo "FAIL: broad sudoers rule for atm_engineers" >&2; FAIL=1
+fi
+exit "$FAIL"
+```
+
+Алертинг: любой `FAIL` из этого скрипта — critical, требует ручного
+разбирательства (как минимум — кто и когда добавил аккаунт в группу
+или строку в sudoers; данные в `/var/log/auth.log` и в
+audit-trail инструментов provisioning).
 
 ## 2. Регулярные операции
 
@@ -187,7 +257,7 @@ openssl crl -in /etc/pam_certauth/crl/staff.crl -noout -lastupdate -nextupdate
 4. Проверить журнал:
 
    ```bash
-   sudo journalctl -u pam-certauth-monitord -g 'revoked' -n 100
+   sudo journalctl -u pam-certauth -g 'revoked' -n 100
    ```
 
 5. Сообщить пользователю; организовать выпуск нового сертификата.
@@ -219,13 +289,13 @@ openssl crl -in /etc/pam_certauth/crl/staff.crl -noout -lastupdate -nextupdate
 
 ### 3.4 monitord не запускается
 
-**Симптом:** `systemctl status pam-certauth-monitord` показывает
+**Симптом:** `systemctl status pam-certauth` показывает
 `failed`.
 
 **Диагностика:**
 
 ```bash
-sudo journalctl -xeu pam-certauth-monitord -n 200
+sudo journalctl -xeu pam-certauth -n 200
 ```
 
 **Типовые причины:**
@@ -236,7 +306,7 @@ sudo journalctl -xeu pam-certauth-monitord -n 200
 - повреждённый `config.toml`: запустить вручную:
 
   ```bash
-  sudo /usr/sbin/pam-certauth-monitord
+  sudo /usr/bin/pam-certauth
   ```
 
   и прочитать stdout/stderr;
@@ -258,7 +328,7 @@ pam_certauth: WARN  pam_certauth.auth: authentication failed
 
 - USBGuard в `block`-режиме и токен не в allowlist-rule;
 - ЗПС (`astra-digsig-control`) в `enforce`-режиме и
-  `/lib/security/pam_certauth.so` или `/usr/sbin/pam-certauth-monitord`
+  `/lib/security/pam_certauth.so` или `/usr/bin/pam-certauth`
   не подписаны валидным ключом из `/etc/digsig/keys/`.
 
 **Диагностика:**
@@ -289,8 +359,8 @@ sudo systemctl restart usbguard
 чтобы наш демон не стартовал до USBGuard:
 
 ```bash
-sudo mkdir -p /etc/systemd/system/pam-certauth-monitord.service.d
-sudo tee /etc/systemd/system/pam-certauth-monitord.service.d/usbguard.conf <<EOF
+sudo mkdir -p /etc/systemd/system/pam-certauth.service.d
+sudo tee /etc/systemd/system/pam-certauth.service.d/usbguard.conf <<EOF
 [Unit]
 After=usbguard.service
 Wants=usbguard.service
@@ -300,7 +370,7 @@ sudo systemctl daemon-reload
 
 **Действие — ЗПС:**
 
-`pam_certauth.so` и `pam-certauth-monitord` обязаны быть подписаны
+`pam_certauth.so` и `pam-certauth` обязаны быть подписаны
 системой ЭЦП Astra. На машине разработки подпись устанавливается через
 `bsign` GPG-ключом из доверенного связки `/etc/digsig/keys/`. Production-
 сборки должны проходить через CI Astra-партнёра, который выдаёт
@@ -400,7 +470,7 @@ Restore:
 ```bash
 gpg --decrypt /backup/pam_certauth-2026-05-01.tgz.gpg \
     | sudo tar -xzC /
-sudo systemctl reload pam-certauth-monitord
+sudo systemctl reload pam-certauth
 ```
 
 ## 5. Ротация `gost-engine` при обновлении Astra
@@ -426,7 +496,7 @@ pamtester sudo alice authenticate
 ```bash
 apt install gost-engine=<previous-version>
 apt-mark hold gost-engine
-sudo systemctl restart pam-certauth-monitord
+sudo systemctl restart pam-certauth
 ```
 
 ## 6. Логи: где искать, что искать
@@ -434,9 +504,15 @@ sudo systemctl restart pam-certauth-monitord
 ### 6.1 monitord
 
 ```bash
-sudo journalctl -u pam-certauth-monitord
-sudo journalctl -u pam-certauth-monitord -g 'pam_certauth.monitord'
+sudo journalctl -u pam-certauth
+sudo journalctl -u pam-certauth -g 'pam_certauth.monitord'
 ```
+
+> Имя `pam_certauth.monitord` сохраняется как операционный ABI: им
+> пользуются журнал-агрегаторы и шаблоны journalctl-фильтров. Сам
+> бинарь и unit называются `pam-certauth`, но `tracing target` и
+> путь к Unix-сокету (`/run/pam_certauth/monitord.sock`) остаются
+> историческими — переименование сломало бы фильтры в проде.
 
 Полезные теги:
 
@@ -472,7 +548,7 @@ sudo journalctl -t pam_certauth
 sudo journalctl -t pam_certauth --since="1 day ago" | grep -F 'auth.fail'
 
 # Все события извлечения USB:
-sudo journalctl -u pam-certauth-monitord | grep -F 'monitord.removal'
+sudo journalctl -u pam-certauth | grep -F 'monitord.removal'
 
 # Все mismatch'и cert scope (host/user binding):
 sudo journalctl -t pam_certauth | grep -E 'cert_scope\.(host|user)_mismatch'
@@ -490,7 +566,132 @@ sudo journalctl -t pam_certauth | grep -E 'pam_user[=:]"alice"'
   `pam_cert_user_binding` — на уровне `info` логируется только
   совпавшая запись; полный список — на уровне `debug`.
 
-## 7. Emergency contact
+## 7. Work-order retention и GC (0.2.0)
+
+Любой вызов `pam-certauth execute` (allow / deny / error) сохраняет
+копию CMS-артефакта в
+
+```text
+/var/lib/pam_certauth/work_orders/<sha256>.cms
+```
+
+Каталог `0700 root:root`. Файлы только читаются — GC удаляет их по
+возрасту.
+
+### 7.1 Просмотр retained CMS
+
+```bash
+ls -lh /var/lib/pam_certauth/work_orders/
+
+# Распарсить конкретный артефакт:
+openssl cms -inform DER \
+    -in /var/lib/pam_certauth/work_orders/a1b2c3...cms \
+    -cmsout -print | less
+
+# Проверить подписи post-mortem:
+openssl cms -inform DER \
+    -in /var/lib/pam_certauth/work_orders/a1b2c3...cms \
+    -verify -CAfile /etc/pam_certauth/ca/approver-bundle.pem \
+    -binary -content /dev/null -noverify_purpose
+```
+
+### 7.2 systemd-timer `pam-certauth-gc.timer`
+
+Поставляется юнитом
+[`dist/systemd/pam-certauth-gc.{service,timer}`](../dist/systemd/).
+Включить:
+
+```bash
+sudo systemctl enable --now pam-certauth-gc.timer
+systemctl list-timers pam-certauth-gc.timer
+```
+
+Сервис вызывает:
+
+```text
+ExecStart=/usr/bin/pam-certauth gc --retention-days=90
+```
+
+По умолчанию — раз в сутки. Изменить retention — переопределить
+`Environment=PAM_CERTAUTH_RETENTION_DAYS=…` через
+`systemctl edit pam-certauth-gc.service` или сменить аргумент.
+
+### 7.3 Ручной запуск GC
+
+```bash
+sudo pam-certauth gc --retention-days=90
+# stdout: "removed N files (≥90 days old)"
+```
+
+## 8. Audit events (journald) — execute
+
+`pam-certauth execute` пишет NDJSON-события в journald через
+`tracing-journald` с tag'ами:
+
+| Tag                                | Когда                                    |
+|------------------------------------|------------------------------------------|
+| `pam_certauth.execute.start`       | После проверки CMS, перед fork.          |
+| `pam_certauth.execute.done`        | После `waitpid`.                         |
+| `pam_certauth.execute.timeout`     | Watchdog убил pgrp.                      |
+| `pam_certauth.execute.denied`      | Policy / CMS / scope отказ.              |
+| `pam_certauth.execute.critical`    | Post-hook `audit_critical` эскалировал.  |
+
+Каждое событие содержит как минимум:
+
+```json
+{
+  "session_id": "...",
+  "uid": 1001,
+  "pam_user": "alice",
+  "scope": "bios.flash",
+  "engineer_ski": "8f0e...",
+  "signers": ["alice_ski", "bob_ski", "carol_ski"],
+  "policy_sha256": "ee0bd4...",
+  "argv": ["flashrom", "-w", "/opt/fw/fw_v2.3.bin"],
+  "work_order_sha256": "a1b2c3...",
+  "exit_code": 0,
+  "duration_ms": 12345
+}
+```
+
+### 8.1 journald queries
+
+```bash
+# Все execute-события:
+journalctl _SYSTEMD_UNIT=pam-certauth.service \
+    -t pam_certauth.execute --output=json | jq
+
+# Только critical-эскалации:
+journalctl _SYSTEMD_UNIT=pam-certauth.service \
+    -t pam_certauth.execute.critical --output=json
+
+# Отказы за последние сутки:
+journalctl _SYSTEMD_UNIT=pam-certauth.service \
+    -t pam_certauth.execute.denied --since=yesterday --output=json
+
+# Группировка по scope (за неделю):
+journalctl _SYSTEMD_UNIT=pam-certauth.service \
+    -t pam_certauth.execute.done --since="1 week ago" --output=json \
+    | jq -r '.MESSAGE' \
+    | jq -r '.scope' | sort | uniq -c
+```
+
+### 8.2 Drift-detection через `policy_sha256`
+
+Если `policy_sha256` неожиданно изменился — это сигнал, что кто-то
+правил `policy.toml` без `policy validate` + ревью. Запросить
+журнал:
+
+```bash
+journalctl _SYSTEMD_UNIT=pam-certauth.service \
+    -t pam_certauth.execute --output=json --since=yesterday \
+    | jq -r '.MESSAGE | fromjson? | .policy_sha256' \
+    | sort -u
+```
+
+Несколько разных хешей за короткий период — флаг для security-команды.
+
+## 9. Emergency contact
 
 Для конфиденциальных сообщений о безопасности — см. контакты в
 [README.md](../README.md#безопасность-и-сообщения-об-уязвимостях).

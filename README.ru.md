@@ -6,6 +6,31 @@
 JaCarta ГОСТ). Модуль рассчитан на защищённые контуры, банкоматные
 станции и автоматизированные рабочие места операторов АСУ ТП.
 
+## Что нового в 0.2.0
+
+В 0.2.0 поверх входа по сертификату добавляется **per-action M-of-N
+авторизация**. Новое X.509-расширение `pam_cert_scopes` объявляет
+список scope (например, `bios.flash`, `cluster.drain`), которые
+сертификат вправе запускать. Новая подкоманда
+`pam-certauth execute --scope=… --work-order=…` проверяет CMS
+SignedData work order, подписанный *N* подтверждающими, против
+TOML-политики `/etc/pam_certauth/policy.toml`, а затем запускает
+целевую команду. PAM-модуль получает параметр `require_scope=…`
+для scope-фильтра на этапе логина. См. [docs/index.md](docs/index.md)
+и [docs/migration.md](docs/migration.md) для апгрейда с 0.1.x.
+
+- **На ATM нет интерактивного root.** Классические административные
+  сессии `sudo -i` заменены узкими M-of-N-одобренными вызовами
+  `pam-certauth execute`. Учётки инженеров на ATM — обычные
+  пользователи, без членства в `wheel` / `sudo` / `admin` и без
+  широких правил `NOPASSWD: ALL`. Единственное sudoers-правило —
+  `%atm_engineers ALL=(root) NOPASSWD: /usr/bin/pam-certauth
+  execute *`; других путей к root у инженера нет, а каждая
+  привилегированная операция подписана `N` независимыми
+  операторами и атрибутируется минимум трём людям (инженер +
+  ≥`M` одобряющих). См. [docs/threat-model.md §1.2](docs/threat-model.md)
+  и [docs/architecture.md §1.1.1](docs/architecture.md).
+
 ## Возможности
 
 - Аутентификация по X.509-сертификату на USB-носителе (`.p12`) или на
@@ -56,9 +81,9 @@ flowchart LR
     flydm[fly-dm / sudo / login]
     libpam[libpam.so]
     cdylib[libpam_certauth.so]
-    monitord[pam-certauth-monitord]
+    daemon[pam-certauth daemon]
     user --> flydm --> libpam --> cdylib
-    cdylib -. NDJSON .-> monitord
+    cdylib -. NDJSON .-> daemon
 ```
 
 Подробности: [docs/architecture.md](docs/architecture.md).
@@ -120,7 +145,7 @@ sudo /usr/share/pam-certauth/integrate-pam.sh --mode=cert-only /etc/pam.d/sudo
 PAM-cdylib `pam_certauth.so` пишет события `tracing` в syslog
 (facility `LOG_AUTH`, ident `pam_certauth`) — они появляются в
 `/var/log/auth.log` (классический syslog) или в journald с префиксом
-`pam_certauth[<pid>]:`. Демон `monitord` пишет в journald через
+`pam_certauth[<pid>]:`. Демон `pam-certauth` пишет в journald через
 `Type=notify`.
 
 ## Быстрый старт за 10 минут (тестовый стенд)
@@ -181,11 +206,11 @@ PAM-cdylib `pam_certauth.so` пишет события `tracing` в syslog
    и `pam_cert_user_binding` (см. [`docs/cert-issuance.md`](docs/cert-issuance.md)).
    Для теста можно выпустить cert с обоими `["*"]` (wildcard).
 
-8. Включить службу `monitord`:
+8. Включить службу `pam-certauth`:
 
    ```bash
-   sudo systemctl enable --now pam-certauth-monitord
-   sudo systemctl status pam-certauth-monitord
+   sudo systemctl enable --now pam-certauth
+   sudo systemctl status pam-certauth
    ```
 
 9. Подключить модуль к `sudo` в режиме 2FA (по умолчанию):
@@ -212,7 +237,7 @@ PAM-cdylib `pam_certauth.so` пишет события `tracing` в syslog
 11. Если что-то пошло не так:
 
     ```bash
-    sudo journalctl -u pam-certauth-monitord -n 100
+    sudo journalctl -u pam-certauth -n 100
     sudo tail -n 100 /var/log/auth.log
     ```
 
@@ -232,7 +257,7 @@ PAM-cdylib `pam_certauth.so` пишет события `tracing` в syslog
 │   ├─ pam_certauth/          # cdylib libpam_certauth.so
 │   ├─ pam_certauth_core/     # синхронное ядро
 │   ├─ pam_certauth_proto/    # IPC wire protocol
-│   └─ pam_certauth_monitord/ # бинарь pam-certauth-monitord
+│   └─ pam_certauth_cli/ # бинарь pam-certauth
 ├─ debian/                    # Debian packaging
 ├─ dist/                      # пример-конфиги, systemd-юнит, integrate-pam.sh
 ├─ docs/                      # документация

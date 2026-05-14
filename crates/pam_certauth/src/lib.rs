@@ -7,6 +7,7 @@ pub mod di;
 pub mod entry;
 pub mod flow;
 pub mod logging;
+pub mod pam_args;
 pub mod panic_guard;
 
 #[cfg(target_os = "linux")]

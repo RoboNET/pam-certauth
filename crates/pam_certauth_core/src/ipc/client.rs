@@ -1,4 +1,4 @@
-//! Sync, blocking IPC client targeting `pam-certauth-monitord`.
+//! Sync, blocking IPC client targeting `pam-certauth`.
 
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::UnixStream;
@@ -16,6 +16,26 @@ use crate::error::IpcError;
 use crate::ipc::{MonitorClient, OpenSessionInfo};
 
 const AGENT: &str = concat!("libpam_certauth/", env!("CARGO_PKG_VERSION"));
+
+/// Owned copy of a `ServerMessage::ActiveSession` reply.
+///
+/// Mirrors the wire frame so callers (`pam-certauth execute`) can hold the
+/// data without keeping the IPC connection alive.
+#[derive(Debug, Clone)]
+pub struct ActiveSessionReply {
+    /// Session id recorded at `SessionOpen` time.
+    pub session_id: String,
+    /// Engineer cert Common-Name.
+    pub cert_cn: String,
+    /// Lowercase hex SHA-1 of the engineer cert SPKI.
+    pub engineer_ski: String,
+    /// Lowercase hex SHA-256 of the engineer cert DER.
+    pub engineer_cert_sha256: String,
+    /// Scopes from the engineer cert (`"*"` allowed for wildcard).
+    pub scopes: Vec<String>,
+    /// Host id hash recorded at session open time.
+    pub host_id_hash: String,
+}
 
 /// Sync IPC client that holds an open Unix socket connection.
 ///
@@ -96,10 +116,42 @@ impl MonitordClient {
             opened_at: payload.opened_at,
             cert_cn: payload.cert_cn.clone(),
             cert_serial: payload.cert_serial.clone(),
+            engineer_ski: payload.engineer_ski.clone(),
+            engineer_cert_sha256: payload.engineer_cert_sha256.clone(),
+            scopes: payload.scopes.clone(),
+            uid: payload.uid,
         };
         self.send(&msg)?;
         match self.recv()? {
             ServerMessage::Ack => Ok(()),
+            ServerMessage::Error { code, message } => Err(map_server_error(code, message)),
+            other => Err(IpcError::UnexpectedReply(format!("{other:?}"))),
+        }
+    }
+
+    /// Look up the active session for a given uid.
+    ///
+    /// Returns the v2 `ActiveSession` reply on success. A `NO_ACTIVE_SESSION`
+    /// server error is mapped to [`IpcError::Server`] (callers should match on
+    /// the variant and degrade gracefully).
+    pub fn get_active_session_by_uid(&mut self, uid: u32) -> Result<ActiveSessionReply, IpcError> {
+        self.send(&ClientMessage::GetActiveSessionByUid { uid })?;
+        match self.recv()? {
+            ServerMessage::ActiveSession {
+                session_id,
+                cert_cn,
+                engineer_ski,
+                engineer_cert_sha256,
+                scopes,
+                host_id_hash,
+            } => Ok(ActiveSessionReply {
+                session_id,
+                cert_cn,
+                engineer_ski,
+                engineer_cert_sha256,
+                scopes,
+                host_id_hash,
+            }),
             ServerMessage::Error { code, message } => Err(map_server_error(code, message)),
             other => Err(IpcError::UnexpectedReply(format!("{other:?}"))),
         }
@@ -205,6 +257,10 @@ impl MonitorClient for ConnectPerCall {
             opened_at: SystemTime::now(),
             cert_cn: info.cert_cn.to_string(),
             cert_serial: info.cert_serial.to_string(),
+            engineer_ski: info.engineer_ski.to_string(),
+            engineer_cert_sha256: info.engineer_cert_sha256.to_string(),
+            scopes: info.scopes.iter().map(|s| (*s).to_string()).collect(),
+            uid: info.uid,
         };
         c.send_session_open(&payload)
     }

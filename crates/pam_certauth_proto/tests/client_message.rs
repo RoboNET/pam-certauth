@@ -22,6 +22,10 @@ fn sample_open() -> ClientMessage {
         opened_at: UNIX_EPOCH + Duration::from_secs(1_700_000_000),
         cert_cn: "Alice".into(),
         cert_serial: "01:02:03".into(),
+        engineer_ski: String::new(),
+        engineer_cert_sha256: String::new(),
+        scopes: Vec::new(),
+        uid: 0,
     }
 }
 

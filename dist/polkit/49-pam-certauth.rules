@@ -1,7 +1,7 @@
 // /usr/share/polkit-1/rules.d/49-pam-certauth.rules
 //
 // Allow the dedicated `pamcertauth` system user to invoke the small set
-// of org.freedesktop.login1.Manager methods that pam-certauth-monitord
+// of org.freedesktop.login1.Manager methods that pam-certauth
 // needs to enforce the configured `on_usb_removed` action:
 //
 //   * LockSession / UnlockSession  — for `on_usb_removed = "lock"`
