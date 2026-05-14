@@ -64,7 +64,7 @@ PamCertScopes ::= SEQUENCE OF UTF8String
 Используется в двух ролях:
 
 1. **На сертификате инженера** — определяет, какие `--scope`
-   разрешено передавать в `pam-certauth execute`, и какие
+   разрешено передавать в `pam-certauth-execute`, и какие
    `require_scope` пройдут PAM-фильтр (см. ниже).
 2. **На сертификате каждого подписанта** — должен включать scope из
    текущего work order. Иначе CMS verify падает.

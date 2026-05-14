@@ -2,7 +2,7 @@
 
 «Work order» — это бинарный артефакт CMS SignedData (RFC 5652) с
 **N независимыми подписями** одобряющих лиц. ATM/АРМ принимает его на
-вход через `pam-certauth execute --work-order=<path>` и проверяет
+вход через `pam-certauth-execute --work-order=<path>` и проверяет
 перед выполнением команды.
 
 ## Модель

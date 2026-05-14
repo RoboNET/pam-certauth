@@ -199,7 +199,7 @@ test -S /run/pam_certauth/monitord.sock && echo "socket OK"
 
 ### 2.6 (опционально) GC-timer для work-order retention (0.2.0)
 
-Если планируется использовать `pam-certauth execute`, включите
+Если планируется использовать `pam-certauth-execute`, включите
 сборку мусора:
 
 ```bash
@@ -213,7 +213,7 @@ systemctl list-timers pam-certauth-gc.timer
 
 Целевая модель развёртывания — **на ATM нет аккаунтов с правом
 `sudo -i` / `sudo bash`**. Инженеры остаются обычными пользователями;
-единственный путь к root — через `pam-certauth execute` с M-of-N CMS
+единственный путь к root — через `pam-certauth-execute` с M-of-N CMS
 work order. См. архитектурное обоснование в
 [architecture.md §1.1.1](architecture.md) и
 [threat-model.md §1.2](threat-model.md).
@@ -240,23 +240,23 @@ work order. См. архитектурное обоснование в
    Ожидание: либо пусто, либо только строки, не относящиеся к
    `atm_engineers` (например, recovery-аккаунт, см. ниже).
 
-3. **Оставить единственное узкое правило** `pam-certauth execute`
+3. **Оставить единственное узкое правило** `pam-certauth-execute`
    в `/etc/sudoers.d/pam-certauth-execute` (поставляется пакетом,
    см. [execute.md](execute.md) §sudoers):
 
    ```text
-   %atm_engineers ALL=(root) NOPASSWD: /usr/bin/pam-certauth execute *
+   %atm_engineers ALL=(root) NOPASSWD: /usr/bin/pam-certauth-execute *
    ```
 
 4. **Проверка для конкретного пользователя** — должна показывать
-   **только** разрешение на `pam-certauth execute`:
+   **только** разрешение на `pam-certauth-execute`:
 
    ```bash
    sudo -l -U <engineer_user>
    ```
 
    Ожидаемая строка вида:
-   `(root) NOPASSWD: /usr/bin/pam-certauth execute *` и ничего больше.
+   `(root) NOPASSWD: /usr/bin/pam-certauth-execute *` и ничего больше.
 
 5. **Аварийный доступ (out-of-band).** Для break-glass-сценариев
    используются отдельные пути, **не доступные** из обычной

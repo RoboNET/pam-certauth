@@ -91,7 +91,7 @@ mv "$TMP" /var/lib/node_exporter/textfile_collector/pam_certauth.prom
 Архитектурное свойство развёртывания (см.
 [architecture.md §1.1.1](architecture.md) и
 [threat-model.md §1.2](threat-model.md)): инженеры на ATM **не имеют**
-прав запускать что-либо от root, кроме `pam-certauth execute`. Этот
+прав запускать что-либо от root, кроме `pam-certauth-execute`. Этот
 инвариант проверяется при post-deploy верификации и периодически
 (Ansible compliance-check, раз в сутки).
 
@@ -116,14 +116,14 @@ sudo grep -rnE 'NOPASSWD:\s*ALL|\(ALL\)\s*ALL' \
 явно задокументированным recovery-аккаунтам (не к инженерам).
 
 **Проверка 3 — для конкретного инженера разрешено только
-`pam-certauth execute`:**
+`pam-certauth-execute`:**
 
 ```bash
 sudo -l -U <engineer_user>
 ```
 
 Ожидание: единственная разрешённая команда вида
-`(root) NOPASSWD: /usr/bin/pam-certauth execute *`. Любой иной
+`(root) NOPASSWD: /usr/bin/pam-certauth-execute *`. Любой иной
 вывод (включая `(ALL) ALL`, `/bin/bash`, `/usr/bin/cat`) — это
 нарушение инварианта, в этот момент уже возможен lateral root из
 украденного токена.
@@ -568,7 +568,7 @@ sudo journalctl -t pam_certauth | grep -E 'pam_user[=:]"alice"'
 
 ## 7. Work-order retention и GC (0.2.0)
 
-Любой вызов `pam-certauth execute` (allow / deny / error) сохраняет
+Любой вызов `pam-certauth-execute` (allow / deny / error) сохраняет
 копию CMS-артефакта в
 
 ```text
@@ -625,7 +625,7 @@ sudo pam-certauth gc --retention-days=90
 
 ## 8. Audit events (journald) — execute
 
-`pam-certauth execute` пишет NDJSON-события в journald через
+`pam-certauth-execute` пишет NDJSON-события в journald через
 `tracing-journald` с tag'ами:
 
 | Tag                                | Когда                                    |
@@ -703,6 +703,15 @@ journalctl _SYSTEMD_UNIT=pam-certauth.service \
 > USB-removal udev event и оставить engineer-сессию без screen-lock в момент когда
 > токен уже извлечён. Operator должен делать рестарт явно в maintenance window.
 
+> **0.2.4 (BREAKING для sudoers).** В 0.2.4 `execute`-путь вынесен в
+> отдельный binary `/usr/bin/pam-certauth-execute`. После апгрейда с
+> 0.2.3 или ниже **обязательно** обновить sudoers-правило с
+> `/usr/bin/pam-certauth execute *` на `/usr/bin/pam-certauth-execute *`,
+> иначе инженерские вызовы будут падать с "command not allowed".
+> Старая команда `pam-certauth execute …` теперь печатает понятную
+> ошибку и выходит с кодом 2, поэтому скрипты ломаются громко, а
+> не молча.
+
 ### Стандартный flow upgrade
 
 ```bash
@@ -729,7 +738,7 @@ sudo readlink /proc/$(pgrep -f "pam-certauth daemon")/exe
 работает старый daemon** (старый inode держится через open fd). Это нормально:
 
 - Старый daemon продолжает мониторить USB events корректно.
-- Новые `pam-certauth execute` вызовы используют **новый** binary с диска —
+- Новые `pam-certauth-execute` вызовы используют **новый** binary с диска —
   получают новые fixes (например `execute_attempt` audit event).
 - IPC между новым execute и старым daemon обратно-совместим в пределах
   одной major-серии.

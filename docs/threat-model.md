@@ -30,7 +30,7 @@
 Ключевое архитектурное свойство развёртывания: на ATM-машине **нет
 интерактивно доступного root-аккаунта** и **нет учётных записей с
 `sudo -i` / `sudo bash`**. Все привилегированные действия инженеров
-проходят через `pam-certauth execute`, защищённый M-of-N CMS work
+проходят через `pam-certauth-execute`, защищённый M-of-N CMS work
 order.
 
 - Аккаунты инженеров на ATM — обычные пользователи. Они **не входят**
@@ -40,12 +40,12 @@ order.
   правило:
 
   ```text
-  %atm_engineers ALL=(root) NOPASSWD: /usr/bin/pam-certauth execute *
+  %atm_engineers ALL=(root) NOPASSWD: /usr/bin/pam-certauth-execute *
   ```
 
-  Инженер может запустить **только** `pam-certauth execute` и ничего
+  Инженер может запустить **только** `pam-certauth-execute` и ничего
   больше — ни `sudo -i`, ни `sudo cat`, ни `sudo bash`.
-- Внутри `pam-certauth execute` повышение привилегий открывается
+- Внутри `pam-certauth-execute` повышение привилегий открывается
   **только** после успешной валидации CMS-подписи M-of-N
   одобряющих + проверки `scope` / `host` / `argv_pattern` против
   `policy.toml`. См. [execute.md](execute.md) и [policy.md](policy.md).
@@ -60,6 +60,14 @@ order.
   initramfs) — out-of-band и описаны отдельно: они **не** доступны с
   обычной сессии инженера и требуют физического доступа либо
   отдельной авторизации.
+- Дополнительная defence-in-depth (0.2.4): `pam-certauth-execute`
+  поставляется отдельным binary с **минимальным** деревом
+  зависимостей — без zbus, без libudev, без многопоточного
+  tokio-рантайма. Все эти компоненты остаются в `pam-certauth daemon`,
+  который **не** является sudo target. Сокращение поверхности атаки:
+  CVE в zbus / udev / tokio-rt-multi-thread больше не влияет на путь
+  повышения привилегий, а sudoers-правило `NOPASSWD` теперь привязано
+  к точному пути binary (а не к шаблону `pam-certauth execute *`).
 
 Следствие для модели угроз: угроза «lateral root из скомпрометированной
 учётки инженера» (раздел 4 и атак-tree в §7) переходит из категории

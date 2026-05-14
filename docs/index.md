@@ -20,7 +20,7 @@
   валидация.
 - [docs/work-order.md](work-order.md) — как банк собирает CMS с
   N подписями (openssl-команды).
-- [docs/execute.md](execute.md) — CLI `pam-certauth execute`,
+- [docs/execute.md](execute.md) — CLI `pam-certauth-execute`,
   exit-codes, sudoers, signal forwarding.
 - [docs/x509-extensions.md](x509-extensions.md) — OID-таблица,
   `pam_cert_scopes`, `approver_eku`.
@@ -43,7 +43,7 @@
 ## Что нового в 0.2.0
 
 - X.509-расширение `pam_cert_scopes` + EKU `approver_eku`.
-- `pam-certauth execute` для M-of-N привилегированных операций под
+- `pam-certauth-execute` для M-of-N привилегированных операций под
   CMS work order.
 - Крейт `pam_certauth_policy` и `/etc/pam_certauth/policy.toml`.
 - Новые PAM-параметры `require_scope` / `scope_match`.

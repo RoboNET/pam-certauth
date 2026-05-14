@@ -1,22 +1,25 @@
-# `pam-certauth execute`
+# `pam-certauth-execute`
 
-Subcommand для запуска привилегированной операции под защитой
-work order (M-of-N подписей). Запускается через sudo от оператора,
-который уже прошёл PAM-аутентификацию с расширением
+Отдельный root-binary (0.2.4+; до этого был subcommand
+`pam-certauth execute`) для запуска привилегированной операции
+под защитой work order (M-of-N подписей). Запускается через sudo
+от оператора, который уже прошёл PAM-аутентификацию с расширением
 `pam_cert_scopes` и держит активную сессию (зарегистрированную в
-monitord).
+monitord). Binary вынесен в отдельную crate
+`pam_certauth_execute`, чтобы поверхность зависимостей
+sudo target была минимальной — без zbus / udev / tokio-multi-thread.
 
 ## Synopsis
 
 ```text
-pam-certauth execute --scope=<name> --work-order=<path> [--retention-dir=DIR] \
+pam-certauth-execute --scope=<name> --work-order=<path> [--retention-dir=DIR] \
                      -- <command> [args...]
 ```
 
 Пример:
 
 ```bash
-sudo pam-certauth execute \
+sudo pam-certauth-execute \
     --scope=bios.flash \
     --work-order=/tmp/wo.cms \
     -- flashrom -w /opt/fw/fw_v2.3.bin
@@ -63,7 +66,7 @@ sudo pam-certauth execute \
 
 ```text
 # /etc/sudoers.d/pam-certauth-execute
-Cmnd_Alias PAMCERTAUTH_EXEC = /usr/bin/pam-certauth execute *
+Cmnd_Alias PAMCERTAUTH_EXEC = /usr/bin/pam-certauth-execute *
 
 # Группа атм-инженеров может запускать execute без пароля
 # (защита — сертификат + work order, не пароль).
@@ -75,12 +78,12 @@ Defaults!PAMCERTAUTH_EXEC env_reset, !requiretty, \
 
 Группа `atm_engineers` обычно совпадает с группой, упомянутой в
 `pam_cert_user_binding`. Сертификат уже фиксирует, какой UID может
-исполнять; sudoers лишь даёт `pam-certauth execute` запускаться от
+исполнять; sudoers лишь даёт `pam-certauth-execute` запускаться от
 root.
 
 ## Env scrub
 
-`pam-certauth execute` очищает env перед `exec` ребёнка, оставляя
+`pam-certauth-execute` очищает env перед `exec` ребёнка, оставляя
 whitelist:
 
 - `PATH`, `LANG`, `LC_ALL`, `TERM`, `HOME`, `USER`, `LOGNAME`,
@@ -155,7 +158,7 @@ openssl cms -resign -inform DER -in wo.cms -signer carol.pem -inkey carol.key \
 
 # Инженер вставляет токен, логинится по PAM (получает session).
 # Затем:
-sudo pam-certauth execute \
+sudo pam-certauth-execute \
     --scope=bios.flash \
     --work-order=/run/usb/wo.cms \
     -- flashrom -w /opt/fw/fw_v2.3.bin
@@ -166,7 +169,7 @@ sudo pam-certauth execute \
 ```bash
 openssl cms -sign -in /dev/null -signer alice.pem -inkey alice.key \
     -outform DER -binary -out diag.cms
-sudo pam-certauth execute \
+sudo pam-certauth-execute \
     --scope=atm.diag.dump \
     --work-order=/run/usb/diag.cms \
     -- /opt/atm/diag-dump.sh

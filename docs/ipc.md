@@ -56,7 +56,7 @@
 ```
 
 Новые поля v2: `engineer_ski`, `engineer_cert_sha256`, `scopes`,
-`uid`. Используются `pam-certauth execute` через
+`uid`. Используются `pam-certauth-execute` через
 `GetActiveSessionByUid`.
 
 ### `SessionClose`
@@ -77,7 +77,7 @@
 {"type":"get_active_session_by_uid","uid":1001}
 ```
 
-Используется `pam-certauth execute` сразу после `Hello`, чтобы
+Используется `pam-certauth-execute` сразу после `Hello`, чтобы
 получить контекст активной сессии текущего оператора (его `scopes`,
 `engineer_ski` и `usb_serial` для cross-check'а).
 

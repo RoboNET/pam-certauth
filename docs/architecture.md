@@ -29,14 +29,14 @@
 машине **отсутствовал** интерактивно-доступный root-аккаунт. Инженеры
 заходят как обычные пользователи (нет членства в `sudo` / `wheel` /
 `admin`), а все привилегированные операции проходят через
-`pam-certauth execute`, который открывает повышение только после
+`pam-certauth-execute`, который открывает повышение только после
 успешной валидации CMS-подписи M-of-N одобряющих против
 `policy.toml`. Sudoers содержит **единственное** узкое правило для
 инженеров:
 
 ```text
 # /etc/sudoers.d/pam-certauth-execute
-%atm_engineers ALL=(root) NOPASSWD: /usr/bin/pam-certauth execute *
+%atm_engineers ALL=(root) NOPASSWD: /usr/bin/pam-certauth-execute *
 ```
 
 В отличие от классической модели «админ + `NOPASSWD: ALL`», здесь
@@ -139,14 +139,13 @@ PAM service module. Содержит:
 [crates/pam_certauth_policy](../crates/pam_certauth_policy/src/lib.rs)
 и [docs/policy.md](policy.md).
 
-### 2.4.2 Subcommands `pam-certauth` (0.2.0)
+### 2.4.2 Bинари `pam-certauth` / `pam-certauth-execute` (0.2.0, split в 0.2.4)
 
-Бинарь `pam-certauth` теперь мульти-команда:
+Поставка состоит из двух binary, каждый со своим набором зависимостей:
+
+`pam-certauth` (мульти-команда, не привилегированный sudo target):
 
 - `pam-certauth daemon` — старый monitord (по умолчанию для systemd).
-- `pam-certauth execute --scope=… --work-order=… -- cmd args` —
-  запуск привилегированной операции под защитой CMS work order.
-  См. [docs/execute.md](execute.md).
 - `pam-certauth policy validate --path=…` — синтаксис + правила
   `policy.toml`.
 - `pam-certauth policy explain --scope=…` — какое правило применится
@@ -154,8 +153,21 @@ PAM service module. Содержит:
 - `pam-certauth gc --retention-days=90` — сборка CMS-артефактов в
   `/var/lib/pam_certauth/work_orders/`. Триггер — systemd-timer.
 
+`pam-certauth-execute` (отдельный binary, 0.2.4+, единственный root
+sudo target):
+
+- `pam-certauth-execute --scope=… --work-order=… -- cmd args` —
+  запуск привилегированной операции под защитой CMS work order.
+  См. [docs/execute.md](execute.md).
+
+Разделение в 0.2.4 убирает из дерева зависимостей привилегированного
+пути зависимости daemon-а (zbus, udev, multi-thread tokio runtime),
+оставляя только CMS verifier, IPC client и CLI. Sudoers-правило
+ужесточается с шаблона `/usr/bin/pam-certauth execute *` на точный
+путь `/usr/bin/pam-certauth-execute *` — никакого subcommand-globbing.
+
 Модуль `crates/pam_certauth_core/src/cms.rs` — CMS work order
-verifier, используемый из `execute`.
+verifier, используемый из `pam-certauth-execute`.
 
 ### 2.5 Внешние зависимости
 
@@ -392,12 +404,12 @@ sequenceDiagram
 по таймауту; при `"permissive"` — переживает кратковременную
 недоступность.
 
-## 9.1 Sequence diagram — `pam-certauth execute` (0.2.0)
+## 9.1 Sequence diagram — `pam-certauth-execute` (0.2.0)
 
 ```mermaid
 sequenceDiagram
     participant O as Оператор (sudo)
-    participant E as pam-certauth execute
+    participant E as pam-certauth-execute
     participant M as monitord
     participant FS as filesystem
     participant Cmd as Child process

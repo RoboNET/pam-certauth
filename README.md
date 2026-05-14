@@ -15,7 +15,7 @@ passphrase-protected `.p12` on a USB filesystem.
 0.2.0 adds **per-action M-of-N authorisation** on top of cert login.
 A new X.509 extension `pam_cert_scopes` declares which scopes (e.g.
 `bios.flash`, `cluster.drain`) a cert may invoke. The new
-`pam-certauth execute --scope=… --work-order=…` subcommand verifies a
+`pam-certauth-execute --scope=… --work-order=…` subcommand verifies a
 CMS SignedData "work order" co-signed by *N* approvers against a
 TOML policy at `/etc/pam_certauth/policy.toml`, then spawns the
 target command. The PAM module gains `require_scope=…` for
@@ -25,10 +25,10 @@ path from 0.1.x.
 
 - **No interactive root on ATM.** Replaces traditional `sudo -i`
   admin sessions with narrow-scope, M-of-N approved
-  `pam-certauth execute` calls. ATM accounts run as plain users —
+  `pam-certauth-execute` calls. ATM accounts run as plain users —
   no `wheel`, no `sudo` group, no broad `NOPASSWD: ALL`. The single
   sudoers entry `%atm_engineers ALL=(root) NOPASSWD:
-  /usr/bin/pam-certauth execute *` is the only path to root, and
+  /usr/bin/pam-certauth-execute *` is the only path to root, and
   every privileged operation is signed by `N` independent operators
   and attributable to engineer + ≥`M` approvers. See
   [docs/threat-model.md §1.2](docs/threat-model.md) and

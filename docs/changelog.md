@@ -1,5 +1,32 @@
 # Changelog
 
+## [0.2.4] — 2026-05-14
+
+### Changed (breaking for sudoers)
+
+- **Split:** `pam-certauth execute` теперь отдельный binary
+  `/usr/bin/pam-certauth-execute`, поставляемый из новой crate
+  `pam_certauth_execute`. Старый subcommand сохранён как
+  deprecation-stub: вызов `pam-certauth execute …` печатает ошибку
+  с указанием нового пути и выходит с кодом 2.
+- **Sudoers (обязательно к обновлению).** Правило
+  `%atm_engineers ALL=(root) NOPASSWD: /usr/bin/pam-certauth execute *`
+  заменить на
+  `%atm_engineers ALL=(root) NOPASSWD: /usr/bin/pam-certauth-execute *`.
+
+### Security (defence-in-depth)
+
+- Дерево зависимостей привилегированного пути (sudo target)
+  сократилось: `pam-certauth-execute` больше не линкует zbus,
+  libudev, многопоточный tokio runtime, sd-notify, futures-util.
+  Все эти компоненты остаются только в daemon binary, который **не**
+  является sudo target. Снижает вес CVE в этих зависимостях для
+  privilege-escalation поверхности.
+- Sudoers-правило больше не использует subcommand-glob
+  (`/usr/bin/pam-certauth execute *`), а указывает точный путь
+  binary — это закрывает гипотетический вектор «новый subcommand
+  unintentionally accepted by NOPASSWD pattern».
+
 ## [0.2.1] — 2026-05-13
 
 ### Security
@@ -56,7 +83,7 @@
 - X.509-расширение `pam_cert_scopes` объявляет список scope на
   сертификате инженера и подписанта.
 - CMS-based M-of-N work order verification — новая subcommand
-  `pam-certauth execute --scope=… --work-order=… -- <cmd>`.
+  `pam-certauth-execute --scope=… --work-order=… -- <cmd>`.
 - Новый крейт `pam_certauth_policy` с TOML-форматом
   `/etc/pam_certauth/policy.toml` (см. [docs/policy.md](policy.md)).
 - Subcommands `pam-certauth policy validate|explain` и

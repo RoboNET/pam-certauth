@@ -53,7 +53,7 @@
 | Фича                            | Где включается                              | Обязательно? |
 |---------------------------------|---------------------------------------------|--------------|
 | `pam_cert_scopes` X.509 ext     | новый расширение на сертификате             | нет          |
-| M-of-N CMS work order           | `pam-certauth execute` + `policy.toml`      | нет          |
+| M-of-N CMS work order           | `pam-certauth-execute` + `policy.toml`      | нет          |
 | `[approver_trust]` секция       | `config.toml`                                | при использовании `execute` |
 | `[tsa_trust]` секция            | `config.toml`                                | при `require_timestamp_token=true` (deferred) |
 | `[policy]` секция               | `config.toml`                                | при использовании `execute` |
@@ -77,7 +77,7 @@ sudo apt update && sudo apt install pam-certauth=0.2.0
 
 ### 2. (опционально) Включить scopes в существующих сертификатах
 
-Если планируется `pam-certauth execute`, инженерским сертификатам
+Если планируется `pam-certauth-execute`, инженерским сертификатам
 нужно добавить `pam_cert_scopes`. Это требует **переоформления**
 leaf'ов через ваш CA. Старые сертификаты без scopes продолжают
 работать для PAM-логина — отсутствие `pam_cert_scopes` блокирует
@@ -125,7 +125,7 @@ krl_poll_interval_seconds = 60
 ### 5. Обновить sudoers
 
 ```text
-%atm_engineers ALL=(root) NOPASSWD: /usr/bin/pam-certauth execute *
+%atm_engineers ALL=(root) NOPASSWD: /usr/bin/pam-certauth-execute *
 ```
 
 См. [execute.md](execute.md).
@@ -158,12 +158,12 @@ krl_poll_interval_seconds = 60
   # ожидание: Sorry, user alice is not allowed to execute '/bin/bash' as root
   ```
 
-  Положительная проверка — `pam-certauth execute` остаётся
+  Положительная проверка — `pam-certauth-execute` остаётся
   разрешённым (см. §7 ниже).
 
 - **Не отключать сам механизм логина** — инженер по-прежнему должен
   иметь возможность залогиниться через PAM cert-auth, чтобы потом
-  вызывать `pam-certauth execute`. Удаление из `wheel` / `sudo` не
+  вызывать `pam-certauth-execute`. Удаление из `wheel` / `sudo` не
   ломает логин (логин управляется PAM-стеком, а не sudoers).
 
 - Аудит инварианта — см. [operations.md §1.6](operations.md).
@@ -196,7 +196,7 @@ scope.
 
 - сессии, открытые на 0.2.0 с v2-payload, будут отброшены при
   старте 0.1.x (формат `sessions.json` ужесточился).
-- `pam-certauth execute` исчезнет — work-order'ы, отправленные
+- `pam-certauth-execute` исчезнет — work-order'ы, отправленные
   оператору, временно нельзя будет применить.
 
 Рекомендация: тестовый rollback на стенде до production-выкатки.

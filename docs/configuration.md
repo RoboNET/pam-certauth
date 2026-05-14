@@ -518,7 +518,7 @@ journald_priority = false
 описанные выше параметры `config.toml` теряют смысл. Целевая модель
 развёртывания на ATM — **нет аккаунтов с правом интерактивного
 `sudo -i` / `sudo bash`**: инженер остаётся обычным UNIX-пользователем,
-а единственный санкционированный путь к `root` — `pam-certauth execute`
+а единственный санкционированный путь к `root` — `pam-certauth-execute`
 с M-of-N CMS work order. Архитектурное обоснование и threat-model
 анализ — см.
 [install.md §2.7](install.md) и
@@ -542,18 +542,18 @@ getent group sudo wheel admin
 ```
 
 Проверка для конкретного инженера — `sudo -l -U alice` должна
-показать **ровно одну** строку с `pam-certauth execute`.
+показать **ровно одну** строку с `pam-certauth-execute`.
 
 ### Файл `/etc/sudoers.d/pam-certauth`
 
 Единственное разрешённое sudoers-правило для группы `atm_engineers`
-— узкое правило на запуск `pam-certauth execute`. Никаких
+— узкое правило на запуск `pam-certauth-execute`. Никаких
 `(ALL) ALL`, никаких `NOPASSWD: ALL`, никаких других команд для
 этой группы.
 
 ```text
 # /etc/sudoers.d/pam-certauth — поставляется пакетом, 0440 root:root
-%atm_engineers ALL=(root) NOPASSWD: /usr/bin/pam-certauth execute *
+%atm_engineers ALL=(root) NOPASSWD: /usr/bin/pam-certauth-execute *
 ```
 
 Опционально — привязка по digest бинаря (дополнительная
@@ -562,7 +562,7 @@ getent group sudo wheel admin
 
 ```text
 # с привязкой по digest бинаря (опционально):
-%atm_engineers ALL=(root) NOPASSWD: sha256:<hex>... /usr/bin/pam-certauth execute *
+%atm_engineers ALL=(root) NOPASSWD: sha256:<hex>... /usr/bin/pam-certauth-execute *
 ```
 
 Регулярный аудит на отсутствие broad-правил:
@@ -577,7 +577,7 @@ sudo grep -rE 'NOPASSWD:\s*ALL|\(ALL\)\s*ALL' /etc/sudoers /etc/sudoers.d/
 `pam_certauth` подключается в PAM-стеке точки входа, через которую
 инженер логинится на ATM (обычно `/etc/pam.d/login` для локальной
 консоли; `/etc/pam.d/sudo` — только если sudo-стек используется
-для `pam-certauth execute`). Аутентификация — **только** через
+для `pam-certauth-execute`). Аутентификация — **только** через
 сертификат на токене (`mode=pkcs11`); парольная строка
 (`pam_unix.so`) из стека убирается.
 
@@ -612,7 +612,7 @@ auth required pam_certauth.so \
 1. `getent group atm_engineers` — содержит инженеров.
 2. `getent group sudo wheel admin` — НЕ содержит инженеров.
 3. `/etc/sudoers.d/pam-certauth` — единственное правило для
-   `atm_engineers`, форма `(root) NOPASSWD: /usr/bin/pam-certauth execute *`.
+   `atm_engineers`, форма `(root) NOPASSWD: /usr/bin/pam-certauth-execute *`.
 4. `grep -rE 'NOPASSWD:\s*ALL|\(ALL\)\s*ALL'` — пусто для
    `atm_engineers`.
 5. `/etc/pam.d/login` (или соответствующая точка входа) — содержит

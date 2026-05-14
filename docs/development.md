@@ -228,7 +228,7 @@ wildcard → defaults). См. [docs/policy.md](policy.md) для формата 
 - `crates/pam_certauth_core/tests/cms_*.rs` — CMS verify (positive +
   negative).
 - `crates/pam_certauth_cli/tests/execute_*.rs` — end-to-end
-  `pam-certauth execute` (включая sidecar `.pattern`, timeout,
+  `pam-certauth-execute` (включая sidecar `.pattern`, timeout,
   exit codes).
 - `crates/pam_certauth_cli/tests/policy_*.rs` — subcommands
   `policy validate|explain`.

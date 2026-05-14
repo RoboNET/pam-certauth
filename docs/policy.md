@@ -1,7 +1,7 @@
 # Policy (`/etc/pam_certauth/policy.toml`)
 
 `policy.toml` хранит правила одобрений для команд, выполняемых через
-`pam-certauth execute`. Один файл — один экземпляр банкомата / АРМ.
+`pam-certauth-execute`. Один файл — один экземпляр банкомата / АРМ.
 Загружается на старте демона и при каждом вызове `execute`
 (пересчитывается `sha256` и пишется в audit-событие).
 
@@ -155,7 +155,7 @@ sudo pam-certauth policy explain --scope=bios.flash
 
 ## Audit-drift detection
 
-В каждое audit-событие `pam-certauth execute` пишет `policy_sha256` —
+В каждое audit-событие `pam-certauth-execute` пишет `policy_sha256` —
 SHA-256 файла на момент чтения. Любая модификация `policy.toml`
 гарантированно меняет хеш, что видно в journald. См.
 `operations.md`.
