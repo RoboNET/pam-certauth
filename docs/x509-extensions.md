@@ -15,6 +15,8 @@
 | `pam_cert_user_binding`   | `2.25.215438916728501023845629178354627`              | leaf-сертификат инженера                 |
 | `pam_cert_scopes`         | `2.25.148783702439522084104654664555598657967`        | leaf-сертификат инженера и подписанта    |
 | `approver_eku`            | `2.25.164448633110302675590304402232871779284`        | EKU в leaf-сертификате подписанта        |
+| `id-kp-clientAuth`        | `1.3.6.1.5.5.7.3.2`                                   | EKU: PAM/IPC auth для инженерского leaf и подписанта |
+| `id-kp-emailProtection`   | `1.3.6.1.5.5.7.3.4`                                   | **Обязателен** в EKU подписанта (требование OpenSSL `CMS_verify`) |
 
 ## `pam_cert_host_binding` (0.1.0+)
 
@@ -128,8 +130,10 @@ e2 = UTF8String:atm.diag.dump
 ```ini
 basicConstraints = critical, CA:FALSE
 keyUsage         = critical, digitalSignature
-# clientAuth + наш approver_eku
-extendedKeyUsage = clientAuth, 2.25.164448633110302675590304402232871779284
+# clientAuth + emailProtection + наш approver_eku.
+# emailProtection обязателен — без него OpenSSL CMS_verify падает с
+# `unsuitable certificate purpose` даже при валидной цепочке.
+extendedKeyUsage = clientAuth, emailProtection, 2.25.164448633110302675590304402232871779284
 
 2.25.148783702439522084104654664555598657967 = ASN1:SEQUENCE:scopes
 [scopes]
@@ -138,6 +142,14 @@ e1 = UTF8String:bios.flash
 
 > Approver-сертификат **обычно не имеет** `pam_cert_user_binding` —
 > он не предназначен для PAM-логина, только для подписи CMS.
+
+> **`emailProtection` (`1.3.6.1.5.5.7.3.4`) обязателен** в EKU
+> любого approver leaf, который будет использоваться как CMS signer.
+> OpenSSL `CMS_verify` неявно требует этот KeyPurposeId; без него
+> подписант отвергается с `unsuitable certificate purpose`. Это
+> поведение проявилось на реальном Astra Linux 1.8.4 в E2E-сценарии
+> `setup-mof-n-scenario.sh`. Подробнее — `cert-issuance.md` →
+> «Approver cert EKU».
 
 ## См. также
 

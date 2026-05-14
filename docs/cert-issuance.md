@@ -50,6 +50,45 @@ Approver-CA может быть отдельным от инженерского
 (см. [configuration.md](configuration.md)). Полный workflow выпуска
 + CMS-подписание — в [docs/work-order.md](work-order.md).
 
+### Approver cert EKU — обязательные KeyPurposeId (0.2.2)
+
+Approver leaf **обязан** содержать в `extendedKeyUsage` все три
+KeyPurposeId:
+
+| OID | Имя | Зачем |
+|---|---|---|
+| `1.3.6.1.5.5.7.3.2` | `id-kp-clientAuth` | PAM/IPC аутентификация подписанта на хосте, который собирает CMS. |
+| `1.3.6.1.5.5.7.3.4` | `id-kp-emailProtection` | **Требование OpenSSL `CMS_verify`** — без него подписант отвергается с `unsuitable certificate purpose`, даже если цепочка валидна и approver-EKU выставлен. |
+| `2.25.164448633110302675590304402232871779284` | `approver_eku` (наш custom OID) | Cross-role защита: инженерские leaf'ы выпускаются без него, поэтому подписать work-order инженерским сертификатом нельзя. |
+
+Фрагмент `openssl.cnf` для approver leaf:
+
+```ini
+[ approver_exts ]
+basicConstraints       = critical,CA:FALSE
+keyUsage               = critical,digitalSignature
+# clientAuth + emailProtection + наш approver_eku
+extendedKeyUsage       = clientAuth, emailProtection, 2.25.164448633110302675590304402232871779284
+subjectAltName         = email:approver@bank.example
+
+# scopes, которые этот подписант вправе одобрять
+2.25.148783702439522084104654664555598657967 = ASN1:SEQUENCE:scopes
+
+[ scopes ]
+e0 = UTF8String:bios.flash
+e1 = UTF8String:cashbox.open
+```
+
+> **Почему `emailProtection` обязателен:** OpenSSL `CMS_verify`
+> неявно проверяет, что signer cert разрешён для подписи S/MIME-style
+> сообщений, то есть содержит `id-kp-emailProtection`. CMS work order —
+> формально не email, но используется тот же CMS `SignedData`, и
+> OpenSSL применяет общий purpose-check. Если EKU не включает
+> `emailProtection`, `CMS_verify` возвращает `unsuitable certificate
+> purpose` и весь work-order отвергается с
+> `CmsVerifyError::Verify(...)`. Это поведение проявилось на реальном
+> Astra Linux 1.8.4 в end-to-end сценарии `setup-mof-n-scenario.sh`.
+
 OID размещены в нерегистрируемой ветке `2.25.<UUID>` (RFC 4530), что
 гарантирует уникальность без обращения к внешнему реестру. Эти значения
 зафиксированы в коде (`pam_certauth_core::x509::oids`) и являются частью
