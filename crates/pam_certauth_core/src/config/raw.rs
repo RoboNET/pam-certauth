@@ -95,6 +95,11 @@ pub struct RawConfig {
     /// Hooks.
     #[serde(default)]
     pub hooks: Vec<RawHook>,
+    /// MAC integrity policy section (spec §2.4 / phase 2). Optional; when
+    /// absent the validated layer applies defaults (`cert_integrity` = optional,
+    /// no fallback, `warn_on_homedir_label_mismatch` = true).
+    #[serde(default)]
+    pub mac: RawMacPolicy,
 }
 
 const fn default_usb_wait_seconds() -> u64 {
@@ -449,4 +454,54 @@ impl Default for RawPolicySection {
 
 const fn default_require_approver_eku() -> bool {
     true
+}
+
+/// Raw `[mac]` policy block (spec §2.4). All fields optional so existing
+/// configs deserialize unchanged; the validated layer applies defaults.
+///
+/// Uses `deny_unknown_fields` so that legacy keys like `require_mac` or
+/// `cert_mac_level` are rejected at parse time (the spec deliberately
+/// replaced them with the trinary `cert_integrity` model).
+#[derive(Debug, Clone, Default, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RawMacPolicy {
+    /// Trinary policy for the X.509 `MAX_INTEGRITY` extension on the
+    /// authenticating certificate (`required` | `optional` | `ignore`).
+    #[serde(default)]
+    pub cert_integrity: Option<RawCertIntegrityMode>,
+    /// Fallback upper bound applied when the cert carries no extension and
+    /// policy is `optional`. Ignored when `required` (no extension is a
+    /// hard failure) or `ignore` (extension is not consulted).
+    #[serde(default)]
+    pub fallback_max_integrity: Option<RawIntegrityLabel>,
+    /// Whether to emit a warning when the resolved process label disagrees
+    /// with the user's `$HOME` label at session-open time. Default `true`.
+    #[serde(default)]
+    pub warn_on_homedir_label_mismatch: Option<bool>,
+}
+
+/// Trinary mode for the `[mac].cert_integrity` knob.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum RawCertIntegrityMode {
+    /// Extension MUST be present; missing extension fails authentication.
+    Required,
+    /// Extension is consulted when present; absent extension falls back to
+    /// `fallback_max_integrity` (when set) or admin-default.
+    Optional,
+    /// Extension is not consulted; integrity comes from admin policy only.
+    Ignore,
+}
+
+/// Raw `[mac.fallback_max_integrity]` block. `level` is an int8 enforced by
+/// serde; `categories` is a hex string up to 16 chars (u64) — empty means 0.
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RawIntegrityLabel {
+    /// Linear integrity level in `i8` (-128..=127).
+    pub level: i8,
+    /// Hex-encoded categories bitmap (up to 16 hex chars = 64 bits). Empty
+    /// string is accepted and means "no categories" (0).
+    #[serde(default)]
+    pub categories: String,
 }

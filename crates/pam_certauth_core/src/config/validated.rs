@@ -5,12 +5,13 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use crate::config::raw::{
-    RawConfig, RawCryptoBackend, RawHostIdFallback, RawHostIdentity, RawMode, RawMonitor,
-    RawMonitorFailMode, RawOnUsbRemoved, RawPkcs11LockingMode, RawPolicySection,
-    RawRevocationMode, RawTrust, RawTrustOverride, RawUserMapping,
+    RawCertIntegrityMode, RawConfig, RawCryptoBackend, RawHostIdFallback, RawHostIdentity,
+    RawMacPolicy, RawMode, RawMonitor, RawMonitorFailMode, RawOnUsbRemoved, RawPkcs11LockingMode,
+    RawPolicySection, RawRevocationMode, RawTrust, RawTrustOverride, RawUserMapping,
 };
 use crate::error::TrustError;
 use crate::hooks::{validate_hook, HookConfig};
+use crate::mac::IntegrityLabel;
 use crate::token::pkcs11::LockingMode as Pkcs11LockingMode;
 use crate::x509::SignatureAlg;
 use crate::{Error, LogLevel, SyslogFacility};
@@ -81,6 +82,44 @@ pub struct ValidatedConfig {
     pub logging: LoggingSection,
     /// Hooks.
     pub hooks: Vec<HookConfig>,
+    /// MAC integrity policy (spec §2.4).
+    pub mac: MacPolicy,
+}
+
+/// Validated `[mac]` policy block.
+#[derive(Debug, Clone)]
+pub struct MacPolicy {
+    /// Trinary policy for the X.509 `MAX_INTEGRITY` extension on the
+    /// authenticating certificate. Default [`CertIntegrityMode::Optional`].
+    pub cert_integrity: CertIntegrityMode,
+    /// Fallback upper bound applied when the cert carries no extension and
+    /// [`Self::cert_integrity`] is [`CertIntegrityMode::Optional`].
+    pub fallback_max_integrity: Option<IntegrityLabel>,
+    /// Whether to emit a warning when the resolved process label disagrees
+    /// with the user's `$HOME` label at session-open time. Default `true`.
+    pub warn_on_homedir_label_mismatch: bool,
+}
+
+impl Default for MacPolicy {
+    fn default() -> Self {
+        Self {
+            cert_integrity: CertIntegrityMode::Optional,
+            fallback_max_integrity: None,
+            warn_on_homedir_label_mismatch: true,
+        }
+    }
+}
+
+/// Trinary policy for the X.509 `MAX_INTEGRITY` extension.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CertIntegrityMode {
+    /// Extension MUST be present; missing extension fails authentication.
+    Required,
+    /// Extension is consulted when present; absent falls back to
+    /// `fallback_max_integrity` or admin-default.
+    Optional,
+    /// Extension is not consulted; integrity comes from admin policy only.
+    Ignore,
 }
 
 /// Crypto backend.
@@ -406,8 +445,52 @@ impl TryFrom<&RawConfig> for ValidatedConfig {
             user_mappings,
             logging,
             hooks,
+            mac: validate_mac(&raw.mac)?,
         })
     }
+}
+
+/// Maximum length of the hex-encoded `categories` field: 16 hex chars = 64 bits.
+const MAC_CATEGORIES_HEX_MAX_LEN: usize = 16;
+
+fn validate_mac(raw: &RawMacPolicy) -> Result<MacPolicy, Error> {
+    let cert_integrity = match raw.cert_integrity {
+        Some(RawCertIntegrityMode::Required) => CertIntegrityMode::Required,
+        Some(RawCertIntegrityMode::Ignore) => CertIntegrityMode::Ignore,
+        Some(RawCertIntegrityMode::Optional) | None => CertIntegrityMode::Optional,
+    };
+    let fallback_max_integrity = raw
+        .fallback_max_integrity
+        .as_ref()
+        .map(|r| {
+            let cats = if r.categories.is_empty() {
+                0u64
+            } else {
+                if r.categories.len() > MAC_CATEGORIES_HEX_MAX_LEN {
+                    return Err(Error::ConfigInvalid {
+                        reason: format!(
+                            "mac.fallback_max_integrity.categories must be at most {MAC_CATEGORIES_HEX_MAX_LEN} hex chars (got {})",
+                            r.categories.len()
+                        ),
+                    });
+                }
+                u64::from_str_radix(&r.categories, 16).map_err(|e| Error::ConfigInvalid {
+                    reason: format!(
+                        "mac.fallback_max_integrity.categories must be hex: {e}"
+                    ),
+                })?
+            };
+            Ok(IntegrityLabel {
+                level: r.level,
+                categories: cats,
+            })
+        })
+        .transpose()?;
+    Ok(MacPolicy {
+        cert_integrity,
+        fallback_max_integrity,
+        warn_on_homedir_label_mismatch: raw.warn_on_homedir_label_mismatch.unwrap_or(true),
+    })
 }
 
 /// Hard cap on `max_chain_depth` to keep verifier loops bounded.
