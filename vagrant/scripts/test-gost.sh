@@ -99,7 +99,7 @@ printf '/bin/echo hello*\n' > wo-mixed.der.pattern
 # Try the happy path with the mixed-signature CMS.
 log "attempting execute with mixed RSA+GOST CMS"
 set +e
-out=$(sudo -u testuser sudo -n /usr/bin/pam-certauth execute \
+out=$(sudo -u testuser sudo -n /usr/bin/pam-certauth-execute \
     --scope=test.scope --work-order="$GOST_DIR/wo-mixed.der" \
     -- /bin/echo "hello from $(hostname)" 2>&1)
 rc=$?

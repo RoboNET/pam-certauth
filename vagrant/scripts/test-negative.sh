@@ -85,7 +85,7 @@ openssl cms -sign \
     -out wo-single.der 2>/dev/null
 
 run_denied N1-single-signer \
-    sudo -u testuser sudo -n /usr/bin/pam-certauth execute \
+    sudo -u testuser sudo -n /usr/bin/pam-certauth-execute \
         --scope=test.scope --work-order="$NEG_DIR/wo-single.der" \
         -- /bin/echo "hello from $(hostname)"
 
@@ -110,7 +110,7 @@ openssl cms -resign \
     -out wo-self.der 2>/dev/null
 
 run_denied N2-self-approval \
-    sudo -u testuser sudo -n /usr/bin/pam-certauth execute \
+    sudo -u testuser sudo -n /usr/bin/pam-certauth-execute \
         --scope=test.scope --work-order="$NEG_DIR/wo-self.der" \
         -- /bin/echo "hello from $(hostname)"
 
@@ -177,7 +177,7 @@ openssl cms -resign \
     -out wo-expired.der 2>/dev/null
 
 run_denied N3-expired-signer \
-    sudo -u testuser sudo -n /usr/bin/pam-certauth execute \
+    sudo -u testuser sudo -n /usr/bin/pam-certauth-execute \
         --scope=test.scope --work-order="$NEG_DIR/wo-expired.der" \
         -- /bin/echo "hello from $(hostname)"
 
@@ -205,7 +205,7 @@ openssl cms -resign \
     -out wo-pattern.der 2>/dev/null
 
 run_denied N4-pattern-mismatch \
-    sudo -u testuser sudo -n /usr/bin/pam-certauth execute \
+    sudo -u testuser sudo -n /usr/bin/pam-certauth-execute \
         --scope=test.scope --work-order="$NEG_DIR/wo-pattern.der" \
         -- /bin/echo "hello from $(hostname)"
 
@@ -250,7 +250,7 @@ openssl cms -resign \
     -out wo-wronghost.der 2>/dev/null
 
 run_denied N5-wrong-host \
-    sudo -u testuser sudo -n /usr/bin/pam-certauth execute \
+    sudo -u testuser sudo -n /usr/bin/pam-certauth-execute \
         --scope=test.scope --work-order="$NEG_DIR/wo-wronghost.der" \
         -- /bin/echo "hello from $(hostname)"
 

@@ -353,8 +353,10 @@ if ! id -u testuser >/dev/null 2>&1; then
 fi
 
 cat > /etc/sudoers.d/pam-certauth-mof-n <<'EOF'
-# Phase 13 E2E: engineers may run pam-certauth execute without password.
-%atm_engineers ALL=(root) NOPASSWD: /usr/bin/pam-certauth execute *
+# Phase 13 E2E: engineers may run the privileged execute binary without
+# a password. 0.2.4+ ships execute as a standalone /usr/bin/pam-certauth-execute
+# so the sudoers rule is exact-binary-path scoped (no subcommand globbing).
+%atm_engineers ALL=(root) NOPASSWD: /usr/bin/pam-certauth-execute *
 EOF
 chmod 0440 /etc/sudoers.d/pam-certauth-mof-n
 visudo -cf /etc/sudoers.d/pam-certauth-mof-n >/dev/null

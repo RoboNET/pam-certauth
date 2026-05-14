@@ -28,7 +28,7 @@ fail() { printf '[test-happy] FAIL: %s\n' "$*" >&2; exit 1; }
 [[ -f "$WO" ]] || fail "work order not found at $WO — run setup-mof-n-scenario.sh first"
 
 log "running pam-certauth execute as testuser"
-out=$(sudo -u testuser sudo -n /usr/bin/pam-certauth execute \
+out=$(sudo -u testuser sudo -n /usr/bin/pam-certauth-execute \
     --scope=test.scope \
     --work-order="$WO" \
     -- /bin/echo "$EXPECTED") || fail "execute returned non-zero"
