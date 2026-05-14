@@ -7,6 +7,7 @@ pub mod backend;
 #[cfg(feature = "astra-mac")]
 pub mod ffi;
 pub mod label;
+pub mod orchestrator;
 #[cfg(not(feature = "astra-mac"))]
 mod stub;
 pub(crate) mod text_codec;
