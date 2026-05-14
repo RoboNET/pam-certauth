@@ -1,0 +1,65 @@
+name: lint
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  clippy:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install system deps
+        run: |
+          sudo apt-get update
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y \
+            libssl-dev libudev-dev libdbus-1-dev libpam0g-dev libsystemd-dev \
+            clang libclang-dev pkg-config
+
+      - name: Install Rust toolchain
+        run: |
+          set -euxo pipefail
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
+            | sh -s -- -y --default-toolchain none --profile minimal
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+          "$HOME/.cargo/bin/rustup" toolchain install 1.95.0 \
+            --profile minimal \
+            --component clippy
+
+      - name: cargo clippy (workspace, all targets, -D warnings)
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+  supply-chain:
+    # cargo-deny + cargo-audit run against the lockfile; they don't need to
+    # actually compile the crate graph (no C deps needed), so this job is
+    # quick and runs in parallel with clippy.
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain (stable, no components)
+        run: |
+          set -euxo pipefail
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
+            | sh -s -- -y --default-toolchain stable --profile minimal
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+
+      - name: Install cargo-deny + cargo-audit
+        run: |
+          cargo install --locked cargo-deny@0.16 || cargo install --locked cargo-deny
+          cargo install --locked cargo-audit
+
+      - name: cargo deny check
+        # Checks advisories, bans, licenses, and sources per deny.toml.
+        run: cargo deny check
+
+      - name: cargo audit
+        # Cross-checks against RustSec advisory DB. We surface warnings as
+        # errors so a newly-disclosed CVE in a transitive dep blocks merges.
+        run: cargo audit --deny warnings
