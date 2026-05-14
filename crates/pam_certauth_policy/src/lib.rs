@@ -91,6 +91,20 @@ impl Policy {
                 "defaults.m_of_n must be >= 1 (got 0)".into(),
             ));
         }
+        // Defaults hooks must reference known hooks too.
+        for hook in self
+            .raw
+            .defaults
+            .pre_hooks
+            .iter()
+            .chain(self.raw.defaults.post_hooks.iter())
+        {
+            if !KNOWN_HOOKS.contains(&hook.as_str()) {
+                return Err(PolicyError::Validation(format!(
+                    "defaults references unknown hook {hook:?}"
+                )));
+            }
+        }
         for (name, rule) in &self.raw.scope {
             let m = rule.m_of_n.or(default_m).ok_or_else(|| {
                 PolicyError::Validation(format!(
@@ -236,6 +250,13 @@ mod validate_tests {
         let err = load("[defaults]\nm_of_n = 1\n[scope.\"x\"]\npre_hooks = [\"unknown\"]\n")
             .unwrap_err();
         assert!(matches!(err, PolicyError::Validation(s) if s.contains("unknown")));
+    }
+
+    #[test]
+    fn rejects_unknown_hook_name_in_defaults() {
+        let err = load("[defaults]\nm_of_n = 1\npre_hooks = [\"unknown_default\"]\n")
+            .unwrap_err();
+        assert!(matches!(err, PolicyError::Validation(s) if s.contains("unknown_default")));
     }
 
     #[test]
