@@ -6,7 +6,17 @@ fn write_tmp(contents: &str) -> PathBuf {
     let dir = tempfile::tempdir().unwrap();
     let p = dir.path().join("policy.toml");
     fs::write(&p, contents).unwrap();
-    std::mem::forget(dir); // не удалять до конца теста
+    // We intentionally leak the TempDir: Policy::load reads the file
+    // synchronously and returns owned data, but callers want the path to
+    // still be valid until the test ends (no borrow of `dir` propagates,
+    // so RAII Drop would otherwise unlink before assertions read it).
+    // The leak is bounded by the test binary's process lifetime.
+    #[allow(
+        clippy::mem_forget,
+        reason = "test helper: bounded leak of TempDir to keep on-disk path \
+                  alive until end of test; no fds/locks/secrets in TempDir."
+    )]
+    std::mem::forget(dir);
     p
 }
 

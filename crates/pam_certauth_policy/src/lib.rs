@@ -185,6 +185,13 @@ mod rule_for_tests {
         let p = dir.path().join("policy.toml");
         std::fs::write(&p, s).unwrap();
         let pol = Policy::load(&p).unwrap();
+        // Test helper: leak the TempDir so the on-disk file is still
+        // there until the test binary exits.  No fds/locks/secrets in a
+        // TempDir; the OS will reclaim the directory at process exit.
+        #[allow(
+            clippy::mem_forget,
+            reason = "test helper: bounded leak of TempDir for path lifetime."
+        )]
         std::mem::forget(dir);
         pol
     }
@@ -227,6 +234,11 @@ mod validate_tests {
         let p = dir.path().join("policy.toml");
         std::fs::write(&p, s).unwrap();
         let r = Policy::load(&p);
+        // See `rule_for_tests::load` for the same leak rationale.
+        #[allow(
+            clippy::mem_forget,
+            reason = "test helper: bounded leak of TempDir for path lifetime."
+        )]
         std::mem::forget(dir);
         r
     }

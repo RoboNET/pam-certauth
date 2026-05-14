@@ -232,6 +232,19 @@ mod tests {
         let child = cmd.spawn().expect("spawn child");
         let raw_pid = i32::try_from(child.id()).expect("pid fits in i32");
         let pid = Pid::from_raw(raw_pid);
+        // The test below uses our own wait_with_timeout (which calls
+        // waitpid on the raw PID).  std::process::Child::drop would
+        // reap the same child via libc::waitpid, racing the test and
+        // turning a successful wait into ECHILD.  Forgetting Child is
+        // the documented way to opt out of stdlib's auto-reap and is
+        // the correct primitive here (PID handoff, not a leak of
+        // resources we own).
+        #[allow(
+            clippy::mem_forget,
+            reason = "test helper: deliberate handoff of PID ownership from \
+                      stdlib Child to our waitpid-based reaper; otherwise \
+                      Drop would race us to waitpid()."
+        )]
         std::mem::forget(child);
         pid
     }

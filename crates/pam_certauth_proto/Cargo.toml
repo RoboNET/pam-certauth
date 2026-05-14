@@ -36,4 +36,5 @@ unimplemented = "deny"
 # Hardening — proto is pure data + serde, no unsafe expected ever.
 let_underscore_lock = "deny"
 let_underscore_must_use = "deny"
+mem_forget = "deny"
 exit = "warn"
