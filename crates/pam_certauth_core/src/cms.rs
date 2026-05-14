@@ -256,6 +256,11 @@ pub fn verify(
         }
     }
 
+    // SAFETY: `CMS_verify` (called via `verify_with_options` above) returned
+    // successfully, so the underlying `CMS_ContentInfo` has its verified
+    // signer-cert stack populated. `collect_signer_certs` only walks that
+    // already-validated stack and clones each entry through openssl's safe
+    // wrappers.
     let signer_certs = unsafe { collect_signer_certs(&cms) }?;
     let have_u8 = u8::try_from(signer_certs.len()).unwrap_or(u8::MAX);
     if have_u8 < params.m_of_n {
