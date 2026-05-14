@@ -51,6 +51,10 @@ fn parses_required_with_fallback() {
     assert_eq!(raw.mac.warn_on_homedir_label_mismatch, Some(false));
 }
 
+// `Required` policy is rejected by `validate_mac` under stub builds (Phase 5
+// Task 5.4 fail-fast). This integration test exercises the validated layer
+// when MAC is actually available.
+#[cfg(feature = "astra-mac")]
 #[test]
 fn parses_required_with_fallback_validates() {
     // Verify the validated layer correctly converts the hex categories to u64
