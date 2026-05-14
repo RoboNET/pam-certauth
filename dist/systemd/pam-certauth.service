@@ -8,18 +8,22 @@ Requires=systemd-logind.service
 
 [Service]
 Type=notify
-# Defence-in-depth: reap any stale pre-0.2.1 monitord process that may still
-# be running as root from a previous install. The new daemon binary lives at
-# /usr/bin/pam-certauth (subcommand `daemon`), so the absolute-path pattern
-# below cannot match this unit's own ExecStart. The leading `-` tells
-# systemd to ignore non-zero exits (the common no-match case).
-ExecStartPre=-/usr/bin/pkill --signal TERM -f "^/usr/sbin/pam-certauth-monitord( |$)"
-ExecStartPre=-/bin/sleep 1
-ExecStartPre=-/usr/bin/pkill --signal KILL -f "^/usr/sbin/pam-certauth-monitord( |$)"
+# Defence-in-depth: reap any pre-0.2.1 monitord orphans that survived
+# upgrade. These ExecStartPre lines need root because the orphan runs
+# as root (pre-0.2.1 init.d default); a User=pamcertauth caller would
+# hit EPERM and the leading `-` would hide it. The `+` prefix tells
+# systemd to run these with full privileges before dropping to
+# User=pamcertauth for ExecStart. The new daemon binary lives at
+# /usr/bin/pam-certauth (subcommand `daemon`), so the absolute-path
+# pattern below cannot match this unit's own ExecStart. The `-` after
+# `+` ignores non-zero exits (the common no-match case).
+ExecStartPre=+-/usr/bin/pkill --signal TERM -f '^/usr/sbin/pam-certauth-monitord( |$)'
+ExecStartPre=+-/bin/sleep 1
+ExecStartPre=+-/usr/bin/pkill --signal KILL -f '^/usr/sbin/pam-certauth-monitord( |$)'
 # Clean up leaked socket-temp files from killed pre-0.2.1 monitord processes
 # whose atomic rename never completed. Without this the next bind can fail
 # or pile up unbounded crud under /run/pam_certauth.
-ExecStartPre=-/bin/sh -c 'rm -f /run/pam_certauth/monitord.sock.tmp.*'
+ExecStartPre=+-/bin/sh -c 'rm -f /run/pam_certauth/monitord.sock.tmp.*'
 # Batch 4 (P1-D): the daemon reads its operational knobs from the SAME shared
 # config the PAM cdylib parses, so operators only edit one file. Keep CLI
 # flags in mind only as on-the-fly overrides for staging / debugging.
