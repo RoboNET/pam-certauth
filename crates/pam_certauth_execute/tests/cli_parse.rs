@@ -1,7 +1,7 @@
 //! Integration test for the `execute` subcommand argument parsing.
 
 use clap::Parser;
-use pam_certauth_cli::execute::cli::ExecuteArgs;
+use pam_certauth_execute::cli::ExecuteArgs;
 
 #[derive(clap::Parser)]
 struct TestCli {

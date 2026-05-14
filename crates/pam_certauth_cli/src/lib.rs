@@ -20,9 +20,7 @@
 
 pub mod actions;
 pub mod daemon;
-pub mod execute;
 pub mod gc_cmd;
-pub mod hooks;
 pub mod logging;
 pub mod logind;
 pub mod notify;

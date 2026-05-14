@@ -48,11 +48,17 @@ hex = { workspace = true }
 openssl = { workspace = true }
 
 # Low-level — getuid/getppid for the early `execute_attempt` audit event,
-# nix for the child watchdog (setpgid + killpg + waitpid).
+# nix for the child watchdog (setpgid + killpg + waitpid), signal-hook
+# for the SIGTERM → SIGKILL escalation in `child::run_child_with_timeout`.
 libc = { workspace = true }
 nix = { workspace = true }
+signal-hook = { workspace = true }
 once_cell = { workspace = true }
 parking_lot = { workspace = true }
+
+# Argv canonicalisation: NFC normalisation of argv0 + argv_pattern glob match.
+unicode-normalization = { workspace = true }
+wildmatch = { workspace = true }
 
 # NOTE: deliberately absent — see crate-level docs:
 #   * tokio (any feature)   — execute is synchronous end-to-end.

@@ -14,12 +14,23 @@
     clippy::missing_panics_doc,
     clippy::must_use_candidate,
     clippy::doc_markdown,
+    clippy::implicit_hasher,
     clippy::module_name_repetitions,
     clippy::manual_let_else,
     clippy::single_match_else,
     clippy::match_wildcard_for_single_variants
 )]
 
-// Scaffolding commit — modules are added incrementally in the next
-// commit. The crate compiles as an empty library + a binary that
-// prints an explanatory message until the move lands.
+pub mod argv;
+pub mod audit;
+pub mod child;
+pub mod cli;
+pub mod glob;
+pub mod hooks;
+pub mod logging;
+pub mod retention;
+pub mod work_order;
+
+mod orchestrator;
+
+pub use orchestrator::{run, EXIT_DENIED, EXIT_SPAWN_FAILED};

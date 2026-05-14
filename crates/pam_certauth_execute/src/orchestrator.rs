@@ -1,20 +1,13 @@
-//! `pam-certauth execute` subcommand modules.
+//! `pam-certauth-execute` orchestrator.
 //!
-//! Each submodule is independent and unit-testable. The orchestrator in
-//! [`run`] wires them together: validate args → load config & policy → look
-//! up engineer session over IPC → verify CMS work order → canonicalise argv
-//! → optional `argv_pattern` glob match (read from the **signed** CMS
-//! encapsulated content, NOT a sidecar file) → spawn the requested command
-//! with a scrubbed environment → emit structured audit events around the
+//! Each sibling module under `pam_certauth_execute` is independent and
+//! unit-testable. The orchestrator in [`run`] wires them together:
+//! validate args → load config & policy → look up engineer session over
+//! IPC → verify CMS work order → canonicalise argv → optional
+//! `argv_pattern` glob match (read from the **signed** CMS encapsulated
+//! content, NOT a sidecar file) → spawn the requested command with a
+//! scrubbed environment → emit structured audit events around the
 //! lifecycle.
-
-pub mod argv;
-pub mod audit;
-pub mod child;
-pub mod cli;
-pub mod glob;
-pub mod retention;
-pub mod work_order;
 
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -31,9 +24,10 @@ use pam_certauth_core::config::validated::{TrustSection, ValidatedConfig};
 use pam_certauth_core::ipc::client::{ActiveSessionReply, MonitorClientFactory};
 use pam_certauth_policy::{AuditLevel, Policy, ScopeRule};
 
-use crate::execute::audit::AuditCtx;
-use crate::execute::cli::ExecuteArgs;
+use crate::audit::AuditCtx;
+use crate::cli::ExecuteArgs;
 use crate::hooks::{run_hooks, HookContext, HookPhase};
+use crate::{argv, audit, child, glob, retention, work_order};
 
 /// Exit code returned for "policy denial / pre-flight" failures.
 pub const EXIT_DENIED: u8 = 2;

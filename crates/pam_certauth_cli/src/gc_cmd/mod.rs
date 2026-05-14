@@ -10,7 +10,7 @@ use std::process::ExitCode;
 
 use clap::Args;
 
-use crate::execute::retention;
+use pam_certauth_execute::retention;
 
 /// Arguments accepted by `pam-certauth gc`.
 #[derive(Args, Debug, Clone)]

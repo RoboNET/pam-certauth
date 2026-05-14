@@ -4,7 +4,7 @@
 use std::collections::HashMap;
 use std::time::Duration;
 
-use pam_certauth_cli::execute::child::{run_child_with_timeout, TIMEOUT_EXIT_CODE};
+use pam_certauth_execute::child::{run_child_with_timeout, TIMEOUT_EXIT_CODE};
 
 #[test]
 fn timeout_sends_sigterm_then_sigkill() {
