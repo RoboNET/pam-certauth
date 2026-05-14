@@ -10,8 +10,11 @@
 #![allow(clippy::expect_used)]
 #![allow(clippy::doc_markdown)]
 
+#[cfg(feature = "astra-mac")]
 use pam_certauth_core::config::validated::CertIntegrityMode;
-use pam_certauth_core::config::{RawConfig, ValidatedConfig};
+use pam_certauth_core::config::RawConfig;
+#[cfg(feature = "astra-mac")]
+use pam_certauth_core::config::ValidatedConfig;
 
 /// Base TOML fixture; uses `/bin/sh` as a trivially-existing path so the
 /// trust-section PEM sniff is intentionally bypassed for these
