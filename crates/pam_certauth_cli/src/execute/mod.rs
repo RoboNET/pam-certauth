@@ -546,8 +546,63 @@ fn max_level(a: AuditLevel, b: AuditLevel) -> AuditLevel {
 fn current_uid() -> u32 {
     // SAFETY: `getuid` is a syscall wrapper with no preconditions.
     #[allow(unsafe_code)]
-    unsafe {
-        libc::getuid()
+    let fallback = unsafe { libc::getuid() };
+    resolve_engineer_uid(std::env::var("SUDO_UID").ok().as_deref(), fallback)
+}
+
+/// Resolve the uid whose engineer session the orchestrator should look up.
+///
+/// pam-certauth execute is invoked via sudo, which elevates the real and
+/// effective uid to 0. The monitor daemon registers PAM-authed engineer
+/// sessions under the engineer's own uid, not root. Sudo exports SUDO_UID
+/// with the invoking user's uid — prefer that when present so
+/// GetActiveSessionByUid finds the engineer's session. Falls back to the
+/// process uid when SUDO_UID is absent or malformed (tests, break-glass).
+fn resolve_engineer_uid(sudo_uid_env: Option<&str>, fallback: u32) -> u32 {
+    if let Some(raw) = sudo_uid_env {
+        if let Ok(uid) = raw.parse::<u32>() {
+            return uid;
+        }
+    }
+    fallback
+}
+
+#[cfg(test)]
+mod uid_resolver_tests {
+    use super::resolve_engineer_uid;
+
+    #[test]
+    fn sudo_uid_present_returns_parsed_value() {
+        assert_eq!(resolve_engineer_uid(Some("1010"), 0), 1010);
+    }
+
+    #[test]
+    fn sudo_uid_absent_returns_fallback() {
+        assert_eq!(resolve_engineer_uid(None, 1010), 1010);
+    }
+
+    #[test]
+    fn sudo_uid_malformed_returns_fallback() {
+        assert_eq!(resolve_engineer_uid(Some("not-a-number"), 1010), 1010);
+        assert_eq!(resolve_engineer_uid(Some(""), 42), 42);
+        assert_eq!(resolve_engineer_uid(Some("-1"), 7), 7);
+    }
+
+    #[test]
+    fn sudo_uid_zero_is_respected() {
+        // SUDO_UID=0 is legitimate when root invokes sudo on themselves.
+        assert_eq!(resolve_engineer_uid(Some("0"), 999), 0);
+    }
+
+    #[test]
+    fn sudo_uid_max_u32_is_respected() {
+        assert_eq!(resolve_engineer_uid(Some("4294967295"), 0), u32::MAX);
+    }
+
+    #[test]
+    fn sudo_uid_overflow_returns_fallback() {
+        // u32::MAX + 1
+        assert_eq!(resolve_engineer_uid(Some("4294967296"), 1010), 1010);
     }
 }
 
