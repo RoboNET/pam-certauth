@@ -32,7 +32,8 @@ Depends:
  lsb-base (>= 3.0-6),
  adduser,
  polkitd | policykit-1,
- libgost-engine | gost-engine
+ libgost-engine | gost-engine,
+ libpdp3 (>= 3.11+ci97~)
 Recommends:
  libpkcs11-helper1,
  librtpkcs11ecp

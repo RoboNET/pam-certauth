@@ -75,6 +75,44 @@ case "$1" in
             deb-systemd-invoke start pam-certauth-gc.timer >/dev/null || true
         fi
 
+        # ------------------------------------------------------------------
+        # МКЦ (MAC integrity) integration — Astra SE strict mode only.
+        # Skip gracefully on non-Astra hosts / when strict mode is disabled.
+        # `pdpl-file` ships with Astra's parsec userspace; absence => non-Astra
+        # build target (Debian/Ubuntu CI), so we simply skip.
+        if command -v pdpl-file >/dev/null 2>&1 \
+           && command -v astra-strictmode-control >/dev/null 2>&1 \
+           && astra-strictmode-control is-enabled >/dev/null 2>&1; then
+            # Allow root (level 0+) to read config directory regardless of the
+            # caller's hierarchical clearance — config has no secrets, only
+            # CA pins, policy, runtime knobs.
+            pdpl-file ":::iinh" "$CONFIG_DIR" || true
+            pdpl-file -R ":::iinh" "$CONFIG_DIR/ca" || true
+            pdpl-file -R ":::iinh" "$CONFIG_DIR/crl" || true
+
+            # State dir (sessions.json, host_id) must be MAC-readable by
+            # the pamcertauth daemon at any clearance the active user holds.
+            pdpl-file ":::iinh" "$STATE_DIR" || true
+            pdpl-file ":::iinh" "$CACHE_DIR" || true
+
+            # Pre-create sessions.json so the daemon's first atomic write
+            # (which inherits irelax from this file's xattrs) starts from
+            # a well-labeled inode rather than a default-labeled one.
+            if [ ! -f "$STATE_DIR/sessions.json" ]; then
+                : > "$STATE_DIR/sessions.json"
+                chown pamcertauth:pamcertauth "$STATE_DIR/sessions.json"
+                chmod 0640 "$STATE_DIR/sessions.json"
+                pdpl-file ":::iinh" "$STATE_DIR/sessions.json" || true
+            fi
+
+            # host_id is rebind-protected: once written by host_identity probe
+            # we set the immutable bit so a tampered admin cannot silently
+            # repoint a deployed host's identity to a different binding.
+            if [ -f "$STATE_DIR/host_id" ]; then
+                chattr +i "$STATE_DIR/host_id" 2>/dev/null || true
+            fi
+        fi
+
         # Print one-time setup hint if no config has been deployed yet.
         if [ ! -f "$CONFIG_DIR/config.toml" ]; then
             cat <<EOF
