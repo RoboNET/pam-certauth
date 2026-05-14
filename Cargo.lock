@@ -1079,6 +1079,32 @@ dependencies = [
 ]
 
 [[package]]
+name = "pam_certauth_execute"
+version = "0.2.3"
+dependencies = [
+ "anyhow",
+ "clap",
+ "hex",
+ "libc",
+ "nix",
+ "once_cell",
+ "openssl",
+ "pam_certauth_core",
+ "pam_certauth_policy",
+ "pam_certauth_proto",
+ "parking_lot",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "thiserror",
+ "toml",
+ "tracing",
+ "tracing-journald",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "pam_certauth_policy"
 version = "0.2.3"
 dependencies = [

@@ -1,0 +1,93 @@
+[package]
+name = "pam_certauth_execute"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+description = "M-of-N work-order execute binary for pam-certauth."
+
+[[bin]]
+name = "pam-certauth-execute"
+path = "src/main.rs"
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+# Workspace crates — execute needs CMS verify, policy, and IPC client
+# from core; the proto crate is only required transitively via core, but
+# we declare it explicitly so an accidental break of that path surfaces
+# at compile time in this crate, not deep in core.
+pam_certauth_core = { path = "../pam_certauth_core", version = "0.2.3" }
+pam_certauth_policy = { path = "../pam_certauth_policy", version = "0.2.3" }
+pam_certauth_proto = { path = "../pam_certauth_proto", version = "0.2.3" }
+
+# CLI surface.
+clap = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+toml = { workspace = true }
+
+# Observability — journald-attached tracing for audit events.
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+tracing-journald = { workspace = true }
+
+# Errors.
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+
+# Hashing for CMS retention path (sha256 of CMS bytes).
+sha2 = { workspace = true }
+hex = { workspace = true }
+
+# OpenSSL — execute builds X509 trust stores and runs CMS verification
+# through pam_certauth_core::cms.
+openssl = { workspace = true }
+
+# Low-level — getuid/getppid for the early `execute_attempt` audit event,
+# nix for the child watchdog (setpgid + killpg + waitpid).
+libc = { workspace = true }
+nix = { workspace = true }
+once_cell = { workspace = true }
+parking_lot = { workspace = true }
+
+# NOTE: deliberately absent — see crate-level docs:
+#   * tokio (any feature)   — execute is synchronous end-to-end.
+#   * zbus                  — no DBus interaction; execute is an IPC client only.
+#   * udev                  — no USB monitoring on the privileged path.
+#   * signal-hook, sd-notify — those are daemon-only.
+
+[dev-dependencies]
+tempfile = { workspace = true }
+
+[lints.rust]
+missing_docs = "warn"
+unsafe_code = "deny"
+unsafe_op_in_unsafe_fn = "deny"
+
+[lints.clippy]
+all = { level = "deny", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+todo = "deny"
+# Unsafe hardening — every unsafe block must carry a `// SAFETY:` line.
+undocumented_unsafe_blocks = "deny"
+missing_safety_doc = "deny"
+multiple_unsafe_ops_per_block = "deny"
+let_underscore_must_use = "deny"
+mem_forget = "deny"
+panic_in_result_fn = "deny"
+indexing_slicing = "deny"
+# Pointer / cast hygiene.
+transmute_ptr_to_ptr = "warn"
+ptr_as_ptr = "warn"
+cast_ptr_alignment = "warn"
+ref_as_ptr = "warn"
+# Footgun catchers — pam-certauth-execute runs as root.
+let_underscore_lock = "deny"
+exit = "warn"

@@ -6,6 +6,7 @@ members = [
     "crates/pam_certauth",
     "crates/pam_certauth_cli",
     "crates/pam_certauth_policy",
+    "crates/pam_certauth_execute",
 ]
 
 [workspace.package]
