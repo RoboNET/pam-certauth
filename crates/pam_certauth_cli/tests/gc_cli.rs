@@ -26,6 +26,9 @@ fn set_mtime(path: &std::path::Path, t: SystemTime) {
     };
     let times = [tv, tv];
     let cpath = std::ffi::CString::new(path.as_os_str().as_encoded_bytes()).unwrap();
+    // SAFETY: `cpath` is a valid NUL-terminated C string, `times` is a
+    // 2-element `timeval` array on the stack; both pointers are valid for
+    // the duration of the call.
     let rc = unsafe { libc::utimes(cpath.as_ptr(), times.as_ptr()) };
     assert_eq!(rc, 0, "utimes failed");
 }

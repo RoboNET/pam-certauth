@@ -63,6 +63,7 @@ mockall = { workspace = true }
 missing_docs = "deny"
 unsafe_code = "deny"
 unused_must_use = "deny"
+unsafe_op_in_unsafe_fn = "deny"
 
 [lints.clippy]
 all = { level = "deny", priority = -1 }
@@ -72,3 +73,14 @@ expect_used = "deny"
 panic = "deny"
 todo = "deny"
 unimplemented = "deny"
+# Unsafe hardening.
+undocumented_unsafe_blocks = "deny"
+missing_safety_doc = "deny"
+# Pointer / cast hygiene.
+transmute_ptr_to_ptr = "warn"
+ptr_as_ptr = "warn"
+cast_ptr_alignment = "warn"
+ref_as_ptr = "warn"
+# Footgun catchers.
+let_underscore_lock = "deny"
+exit = "warn"

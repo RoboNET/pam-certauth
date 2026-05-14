@@ -17,3 +17,13 @@ hex = { workspace = true }
 
 [dev-dependencies]
 tempfile = "3"
+
+[lints.rust]
+unsafe_code = "forbid"
+unused_must_use = "deny"
+
+[lints.clippy]
+all = { level = "deny", priority = -1 }
+# Hardening — policy is pure parsing, never touches FFI.
+let_underscore_lock = "deny"
+exit = "warn"

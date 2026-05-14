@@ -505,15 +505,24 @@ fn hash_with_oid(hash_oid: &str, data: &[u8]) -> Result<Vec<u8>, CmsVerifyError>
 /// `cms` must point to a valid `CMS_ContentInfo` on which `CMS_verify`
 /// has already returned successfully.
 unsafe fn collect_signer_certs(cms: &CmsContentInfo) -> Result<Vec<X509>, CmsVerifyError> {
-    let stack_ptr = ffi_cms_get0_signers::CMS_get0_signers(cms.as_ptr());
+    // SAFETY: `cms.as_ptr()` is a live `*mut CMS_ContentInfo` owned by the
+    // borrowed `CmsContentInfo`; the function-level safety contract states
+    // that `CMS_verify` has already succeeded on it.
+    let stack_ptr = unsafe { ffi_cms_get0_signers::CMS_get0_signers(cms.as_ptr()) };
     if stack_ptr.is_null() {
         return Err(CmsVerifyError::Openssl(
             "CMS_get0_signers returned NULL".into(),
         ));
     }
-    let stack_ref: &StackRef<X509> = StackRef::<X509>::from_ptr(stack_ptr);
+    // SAFETY: `stack_ptr` is non-null and points to a `STACK_OF(X509)` whose
+    // elements are borrowed from `cms` (per `CMS_get0_signers` contract).
+    // `StackRef::from_ptr` produces a `&StackRef<X509>` tied to that borrow.
+    let stack_ref: &StackRef<X509> = unsafe { StackRef::<X509>::from_ptr(stack_ptr) };
     let certs: Vec<X509> = stack_ref.iter().map(X509Ref::to_owned).collect();
-    openssl_sys::OPENSSL_sk_free(stack_ptr.cast());
+    // SAFETY: we own the stack returned by `CMS_get0_signers` (the elements
+    // are borrowed and stay alive in `cms`); freeing the stack container
+    // itself releases the allocation without touching the borrowed elements.
+    unsafe { openssl_sys::OPENSSL_sk_free(stack_ptr.cast()) };
     Ok(certs)
 }
 

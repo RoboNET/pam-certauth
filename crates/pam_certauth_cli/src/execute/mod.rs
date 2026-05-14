@@ -80,6 +80,8 @@ pub fn run(args: ExecuteArgs) -> ExitCode {
         // preconditions; both are documented as always succeeding.
         #[allow(unsafe_code)]
         let uid = unsafe { libc::getuid() };
+        // SAFETY: see `getuid` above — `getppid` is a syscall wrapper with
+        // no preconditions and is always successful.
         #[allow(unsafe_code)]
         let parent_pid = unsafe { libc::getppid() };
         let ctx_attempt = AuditCtx {
