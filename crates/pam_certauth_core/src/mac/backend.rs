@@ -152,17 +152,27 @@ impl MacBackend for StubBackend {
 }
 
 /// Real Astra МКЦ backend backed by `libpdp` text-API FFI.  Available only
-/// under the `astra-mac` cargo feature.  Task 4.2 will extend [`Self::new`]
-/// with a `parsec_capget` self-check.
+/// under the `astra-mac` cargo feature.
+///
+/// On construction, [`Self::new`] performs a `parsec_capget` self-check and
+/// emits a `mac_caps_missing` audit warning if the running process lacks
+/// `PARSEC_CAP_CHMAC` — operations are still attempted; the kernel is the
+/// final arbiter.
 #[cfg(feature = "astra-mac")]
 #[derive(Debug, Default)]
 pub struct ParsecBackend;
 
 #[cfg(feature = "astra-mac")]
 impl ParsecBackend {
-    /// Construct a new `ParsecBackend`.
+    /// Construct a new `ParsecBackend`, running the CHMAC capability
+    /// self-check.  Always returns a usable backend — missing capability is
+    /// downgraded to a warning so MAC enforcement remains a kernel
+    /// responsibility.
     #[must_use]
     pub fn new() -> Self {
+        if !crate::mac::ffi::check_chmac_capability() {
+            crate::mac::audit::emit_caps_missing("PARSEC_CAP_CHMAC not present in effective set");
+        }
         Self
     }
 }
