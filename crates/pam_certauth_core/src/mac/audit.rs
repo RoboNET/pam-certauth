@@ -10,6 +10,10 @@
 //! schema in code so tests can assert on `EVENT_*` constants without
 //! mistyping a string literal.
 
+use std::collections::HashMap;
+use std::sync::{Mutex, OnceLock};
+use std::time::{Duration, Instant};
+
 use crate::mac::IntegrityLabel;
 use crate::x509::CertIdent;
 
@@ -19,18 +23,19 @@ pub const EVENT_MAC_SKIPPED: &str = "mac_skipped";
 /// `mac_runtime_required` — `cert_integrity=required` but `probe()`
 /// reported a non-Active runtime.
 pub const EVENT_MAC_RUNTIME_REQUIRED: &str = "mac_runtime_required";
-/// `cert_lacks_ext` — `cert_integrity=required` but the leaf is missing
-/// the `MAX_INTEGRITY` extension.
-pub const EVENT_CERT_LACKS_EXT: &str = "cert_lacks_ext";
+/// `cert_lacks_max_integrity_ext` — `cert_integrity=required` but the
+/// leaf is missing the `MAX_INTEGRITY` extension.
+pub const EVENT_CERT_LACKS_EXT: &str = "cert_lacks_max_integrity_ext";
 /// `integrity_applied` — process label resolved and applied.
 pub const EVENT_INTEGRITY_APPLIED: &str = "integrity_applied";
-/// `integrity_capped` — effective label strictly below user MNKC.
-pub const EVENT_INTEGRITY_CAPPED: &str = "integrity_capped";
-/// `homedir_label_above` — `$HOME` label exceeds the effective process
-/// label (advisory; warn-only).
-pub const EVENT_HOMEDIR_LABEL_ABOVE: &str = "homedir_label_above";
-/// `apply_failed` — `apply_session` returned an error.
-pub const EVENT_APPLY_FAILED: &str = "apply_failed";
+/// `integrity_capped_below_user_mnkc` — effective label strictly below
+/// user MNKC.
+pub const EVENT_INTEGRITY_CAPPED: &str = "integrity_capped_below_user_mnkc";
+/// `homedir_label_above_session_cap` — `$HOME` label exceeds the
+/// effective process label (advisory; warn-only).
+pub const EVENT_HOMEDIR_LABEL_ABOVE: &str = "homedir_label_above_session_cap";
+/// `mac_apply_failed` — `apply_session` returned an error.
+pub const EVENT_MAC_APPLY_FAILED: &str = "mac_apply_failed";
 /// `mac_caps_missing` — process is missing `PARSEC_CAP_CHMAC`.
 pub const EVENT_MAC_CAPS_MISSING: &str = "mac_caps_missing";
 /// `mac_user_unknown` — `get_user_mnkc` reported `UserUnknown`.
@@ -38,9 +43,13 @@ pub const EVENT_MAC_USER_UNKNOWN: &str = "mac_user_unknown";
 /// `mac_fallback_used` — falling back to `fallback_max_integrity`
 /// because the cert carries no `MAX_INTEGRITY` extension.
 pub const EVENT_MAC_FALLBACK_USED: &str = "mac_fallback_used";
-/// `mac_categories_above_32bit` — DER decoder observed integrity
-/// category bits beyond bit 31; advisory.
-pub const EVENT_MAC_CATEGORIES_ABOVE_32BIT: &str = "mac_categories_above_32bit";
+/// `cert_max_integrity_categories_above_32bit` — DER decoder observed
+/// integrity category bits beyond bit 31; advisory.
+pub const EVENT_CERT_MAX_INT_CATS_ABOVE_32BIT: &str =
+    "cert_max_integrity_categories_above_32bit";
+/// `cert_max_integrity_parse_failed` — the `MAX_INTEGRITY` extension
+/// was present but failed to decode.
+pub const EVENT_CERT_EXT_PARSE_FAILED: &str = "cert_max_integrity_parse_failed";
 
 /// Emit `mac_skipped`.
 pub fn emit_mac_skipped(reason: &str) {
@@ -144,7 +153,7 @@ pub fn emit_homedir_label_above(
 pub fn emit_apply_failed(ident: &CertIdent, pam_user: &str, pam_service: &str, detail: &str) {
     tracing::error!(
         target: "mac.audit",
-        F_event = EVENT_APPLY_FAILED,
+        F_event = EVENT_MAC_APPLY_FAILED,
         F_pam_user = pam_user,
         F_pam_service = pam_service,
         F_cert_serial = ident.serial.as_str(),
@@ -186,11 +195,84 @@ pub fn emit_fallback_used(pam_user: &str, pam_service: &str, fallback: Integrity
     );
 }
 
-/// Emit `mac_categories_above_32bit` — diagnostic only.
+/// Sliding window for `cert_max_integrity_parse_failed` deduplication.
+const PARSE_FAIL_RATE_WINDOW: Duration = Duration::from_mins(1);
+/// Hard cap on tracked fingerprints; oldest entry is evicted when full.
+const PARSE_FAIL_CACHE_CAP: usize = 256;
+
+fn parse_fail_cache() -> &'static Mutex<HashMap<String, Instant>> {
+    static CACHE: OnceLock<Mutex<HashMap<String, Instant>>> = OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(HashMap::with_capacity(PARSE_FAIL_CACHE_CAP)))
+}
+
+/// Returns `true` when an emit for `fingerprint` is permitted *right
+/// now*; updates the bookkeeping side-effect. Used by
+/// [`emit_cert_ext_parse_failed`] to avoid log floods if the same bad
+/// cert is presented repeatedly.
+#[doc(hidden)]
+pub fn should_emit_parse_failed(fingerprint: &str) -> bool {
+    let now = Instant::now();
+    let mut cache = parse_fail_cache()
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+
+    // Lazy GC of expired entries.
+    cache.retain(|_, t| now.duration_since(*t) < PARSE_FAIL_RATE_WINDOW);
+
+    if let Some(last) = cache.get(fingerprint) {
+        if now.duration_since(*last) < PARSE_FAIL_RATE_WINDOW {
+            return false;
+        }
+    }
+
+    if cache.len() >= PARSE_FAIL_CACHE_CAP {
+        if let Some(oldest_key) = cache
+            .iter()
+            .min_by_key(|(_, t)| *t)
+            .map(|(k, _)| k.clone())
+        {
+            cache.remove(&oldest_key);
+        }
+    }
+
+    cache.insert(fingerprint.to_string(), now);
+    true
+}
+
+/// Clear the parse-failed dedup cache; intended for tests.
+#[doc(hidden)]
+pub fn reset_parse_failed_cache() {
+    if let Ok(mut cache) = parse_fail_cache().lock() {
+        cache.clear();
+    }
+}
+
+/// Emit `cert_max_integrity_parse_failed`.
+///
+/// Rate-limited: repeated calls with the same cert fingerprint inside a
+/// 60-second window are suppressed (≤256 fingerprints tracked at once).
+pub fn emit_cert_ext_parse_failed(pam_user: &str, ident: &CertIdent, err: &str) {
+    if !should_emit_parse_failed(&ident.fingerprint) {
+        return;
+    }
+    tracing::warn!(
+        target: "mac.audit",
+        F_event = EVENT_CERT_EXT_PARSE_FAILED,
+        F_pam_user = pam_user,
+        F_cert_serial = ident.serial.as_str(),
+        F_cert_issuer = ident.issuer.as_str(),
+        F_cert_cn = ident.cn.as_str(),
+        F_cert_fingerprint = ident.fingerprint.as_str(),
+        F_error = err,
+        "MAX_INTEGRITY ext parse failed"
+    );
+}
+
+/// Emit `cert_max_integrity_categories_above_32bit` — diagnostic only.
 pub fn emit_categories_above_32bit(categories: u64) {
     tracing::info!(
         target: "mac.audit",
-        F_event = EVENT_MAC_CATEGORIES_ABOVE_32BIT,
+        F_event = EVENT_CERT_MAX_INT_CATS_ABOVE_32BIT,
         F_categories = format!("{categories:016x}").as_str(),
     );
 }

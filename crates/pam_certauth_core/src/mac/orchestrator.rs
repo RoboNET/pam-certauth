@@ -106,11 +106,15 @@ pub fn apply_session_policy(
                 audit::emit_mac_runtime_required(&format!("{runtime:?}"));
                 return Err(OrchestratorError::RuntimeRequired(runtime));
             }
-            CertIntegrityMode::Optional | CertIntegrityMode::Ignore => {
+            CertIntegrityMode::Optional => {
                 audit::emit_mac_skipped("runtime_inactive");
                 return Ok(Outcome {
                     kind: OutcomeKind::Skipped("runtime_inactive"),
                 });
+            }
+            CertIntegrityMode::Ignore => {
+                // Unreachable: step (1) already returned for `Ignore`.
+                unreachable!("policy=Ignore handled in step (1)");
             }
         }
     }

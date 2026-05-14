@@ -8,10 +8,10 @@
 use std::sync::{Arc, Mutex};
 
 use pam_certauth_core::mac::audit::{
-    self, EVENT_APPLY_FAILED, EVENT_CERT_LACKS_EXT, EVENT_HOMEDIR_LABEL_ABOVE,
-    EVENT_INTEGRITY_APPLIED, EVENT_INTEGRITY_CAPPED, EVENT_MAC_CAPS_MISSING,
-    EVENT_MAC_CATEGORIES_ABOVE_32BIT, EVENT_MAC_FALLBACK_USED, EVENT_MAC_RUNTIME_REQUIRED,
-    EVENT_MAC_SKIPPED, EVENT_MAC_USER_UNKNOWN,
+    self, EVENT_CERT_LACKS_EXT, EVENT_CERT_MAX_INT_CATS_ABOVE_32BIT, EVENT_HOMEDIR_LABEL_ABOVE,
+    EVENT_INTEGRITY_APPLIED, EVENT_INTEGRITY_CAPPED, EVENT_MAC_APPLY_FAILED,
+    EVENT_MAC_CAPS_MISSING, EVENT_MAC_FALLBACK_USED, EVENT_MAC_RUNTIME_REQUIRED, EVENT_MAC_SKIPPED,
+    EVENT_MAC_USER_UNKNOWN,
 };
 use pam_certauth_core::mac::IntegrityLabel;
 use pam_certauth_core::x509::CertIdent;
@@ -200,7 +200,7 @@ fn emit_apply_failed_includes_detail() {
     let ident = sample_ident();
     let events = run_capture(|| audit::emit_apply_failed(&ident, "alice", "login", "parsec rc=-1"));
     assert_eq!(events.len(), 1);
-    assert_event(&events[0], EVENT_APPLY_FAILED);
+    assert_event(&events[0], EVENT_MAC_APPLY_FAILED);
     let names: Vec<&str> = events[0].fields.iter().map(|(k, _)| k.as_str()).collect();
     assert!(names.contains(&"F_detail"));
 }
@@ -236,5 +236,5 @@ fn emit_fallback_used_event() {
 fn emit_categories_above_32bit_event() {
     let events = run_capture(|| audit::emit_categories_above_32bit(0x1_0000_0001));
     assert_eq!(events.len(), 1);
-    assert_event(&events[0], EVENT_MAC_CATEGORIES_ABOVE_32BIT);
+    assert_event(&events[0], EVENT_CERT_MAX_INT_CATS_ABOVE_32BIT);
 }
