@@ -91,8 +91,8 @@ pub fn sha256_hex(input: &str) -> String {
     let digest = Sha256::digest(input.as_bytes());
     let mut out = String::with_capacity(64);
     for b in digest {
-        // write! into String never fails.
-        let _ = write!(out, "{b:02x}");
+        // write! into String never fails (infallible alloc on a pre-reserved buffer).
+        _ = write!(out, "{b:02x}");
     }
     out
 }

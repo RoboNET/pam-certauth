@@ -77,6 +77,7 @@ unimplemented = "deny"
 undocumented_unsafe_blocks = "deny"
 missing_safety_doc = "deny"
 multiple_unsafe_ops_per_block = "deny"
+let_underscore_must_use = "deny"
 # Pointer / cast hygiene.
 transmute_ptr_to_ptr = "warn"
 ptr_as_ptr = "warn"

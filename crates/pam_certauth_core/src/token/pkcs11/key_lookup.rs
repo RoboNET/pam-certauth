@@ -93,7 +93,7 @@ fn cka_id_log_prefix(id: &[u8]) -> String {
     let mut out = String::with_capacity(take * 2 + 4);
     for byte in &id[..take] {
         // Hex formatting into a String never errors.
-        let _ = write!(out, "{byte:02x}");
+        _ = write!(out, "{byte:02x}");
     }
     if id.len() > take {
         out.push_str("...");

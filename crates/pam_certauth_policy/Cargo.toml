@@ -26,4 +26,5 @@ unused_must_use = "deny"
 all = { level = "deny", priority = -1 }
 # Hardening — policy is pure parsing, never touches FFI.
 let_underscore_lock = "deny"
+let_underscore_must_use = "deny"
 exit = "warn"

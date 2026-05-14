@@ -32,11 +32,14 @@ pub async fn install_signal_handlers(token: CancellationToken) -> anyhow::Result
 /// Wait for `handles` to finish or `budget` to elapse, then unlink the
 /// socket file. Always succeeds.
 pub async fn graceful_finish(handles: Vec<JoinHandle<()>>, budget: Duration, socket_path: &Path) {
-    let _ = tokio::time::timeout(budget, async {
+    // Timeout error means budget elapsed; that's the explicit fall-through.
+    _ = tokio::time::timeout(budget, async {
         for h in handles {
-            let _ = h.await;
+            // JoinError on shutdown is expected when tasks were cancelled.
+            _ = h.await;
         }
     })
     .await;
-    let _ = std::fs::remove_file(socket_path);
+    // Socket may already be gone (peer cleanup, EROFS, ...); best-effort.
+    _ = std::fs::remove_file(socket_path);
 }

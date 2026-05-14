@@ -48,14 +48,14 @@ impl HostIdSource for CustomCommandSource {
         let stdout_handle = stdout.map(|mut s| {
             thread::spawn(move || {
                 let mut buf = Vec::new();
-                let _ = s.read_to_end(&mut buf);
+                _ = s.read_to_end(&mut buf);
                 buf
             })
         });
         let stderr_handle = stderr.map(|mut s| {
             thread::spawn(move || {
                 let mut buf = Vec::new();
-                let _ = s.read_to_end(&mut buf);
+                _ = s.read_to_end(&mut buf);
                 buf
             })
         });
@@ -67,24 +67,24 @@ impl HostIdSource for CustomCommandSource {
                 Ok(None) => {
                     if Instant::now() >= deadline {
                         // Kill and reap so we don't leak the child PID.
-                        let _ = child.kill();
-                        let _ = child.wait();
+                        _ = child.kill();
+                        _ = child.wait();
                         // Drain reader threads to release their fds; the
                         // pipes will be closed by the kernel when the
                         // process is gone.
                         if let Some(h) = stdout_handle {
-                            let _ = h.join();
+                            _ = h.join();
                         }
                         if let Some(h) = stderr_handle {
-                            let _ = h.join();
+                            _ = h.join();
                         }
                         return Err(HostIdentityError::CommandTimeout);
                     }
                     thread::sleep(Duration::from_millis(50));
                 }
                 Err(source) => {
-                    let _ = child.kill();
-                    let _ = child.wait();
+                    _ = child.kill();
+                    _ = child.wait();
                     return Err(HostIdentityError::Read {
                         path: self.cmd.clone(),
                         source,

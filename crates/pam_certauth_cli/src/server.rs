@@ -69,7 +69,7 @@ pub async fn bind_listener(path: &Path) -> io::Result<UnixListener> {
     // Safe: tmp_path embeds our PID, so any leftover here is from a
     // prior aborted run of THIS process — never from a concurrent
     // observer. We deliberately drop the `if path.exists()` race.
-    let _ = std::fs::remove_file(&tmp_path);
+    _ = std::fs::remove_file(&tmp_path);
 
     let listener = UnixListener::bind(&tmp_path)?;
     let mut perms = std::fs::metadata(&tmp_path)?.permissions();
@@ -275,7 +275,9 @@ pub async fn serve_connection_with(
                     message: format!("idle timeout after {}s", idle_timeout.as_secs()),
                 })
                 .map_err(ServerError::Encode)?;
-                let _ = write.write_all(&bytes).await;
+                // Best-effort: peer may have already closed.  We're about to
+                // return Ok(()) and drop the half anyway.
+                _ = write.write_all(&bytes).await;
                 return Ok(());
             }
         };
@@ -287,7 +289,9 @@ pub async fn serve_connection_with(
                     message: format!("frame exceeds {MAX_FRAME_BYTES} bytes"),
                 })
                 .map_err(ServerError::Encode)?;
-                let _ = write.write_all(&bytes).await;
+                // Best-effort: peer may have already closed.  We're about to
+                // return Ok(()) and drop the half anyway.
+                _ = write.write_all(&bytes).await;
                 return Ok(());
             }
             FrameOutcome::Frame => {}
@@ -300,7 +304,9 @@ pub async fn serve_connection_with(
                     message: "frame is not valid UTF-8".into(),
                 })
                 .map_err(ServerError::Encode)?;
-                let _ = write.write_all(&bytes).await;
+                // Best-effort: peer may have already closed.  We're about to
+                // return Ok(()) and drop the half anyway.
+                _ = write.write_all(&bytes).await;
                 return Ok(());
             }
         };
@@ -313,7 +319,9 @@ pub async fn serve_connection_with(
                     message: format!("{e}"),
                 })
                 .map_err(ServerError::Encode)?;
-                let _ = write.write_all(&bytes).await;
+                // Best-effort: peer may have already closed.  We're about to
+                // return Ok(()) and drop the half anyway.
+                _ = write.write_all(&bytes).await;
                 return Ok(());
             }
         };

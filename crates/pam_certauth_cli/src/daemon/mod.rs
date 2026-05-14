@@ -322,7 +322,9 @@ async fn run_async(args: DaemonArgs) -> anyhow::Result<()> {
     let mut notify_handle = notify::NotifyHandle::system_default();
     notify::notify_ready(&mut notify_handle);
 
-    let _ = shutdown::install_signal_handlers(shutdown_tok.clone()).await;
+    // Signal handler install is best-effort; failures fall back to default
+    // tokio cancellation via shutdown_tok.
+    _ = shutdown::install_signal_handlers(shutdown_tok.clone()).await;
 
     let mut handles = vec![accept_handle, state_handle, action_handle];
     if let Some(h) = udev_handle {
@@ -336,10 +338,10 @@ async fn run_async(args: DaemonArgs) -> anyhow::Result<()> {
     // Keep `daemon_lock` visibly used so a future refactor cannot
     // silently demote it to `let _ = DaemonLock::acquire(...)` (which
     // would drop the guard immediately and lose the singleton flock).
-    let _ = &daemon_lock;
+    _ = &daemon_lock;
 
     // Reference unused symbols to silence dead-code in the binary build.
-    let _ = registry::ActiveSession {
+    _ = registry::ActiveSession {
         session_id: uuid::Uuid::nil(),
         pam_user: String::new(),
         pam_service: String::new(),

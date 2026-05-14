@@ -37,9 +37,11 @@ impl TestServerHandle {
     /// Cancel and wait for all tasks. Best-effort.
     pub async fn shutdown_and_join(self) {
         self.shutdown.cancel();
-        let _ = self.accept_handle.await;
-        let _ = self.state_handle.await;
-        let _ = self.action_handle.await;
+        // Best-effort join: cancellation may abort tasks; we don't care
+        // which arm of JoinError surfaces here.
+        _ = self.accept_handle.await;
+        _ = self.state_handle.await;
+        _ = self.action_handle.await;
     }
 }
 

@@ -107,7 +107,8 @@ fn write_pem(dir: &std::path::Path, name: &str) -> PathBuf {
 fn with_anchor_and_extra(anchor: &std::path::Path, extra: &str) -> String {
     use std::fmt::Write as _;
     let mut s = String::from(base_config());
-    let _ = write!(
+    // write! into String is infallible.
+    _ = write!(
         &mut s,
         "\n[trust]\nanchors = [{:?}]\n",
         anchor.to_string_lossy()

@@ -63,7 +63,9 @@ impl Write for &SyslogWriter {
         let line = String::from_utf8_lossy(buf);
         for piece in line.lines().filter(|l| !l.trim().is_empty()) {
             if let Ok(mut g) = self.inner.lock() {
-                let _ = g.info(piece.to_string());
+                // Syslog write failure: nothing we can usefully fall back to
+                // from inside a tracing writer; drop the line.
+                _ = g.info(piece.to_string());
             }
         }
         Ok(buf.len())

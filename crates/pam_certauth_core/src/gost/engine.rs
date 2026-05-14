@@ -155,7 +155,8 @@ pub fn is_available() -> bool {
 /// "can we run GOST tests now?".
 #[must_use]
 pub fn is_available_after_attempt(path: Option<&Path>) -> bool {
-    let _ = ensure_loaded_with_path(path);
+    // Intentionally discard the Result: caller only wants the boolean gate.
+    _ = ensure_loaded_with_path(path);
     is_available()
 }
 

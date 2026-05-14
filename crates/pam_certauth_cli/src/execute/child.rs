@@ -109,7 +109,9 @@ pub fn run_child_with_timeout(
             Ok(None) => {
                 if let Some(t) = timeout {
                     if start.elapsed() >= t {
-                        let _ = kill(pgid_neg, Signal::SIGTERM);
+                        // Best-effort signals to the process group: child may
+                        // already be gone (ESRCH) and that's fine.
+                        _ = kill(pgid_neg, Signal::SIGTERM);
                         let kill_deadline = Instant::now() + Duration::from_secs(5);
                         loop {
                             match child.try_wait() {
@@ -118,8 +120,8 @@ pub fn run_child_with_timeout(
                                 _ => std::thread::sleep(Duration::from_millis(50)),
                             }
                         }
-                        let _ = kill(pgid_neg, Signal::SIGKILL);
-                        let _ = child.wait();
+                        _ = kill(pgid_neg, Signal::SIGKILL);
+                        _ = child.wait();
                         break Ok(ChildResult {
                             exit_code: TIMEOUT_EXIT_CODE,
                         });
@@ -154,7 +156,8 @@ impl SignalForwarder {
         std::thread::spawn(move || {
             for sig in &mut signals {
                 if let Ok(s) = Signal::try_from(sig) {
-                    let _ = kill(pgid, s);
+                    // Best-effort signal forwarding; ESRCH on race is fine.
+                    _ = kill(pgid, s);
                 }
             }
         });

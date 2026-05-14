@@ -40,6 +40,7 @@ pub fn init() -> Result<()> {
         .with(journald_layer)
         .try_init()
         .map_err(|e| anyhow::anyhow!("{e}"))?;
-    let _ = INIT.set(());
+    // OnceCell::set returns Err only if already set; we treat re-init as a noop.
+    _ = INIT.set(());
     Ok(())
 }

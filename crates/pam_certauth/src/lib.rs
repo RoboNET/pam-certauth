@@ -79,7 +79,8 @@ mod host_identity {
         let hash = Sha256::digest(normalized.as_bytes());
         let mut hex = String::with_capacity(64);
         for byte in hash {
-            let _ = write!(hex, "{byte:02x}");
+            // write! into String is infallible.
+            _ = write!(hex, "{byte:02x}");
         }
         (kind, raw, hex)
     }

@@ -86,7 +86,13 @@ pub fn apply_caps(_caps: &RlimitCaps) -> Result<(), nix::errno::Errno> {
 }
 
 #[cfg(test)]
-#[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
+#[allow(
+    clippy::expect_used,
+    clippy::unwrap_used,
+    clippy::panic,
+    clippy::let_underscore_must_use,
+    reason = "test code: best-effort rlimit restore on teardown."
+)]
 mod tests {
     use super::*;
 

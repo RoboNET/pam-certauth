@@ -192,7 +192,9 @@ fn write_pid_through(lock: &Flock<File>, path: &Path) -> Result<(), LockError> {
 
 /// Best-effort parse of the PID stored inside an existing lock file.
 fn read_pid_from(mut file: File) -> Option<i32> {
-    let _ = file.seek(SeekFrom::Start(0));
+    // Seek failure simply means we read from current pos; either way the
+    // best-effort PID parse below will return None on garbage.
+    _ = file.seek(SeekFrom::Start(0));
     let mut buf = String::new();
     file.read_to_string(&mut buf).ok()?;
     buf.trim().parse::<i32>().ok()

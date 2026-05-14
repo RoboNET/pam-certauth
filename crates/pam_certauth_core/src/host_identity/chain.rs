@@ -102,7 +102,8 @@ fn resolved(source_kind: HostIdSourceKind, raw: String, normalized: String) -> R
     let hash = Sha256::digest(normalized.as_bytes());
     let mut hash_hex = String::with_capacity(64);
     for byte in hash {
-        let _ = write!(hash_hex, "{byte:02x}");
+        // write! into String is infallible.
+        _ = write!(hash_hex, "{byte:02x}");
     }
     ResolvedHostId {
         source_kind,

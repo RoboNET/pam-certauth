@@ -265,13 +265,15 @@ fn supervise_parent(args: SuperviseArgs) -> Result<HookOutcome, HookError> {
     let stderr_handle = spawn_reader("pam_certauth.hook.stderr", Arc::clone(&stderr_state))?;
 
     // Best-effort: ensure pgid == child pid (race with child's setpgid).
-    let _ = nix::unistd::setpgid(child, child);
+    // EACCES is expected if child already exec'd; nothing to recover.
+    _ = nix::unistd::setpgid(child, child);
 
     let wait_outcome = wait_with_timeout(child, child, timeout)?;
 
     // After child exits, write ends are closed; readers see EOF.
-    let _ = stdout_handle.join();
-    let _ = stderr_handle.join();
+    // Thread join errors are propagated panics; we already logged via tracing.
+    _ = stdout_handle.join();
+    _ = stderr_handle.join();
 
     let stdout_lines = stdout_state.lock().map_or(0, |g| g.line_count());
     let stderr_lines = stderr_state.lock().map_or(0, |g| g.line_count());
@@ -321,7 +323,8 @@ fn spawn_reader(
         .name(name.to_string())
         .spawn(move || {
             if let Ok(mut g) = state.lock() {
-                let _ = g.drain();
+                // Drain to EOF; partial reads are best-effort-logged inside.
+                _ = g.drain();
             }
         })
         .map_err(|_| HookError::ChildSetup {
@@ -330,7 +333,13 @@ fn spawn_reader(
 }
 
 #[cfg(test)]
-#[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
+#[allow(
+    clippy::expect_used,
+    clippy::unwrap_used,
+    clippy::panic,
+    clippy::let_underscore_must_use,
+    reason = "test code: `let _ = ...` is the conventional construct-and-drop check."
+)]
 mod tests {
     use super::*;
 

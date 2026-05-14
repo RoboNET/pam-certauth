@@ -29,7 +29,8 @@ struct PersistCleanupGuard<'a> {
 impl Drop for PersistCleanupGuard<'_> {
     fn drop(&mut self) {
         if self.armed {
-            let _ = std::fs::remove_file(self.path);
+            // Cleanup is best-effort in Drop; can't return errors from Drop.
+            _ = std::fs::remove_file(self.path);
         }
     }
 }
