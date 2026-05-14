@@ -40,8 +40,8 @@
 - `crates/pam_certauth_core/src/config/raw.rs` — `RawMacPolicy`.
 - `crates/pam_certauth_core/src/config/validated.rs` — `MacPolicy`.
 - `crates/pam_certauth/src/lib.rs` (или соответствующий PAM entry) — hook `pam_sm_open_session`.
-- `crates/pam_certauth_monitord/src/server.rs` — атомарный rename socket + label.
-- `crates/pam_certauth_monitord/src/state.rs` — verify irelax при write `sessions.json`.
+- `crates/pam_certauth_cli/src/server.rs` — атомарный rename socket + label.
+- `crates/pam_certauth_cli/src/state.rs` — verify irelax при write `sessions.json`.
 - `debian/postinst` — фрагмент `pdpl-file`.
 - `debian/pam-certauth-monitord.service` (или соответствующая unit) — `RuntimeDirectory=pam_certauth`.
 - `docs/install.md`, `docs/cert-issuance.md`, `docs/configuration.md`, `docs/threat-model.md`, `docs/changelog.md`.
@@ -75,7 +75,7 @@ python3 -c 'import uuid; u = uuid.uuid4(); print("UUID:", u); print("OID:", "2.2
 ```rust
 /// OID of the `pam_cert_max_integrity` X.509 extension.
 ///
-/// `extnValue ::= SEQUENCE { level INTEGER (0..63), categories BIT STRING DEFAULT ''B }`.
+/// `extnValue ::= SEQUENCE { level INTEGER (-128..127), categories BIT STRING DEFAULT ''B }`.
 /// Marks the upper bound of Astra МКЦ integrity for the engineer session.
 /// Non-critical. See `docs/superpowers/specs/2026-05-14-mac-integrity-design.md`.
 pub const MAX_INTEGRITY_OID: &str = "<MAX_OID>";
@@ -98,14 +98,14 @@ git commit -m "feat(mac): allocate MAX_INTEGRITY OID for Astra integrity extensi
 **Files:**
 - Modify: `crates/pam_certauth_core/Cargo.toml` (объявление features)
 - Modify: `crates/pam_certauth/Cargo.toml` (re-export astra-mac, mac-tests)
-- Modify: `crates/pam_certauth_monitord/Cargo.toml` (то же)
+- Modify: `crates/pam_certauth_cli/Cargo.toml` (то же)
 - Create: `crates/pam_certauth_core/build.rs`
 
-`pam_certauth` и `pam_certauth_monitord` объявляют features прокидыванием
+`pam_certauth` и `pam_certauth_cli` объявляют features прокидыванием
 через workspace deps:
 
 ```toml
-# crates/pam_certauth/Cargo.toml + crates/pam_certauth_monitord/Cargo.toml
+# crates/pam_certauth/Cargo.toml + crates/pam_certauth_cli/Cargo.toml
 [features]
 default = []
 astra-mac = ["pam_certauth_core/astra-mac"]
@@ -2648,9 +2648,9 @@ git commit -m "feat(mac): stub build rejects cert_integrity=required at config l
 ### Task 6.1: Atomic rename + irelax на monitord.sock
 
 **Files:**
-- Modify: `crates/pam_certauth_monitord/src/server.rs`
-- Modify: `crates/pam_certauth_monitord/Cargo.toml`
-- Create: `crates/pam_certauth_monitord/tests/mac_socket_label.rs`
+- Modify: `crates/pam_certauth_cli/src/server.rs`
+- Modify: `crates/pam_certauth_cli/Cargo.toml`
+- Create: `crates/pam_certauth_cli/tests/mac_socket_label.rs`
 
 - [ ] **Step 1: Failing test**
 
@@ -2672,7 +2672,7 @@ fn bind_calls_set_file_label_with_irelax_before_rename() {
         })
         .return_once(|_, _, _| Ok(()));
     // call into helper
-    pam_certauth_monitord::server::bind_with_label(&final_path, &mock).unwrap();
+    pam_certauth_cli::server::bind_with_label(&final_path, &mock).unwrap();
     assert!(final_path.exists());
 }
 ```
@@ -2720,13 +2720,13 @@ astra-mac = ["pam_certauth_core/astra-mac"]
 mac-tests = ["pam_certauth_core/mac-tests"]
 ```
 
-- [ ] **Step 4: Run** — `cargo test -p pam_certauth_monitord --features mac-tests --test mac_socket_label`
+- [ ] **Step 4: Run** — `cargo test -p pam_certauth_cli --features mac-tests --test mac_socket_label`
 Expected: PASS.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add crates/pam_certauth_monitord/
+git add crates/pam_certauth_cli/
 git commit -m "feat(mac): atomic rename + irelax label on monitord.sock"
 ```
 
@@ -2741,10 +2741,10 @@ git commit -m "feat(mac): atomic rename + irelax label on monitord.sock"
 ещё-не-видимом tempfile, дальше `persist()` (rename).
 
 **Files:**
-- Modify: `crates/pam_certauth_monitord/src/state.rs`
+- Modify: `crates/pam_certauth_cli/src/state.rs`
 - Modify: `crates/pam_certauth_core/src/mac/backend.rs` — добавить
   `set_fd_label` в trait
-- Create: `crates/pam_certauth_monitord/tests/mac_sessions_file.rs`
+- Create: `crates/pam_certauth_cli/tests/mac_sessions_file.rs`
 
 - [ ] **Step 0: Дополнить `MacBackend` trait методом `set_fd_label`**
 
@@ -2782,7 +2782,7 @@ fn write_atomic_labels_fd_before_rename() {
     m.expect_set_fd_label()
         .withf(|fd, l, irelax| *fd > 0 && l.level == 0 && *irelax)
         .return_once(|_, _, _| Ok(()));
-    pam_certauth_monitord::state::write_sessions_atomic(&path, b"{}", &m).unwrap();
+    pam_certauth_cli::state::write_sessions_atomic(&path, b"{}", &m).unwrap();
     assert_eq!(std::fs::read(&path).unwrap(), b"{}");
 }
 ```
@@ -2833,7 +2833,7 @@ pub fn write_sessions_atomic<B: pam_certauth_core::mac::backend::MacBackend>(
 - [ ] **Step 5: Commit**
 
 ```bash
-git add crates/pam_certauth_monitord/
+git add crates/pam_certauth_cli/
 git commit -m "feat(mac): best-effort irelax verify on sessions.json writes"
 ```
 
@@ -3455,7 +3455,7 @@ Expected: pass.
 - `crates/pam_certauth_core/src/x509/max_integrity_ext.rs`
 - `crates/pam_certauth_core/src/config/{raw,validated}.rs` (diff)
 - `crates/pam_certauth/src/lib.rs` (diff)
-- `crates/pam_certauth_monitord/src/{server,state}.rs` (diff)
+- `crates/pam_certauth_cli/src/{server,state}.rs` (diff)
 - `debian/postinst`
 - `vagrant/scripts/test-mac.sh`
 

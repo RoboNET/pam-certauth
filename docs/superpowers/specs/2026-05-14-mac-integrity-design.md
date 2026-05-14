@@ -565,7 +565,7 @@ Stock `pam_mkhomedir.so` и `pam_parsec_mac.so` остаются в `/etc/pam.d/
 ### 7.1 Feature flag
 
 Build-time feature `astra-mac` в `pam_certauth_core` (re-export в
-`pam_certauth` и `pam_certauth_monitord`):
+`pam_certauth` и `pam_certauth_cli`):
 
 ```toml
 # crates/pam_certauth_core/Cargo.toml
