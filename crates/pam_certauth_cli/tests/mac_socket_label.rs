@@ -23,5 +23,8 @@ fn bind_calls_set_file_label_with_irelax_before_rename() {
         .return_once(|_, _, _| Ok(()));
 
     pam_certauth_cli::server::bind_with_label(&final_path, &mock).unwrap();
-    assert!(final_path.exists(), "final socket path must exist post-rename");
+    assert!(
+        final_path.exists(),
+        "final socket path must exist post-rename"
+    );
 }
