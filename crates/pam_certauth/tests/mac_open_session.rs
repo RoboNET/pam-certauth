@@ -1,11 +1,11 @@
-#![cfg(feature = "mac-tests")]
-#![allow(clippy::unwrap_used)]
-
 //! Smoke test for the open-session MAC pipeline.  Drives
 //! [`pam_certauth::session::run_open_session_pipeline_with_backend`]
 //! through the same code path the cdylib's `pam_sm_open_session`
 //! invokes, using a `MockMacBackend` to assert the orchestrator was
 //! wired up correctly.
+
+#![cfg(feature = "mac-tests")]
+#![allow(clippy::unwrap_used)]
 
 use std::sync::Mutex;
 
