@@ -3,9 +3,12 @@
 //! enabled (the linker directive lives in `build.rs`).
 //!
 //! Verified symbols (Astra SE 1.8.4, `nm -D /usr/lib/libpdp.so.3`):
-//! `pdp_set_pid`, `pdp_get_fd`, `pdp_set_fd`, `pdp_set_path`, `pdp_get_lpath`,
-//! `pdpl_get_from_text`, `pdpl_get_text`, `pdpl_put`, `parsec_strict_mode`,
-//! `parsec_enabled`, `parsec_astramode`, `pdp_get_current_ilev`.
+//! `pdp_set_pid`, `pdp_get_pid`, `pdp_get_fd`, `pdp_set_fd`, `pdp_set_path`,
+//! `pdp_get_lpath`, `pdpl_get_from_text`, `pdpl_get_text`, `pdpl_put`,
+//! `parsec_strict_mode`, `parsec_enabled`, `parsec_astramode`,
+//! `pdp_get_current_ilev`.  All `pdp_get_*` and `pdpl_get_*` are
+//! return-pointer style per `pdp.h` (NULL on failure); `pdp_set_*` returns
+//! `int` (0 on success).
 //!
 //! NB: `pdp_set_current` is an inline wrapper around `pdp_set_pid(0, l)` in
 //! `pdp.h` — there is no `pdp_set_current` symbol in the `.so`.  We always
@@ -40,18 +43,18 @@ use crate::mac::{IntegrityLabel, MacError};
 #[link(name = "pdp")]
 unsafe extern "C" {
     fn pdp_set_pid(pid: libc::pid_t, label: *const c_void) -> c_int;
-    fn pdp_get_pid(pid: libc::pid_t, label: *mut *mut c_void) -> c_int;
+    fn pdp_get_pid(pid: libc::pid_t) -> *mut c_void;
     fn pdp_set_fd(fd: c_int, label: *const c_void) -> c_int;
+    fn pdp_get_fd(fd: c_int) -> *mut c_void;
     fn pdp_set_path(path: *const c_char, label: *const c_void) -> c_int;
-    fn pdp_get_lpath(path: *const c_char, label: *mut *mut c_void) -> c_int;
-    fn pdp_get_peer_label(fd: c_int, label: *mut *mut c_void) -> c_int;
+    fn pdp_get_lpath(path: *const c_char) -> *mut c_void;
+    fn pdp_get_peer_label(sockfd: c_int) -> *mut c_void;
 
-    fn pdpl_get_from_text(text: *const c_char, label: *mut *mut c_void) -> c_int;
-    fn pdpl_get_text(label: *const c_void, text: *mut *mut c_char) -> c_int;
+    fn pdpl_get_from_text(text: *const c_char) -> *mut c_void;
+    fn pdpl_get_text(label: *const c_void, flags: c_int) -> *mut c_char;
     fn pdpl_put(label: *mut c_void);
 
     fn parsec_strict_mode() -> c_int;
-    fn parsec_enabled() -> c_int;
 
     fn getmicnam(name: *const c_char) -> *mut MicUser;
     fn freemicent_r(ent: *mut MicUser);
@@ -88,7 +91,6 @@ struct MicUser {
 /// [`check_chmac_capability`]; if the struct turns out narrower (e.g. `u32`
 /// per field), the bit-3 mask still works but layout must be re-checked.
 #[repr(C)]
-#[derive(Default)]
 #[allow(clippy::struct_field_names)]
 struct ParsecCaps {
     cap_effective: u64,
@@ -114,16 +116,14 @@ impl Pdpl {
         let text = encode_label_text(label, flags);
         let c = CString::new(text)
             .map_err(|e| MacError::TextFormat(format!("interior NUL in label text: {e}")))?;
-        let mut raw: *mut c_void = ptr::null_mut();
         // SAFETY: `c.as_ptr()` is a valid NUL-terminated C string owned by
-        // `c` for the duration of the call; `&mut raw` is a valid pointer to
-        // a `*mut c_void`.  libpdp writes either a fresh allocation or
-        // leaves the pointer untouched on error.
-        let rc = unsafe { pdpl_get_from_text(c.as_ptr(), &raw mut raw) };
-        if rc != 0 || raw.is_null() {
+        // `c` for the duration of the call; libpdp returns a fresh
+        // allocation or NULL on error per pdp.h.
+        let raw = unsafe { pdpl_get_from_text(c.as_ptr()) };
+        if raw.is_null() {
             return Err(MacError::Parsec {
                 op: "pdpl_get_from_text",
-                rc,
+                rc: -1,
             });
         }
         Ok(Self(raw))
@@ -132,15 +132,14 @@ impl Pdpl {
     /// Decode this label into an [`IntegrityLabel`] via `pdpl_get_text` +
     /// the pure-Rust [`decode_label_text`] codec.
     fn to_label(&self) -> Result<IntegrityLabel, MacError> {
-        let mut raw: *mut c_char = ptr::null_mut();
         // SAFETY: `self.0` is a valid `pdpl_t` (constructed via
-        // `pdpl_get_from_text` and not yet freed); libpdp allocates a fresh
-        // C string and stores its pointer through `&mut raw`.
-        let rc = unsafe { pdpl_get_text(self.0, &raw mut raw) };
-        if rc != 0 || raw.is_null() {
+        // `pdpl_get_from_text` and not yet freed); libpdp returns either a
+        // freshly malloc'd C string or NULL on failure (pdp.h).
+        let raw = unsafe { pdpl_get_text(self.0, 0) };
+        if raw.is_null() {
             return Err(MacError::Parsec {
                 op: "pdpl_get_text",
-                rc,
+                rc: -1,
             });
         }
         // SAFETY: libpdp guarantees `raw` is a valid NUL-terminated C
@@ -186,11 +185,11 @@ fn path_to_cstring(p: &Path) -> Result<CString, MacError> {
 #[must_use]
 pub fn probe_runtime() -> MacRuntime {
     // SAFETY: parameterless libpdp call; safe in all states.
-    let enabled = unsafe { parsec_enabled() };
-    if enabled == 0 {
-        MacRuntime::Unavailable
-    } else {
-        MacRuntime::Active
+    let strict = unsafe { parsec_strict_mode() };
+    match strict {
+        1 => MacRuntime::Active,
+        0 => MacRuntime::Disabled,
+        _ => MacRuntime::Unavailable,
     }
 }
 
@@ -221,13 +220,17 @@ pub fn set_proc(label: IntegrityLabel) -> Result<(), MacError> {
 /// capability is truly missing).
 #[must_use]
 pub fn check_chmac_capability() -> bool {
-    let mut caps = ParsecCaps::default();
-    // SAFETY: `&mut caps` is a valid pointer to a properly-aligned
-    // `ParsecCaps`; libpdp writes the current process's caps on success.
-    let rc = unsafe { parsec_capget(0, &raw mut caps) };
+    use std::mem::MaybeUninit;
+    let mut caps: MaybeUninit<ParsecCaps> = MaybeUninit::zeroed();
+    // SAFETY: `parsec_capget` accepts an out-pointer to a `parsec_caps_t`
+    // and writes the effective/inheritable/permitted bitsets on success.
+    // `pid=0` selects the calling process per libparsec convention.
+    let rc = unsafe { parsec_capget(0, caps.as_mut_ptr()) };
     if rc != 0 {
         return false;
     }
+    // SAFETY: rc==0 ⇒ libpdp has fully initialised the struct.
+    let caps = unsafe { caps.assume_init() };
     (caps.cap_effective & (1u64 << PARSEC_CAP_CHMAC)) != 0
 }
 
@@ -268,14 +271,13 @@ pub fn get_user_mnkc(user: &str) -> Result<IntegrityLabel, MacError> {
 /// Returns [`MacError::Parsec`] on libpdp failure.
 pub fn get_file_label(path: &Path) -> Result<IntegrityLabel, MacError> {
     let c = path_to_cstring(path)?;
-    let mut raw: *mut c_void = ptr::null_mut();
     // SAFETY: `c.as_ptr()` is valid for the duration of the call; libpdp
-    // writes a fresh allocation through `&mut raw` on success.
-    let rc = unsafe { pdp_get_lpath(c.as_ptr(), &raw mut raw) };
-    if rc != 0 || raw.is_null() {
+    // returns either a fresh `pdpl_t` allocation or NULL on failure.
+    let raw = unsafe { pdp_get_lpath(c.as_ptr()) };
+    if raw.is_null() {
         return Err(MacError::Parsec {
             op: "pdp_get_lpath",
-            rc,
+            rc: -1,
         });
     }
     let p = Pdpl(raw);
@@ -328,8 +330,11 @@ pub fn set_fd_label(fd: RawFd, label: IntegrityLabel, irelax: bool) -> Result<()
 // declarations early.  These do not get called.
 #[allow(dead_code)]
 fn _unused_link_anchor() {
-    // SAFETY: never called.
-    let _ = pdp_get_pid as unsafe extern "C" fn(_, _) -> _;
-    let _ = pdp_get_peer_label as unsafe extern "C" fn(_, _) -> _;
+    // SAFETY: never called; references kept solely to anchor symbols for
+    // the linker and surface missing declarations early during
+    // `cargo check --features astra-mac`.
+    let _ = pdp_get_pid as unsafe extern "C" fn(_) -> _;
+    let _ = pdp_get_fd as unsafe extern "C" fn(_) -> _;
+    let _ = pdp_get_peer_label as unsafe extern "C" fn(_) -> _;
     let _ = parsec_strict_mode as unsafe extern "C" fn() -> _;
 }

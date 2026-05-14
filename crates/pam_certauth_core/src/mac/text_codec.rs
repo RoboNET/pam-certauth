@@ -61,35 +61,25 @@ pub(crate) fn encode_label_text(l: IntegrityLabel, flags: &[McFlag]) -> String {
 
 /// Decode a libpdp text-format label `"conf:integ:cat_hex:flags:linear"`.
 ///
-/// Empty `conf`/`integ` fields default to zero.  Bad hex or out-of-range
-/// linear levels return [`MacError::TextFormat`].
+/// Empty or missing trailing fields default to zero.  Bad hex or
+/// out-of-range linear levels return [`MacError::TextFormat`].
 ///
 /// # Errors
-/// Returns [`MacError::TextFormat`] if the input does not split into exactly
-/// five colon-separated fields, if `cat_hex` is not valid hex, or if `linear`
-/// is not a valid `i8`.
+/// Returns [`MacError::TextFormat`] if `cat_hex` is non-empty but not valid
+/// hex, or if `linear` is non-empty but not a valid `i8`.
 pub(crate) fn decode_label_text(s: &str) -> Result<IntegrityLabel, MacError> {
+    let s = s.trim();
     let parts: Vec<&str> = s.splitn(5, ':').collect();
-    if parts.len() != 5 {
-        return Err(MacError::TextFormat(format!(
-            "expected 5 colon-separated fields, got {}",
-            parts.len()
-        )));
-    }
-    let cat_hex = parts[2];
-    let categories = if cat_hex.is_empty() {
-        0u64
-    } else {
-        u64::from_str_radix(cat_hex, 16)
-            .map_err(|e| MacError::TextFormat(format!("bad cat hex {cat_hex:?}: {e}")))?
+    let categories = match parts.get(2) {
+        None | Some(&"") => 0_u64,
+        Some(hex) => u64::from_str_radix(hex.trim_start_matches("0x"), 16)
+            .map_err(|e| MacError::TextFormat(format!("bad cat hex {hex:?}: {e}")))?,
     };
-    let linear = parts[4];
-    let level = if linear.is_empty() {
-        0i8
-    } else {
-        linear
+    let level = match parts.get(4) {
+        None | Some(&"") => 0_i8,
+        Some(lv) => lv
             .parse::<i8>()
-            .map_err(|e| MacError::TextFormat(format!("bad level {linear:?}: {e}")))?
+            .map_err(|e| MacError::TextFormat(format!("bad level {lv:?}: {e}")))?,
     };
     Ok(IntegrityLabel { level, categories })
 }
@@ -146,9 +136,35 @@ mod tests {
     }
 
     #[test]
-    fn err_on_too_few_fields() {
-        let r = decode_label_text("0:0:0");
-        assert!(matches!(r, Err(MacError::TextFormat(_))));
+    fn missing_trailing_fields_default_to_zero() {
+        let l = decode_label_text("0:0::").unwrap();
+        assert_eq!(
+            l,
+            IntegrityLabel {
+                level: 0,
+                categories: 0
+            }
+        );
+    }
+
+    #[test]
+    fn too_few_fields_default_to_zero() {
+        let l = decode_label_text("0:0:0").unwrap();
+        assert_eq!(
+            l,
+            IntegrityLabel {
+                level: 0,
+                categories: 0
+            }
+        );
+    }
+
+    #[test]
+    fn mic_il_saturation_returns_max_i8() {
+        // u32=200 → i8::try_from fails → MAX_I8=127 (restrictive, fail-safe).
+        assert_eq!(i8::try_from(200_u32).unwrap_or(i8::MAX), 127);
+        assert_eq!(i8::try_from(0_u32).unwrap(), 0);
+        assert_eq!(i8::try_from(127_u32).unwrap(), 127);
     }
 
     #[test]
