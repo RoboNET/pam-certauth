@@ -67,9 +67,9 @@ case "$1" in
         # restarts so the singleton flock in 0.2.3+ is the only thing
         # left to enforce. Safe even when no stale binary exists.
         if [ "$1" = "configure" ] && [ -n "$2" ] && dpkg --compare-versions "$2" lt "0.2.1"; then
-            pkill --signal TERM -f "/usr/sbin/pam-certauth-monitord" 2>/dev/null || true
+            pkill --signal TERM -f "^/usr/sbin/pam-certauth-monitord( |$)" 2>/dev/null || true
             sleep 1
-            pkill --signal KILL -f "/usr/sbin/pam-certauth-monitord" 2>/dev/null || true
+            pkill --signal KILL -f "^/usr/sbin/pam-certauth-monitord( |$)" 2>/dev/null || true
         fi
 
         # systemd integration.

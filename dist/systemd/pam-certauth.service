@@ -13,9 +13,9 @@ Type=notify
 # /usr/bin/pam-certauth (subcommand `daemon`), so the absolute-path pattern
 # below cannot match this unit's own ExecStart. The leading `-` tells
 # systemd to ignore non-zero exits (the common no-match case).
-ExecStartPre=-/usr/bin/pkill --signal TERM -f "/usr/sbin/pam-certauth-monitord"
+ExecStartPre=-/usr/bin/pkill --signal TERM -f "^/usr/sbin/pam-certauth-monitord( |$)"
 ExecStartPre=-/bin/sleep 1
-ExecStartPre=-/usr/bin/pkill --signal KILL -f "/usr/sbin/pam-certauth-monitord"
+ExecStartPre=-/usr/bin/pkill --signal KILL -f "^/usr/sbin/pam-certauth-monitord( |$)"
 # Clean up leaked socket-temp files from killed pre-0.2.1 monitord processes
 # whose atomic rename never completed. Without this the next bind can fail
 # or pile up unbounded crud under /run/pam_certauth.
