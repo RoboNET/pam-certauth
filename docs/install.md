@@ -796,3 +796,48 @@ SysV-скрипт не требуется — авторитативный ис�
   процедуры incident response.
 - [docs/threat-model.md](threat-model.md) — модель угроз и какие
   атаки модуль защищает.
+
+## Интеграция с МКЦ (Astra strict-mode, 0.3.0+)
+
+На хостах Astra SE с включённым strict-mode `pam-certauth` поддерживает
+мандатный контроль целостности (МКЦ) — назначает сессии метку
+`(level, categories)` согласно расширению `MAX_INTEGRITY` сертификата
+пользователя.
+
+Шаги установки:
+
+1. Установите runtime-пакет `libpdp3 (>= 3.11+ci97~)`. `apt install pam-certauth`
+   притянет его автоматически (см. `debian/control`).
+2. После `dpkg -i pam-certauth_*.deb` postinst автоматически:
+   - выставит лейблы `pdpl-file :::iinh` на `/etc/pam_certauth/`,
+     `/var/lib/pam_certauth/`, `/var/cache/pam_certauth/` (если
+     `astra-strictmode-control is-enabled`);
+   - предсоздаст `/var/lib/pam_certauth/sessions.json` с правильным
+     irelax-лейблом;
+   - выставит `chattr +i` на `/var/lib/pam_certauth/host_id` если файл
+     уже существует.
+3. Добавьте секцию `[mac]` в `/etc/pam_certauth/config.toml`:
+
+   ```toml
+   [mac]
+   cert_integrity = "optional"   # required | optional | ignore
+   ```
+
+   Подробности — `docs/configuration.md` секция «MAC integrity».
+
+4. Перевыпустите сертификаты пользователей с расширением
+   `MAX_INTEGRITY` (OID `2.25.273824307386008814506455310913083078403`).
+   См. `docs/cert-issuance.md`.
+
+5. Перезапустите демон: `systemctl restart pam-certauth.service`.
+   Юнит уже содержит `RuntimeDirectory=pam_certauth` /
+   `RuntimeDirectoryMode=0750`.
+
+Проверка:
+
+```bash
+journalctl -u pam-certauth.service | grep mac_runtime_detected
+```
+
+Должна быть запись `F_runtime="libpdp"`. Если `F_runtime="stub"` —
+strict-mode не включён или libpdp не найден.

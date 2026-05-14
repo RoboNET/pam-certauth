@@ -162,3 +162,46 @@ openssl x509 -in user.pem -noout -text
 | Записи есть, но ни одна не совпала | **отказ** (`HostNotAllowed` / `UserNotAllowed`) |
 
 См. также [`docs/configuration.md`](configuration.md).
+
+## Расширение `MAX_INTEGRITY` (МКЦ Astra, 0.3.0+)
+
+`MAX_INTEGRITY` — non-critical X.509 v3-расширение, кодирующее
+максимальную метку целостности `(level, categories)`, до которой
+сертификат может быть допущен на хосте Astra SE с включённым
+strict-mode.
+
+OID: `2.25.273824307386008814506455310913083078403`
+
+Структура (DER):
+
+```asn1
+IntegrityLabel ::= SEQUENCE {
+    level       INTEGER (-128..127),
+    categories  BIT STRING DEFAULT ''B
+}
+```
+
+Семантика на сервере:
+
+- При `open_session` PAM-модуль выбирает эффективную метку как
+  `intersect(cert, runtime_caps, fallback?)`.
+- `cert_integrity = "required"` → сертификат без расширения отвергается.
+- `cert_integrity = "optional"` → отсутствие расширения допускается;
+  если задан `[mac.fallback_max_integrity]`, применяется он.
+- `cert_integrity = "ignore"` → расширение игнорируется.
+
+См. `docs/configuration.md` §«MAC integrity» и `docs/threat-model.md`
+§«Privilege-escalation via MAC label».
+
+Готовые шаблоны openssl.cnf для тестовых сертификатов:
+`tests/fixtures/leaf-{l2-c01,l1-empty,no-ext,l3,malformed,l0-fullcats}.cnf`.
+Генерация — `tests/fixtures/setup-mac-fixtures.sh`.
+
+Пример строки в `openssl.cnf` для `level=2, categories={0}`:
+
+```ini
+2.25.273824307386008814506455310913083078403 = critical,DER:30:06:02:01:02:03:02:00:01
+```
+
+DER здесь — три TLV: `SEQUENCE`, `INTEGER 2`, `BIT STRING '01'B`.
+

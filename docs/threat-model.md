@@ -539,3 +539,63 @@ graph TD
 | 3.13   | weak signature → DisallowedSignatureAlgorithm           | `crates/pam_certauth_core/tests/chain_verify.rs`                          |
 | 3.13   | ГОСТ chain verify (реальный engine)                     | `crates/pam_certauth_core/tests/gost_chain_verify_real.rs`                |
 | Reproducibility / supply-chain | reproducible build (двойная сборка) | `scripts/verify-reproducible-build.sh` |
+
+## 9. МКЦ (Astra strict-mode, 0.3.0+)
+
+### 9.1 Угрозы
+
+- **9.1.1 Privilege-escalation via MAC label.** Сертификат
+  декларирует чрезмерно высокий `MAX_INTEGRITY`; без контроля рантайма
+  пользователь поднимает уровень сессии выше потолка хоста.
+- **9.1.2 Bypass through missing extension.** Сертификат, выпущенный
+  до развёртывания МКЦ, не содержит `MAX_INTEGRITY` — без
+  `cert_integrity = "required"` сессия открывается без метки и
+  получает «прозрачный» доступ.
+- **9.1.3 DER-tampering.** Атакующий, контролирующий УЦ, кладёт
+  битый/нестандартный DER в расширение, рассчитывая на сбой парсера
+  и fallback-поведение «accept-by-default».
+- **9.1.4 sessions.json TOCTOU.** Файл состояния перезаписывается
+  атомарно, но irelax-лейбл на новом inode восстанавливается
+  отдельной сисколлой → окно гонки, в котором демон с MAC=0 не может
+  прочитать только что записанный файл.
+- **9.1.5 host_id rebind.** Подменив `host_id`, атакующий
+  перепривязывает сертификат к другому хосту.
+
+### 9.2 Защиты
+
+- **9.2.1** Эффективная метка всегда пересекается с
+  `ipdp_get_caps()` — потолок задаёт ядро, не сертификат. См.
+  `MacOrchestrator::compute_effective_label`.
+- **9.2.2** `cert_integrity = "required"` отвергает сертификаты без
+  расширения; stub-бэкенд отказывается стартовать с `required`.
+- **9.2.3** Парсер `IntegrityLabel::from_der` strict: проверка длин,
+  отсутствие trailing bytes, BIT STRING `unused-bits ≤ 7`. Битый DER
+  → отказ + аудит-событие `mac_parse_failed`.
+- **9.2.4** Запись `sessions.json` идёт через `openat(O_TMPFILE)` →
+  `fchmod` → `fsetxattr(irelax)` → `linkat`/`rename` атомарно, лейбл
+  накладывается **на fd до публикации имени**. См.
+  `366dde5 fix(mac): unify socket bind path with fd-based label`.
+- **9.2.5** postinst накладывает `chattr +i` на `host_id` после
+  первой записи, сам файл лежит в дир. `/var/lib/pam_certauth/`
+  (0750 root:pamcertauth).
+
+### 9.3 Открытые риски
+
+- libparsec `parsec_capget` symbol-сонейм не зафиксирован
+  публично; build.rs не линкует `libparsec-base3` по умолчанию. Если
+  на конкретном Astra-релизе сборка выдаст «undefined symbol», нужно
+  добавить `libparsec-base3` в `debian/control` и
+  `cargo:rustc-link-lib=parsec-base` в build.rs.
+- `libpdp.so.3` — proprietary, без публичного fuzzing-покрытия.
+  Защита: `LD_LIBRARY_PATH` фиксирован, ABI обёрнут в return-pointer
+  signature (см. `5337fea`), все вызовы — под `panic=abort`.
+
+### 9.4 Тесты
+
+| Угроза | Тест                                                  | Файл                                                                         |
+|--------|--------------------------------------------------------|------------------------------------------------------------------------------|
+| 9.1.1  | intersect(cert, caps) capping level                    | `crates/pam_certauth_core/tests/mac_orchestrator.rs`                          |
+| 9.1.2  | `cert_integrity=required` rejects no-ext leaf          | `crates/pam_certauth/tests/mac_open_session.rs::open_session_fails_when_required_but_cert_lacks_ext` |
+| 9.1.3  | malformed DER → parse-failed event                     | `crates/pam_certauth_core/tests/cert_extensions_parse.rs`                     |
+| 9.1.4  | fd-based irelax label on atomic write                  | `crates/pam_certauth_core/tests/mount_guard_tmpfs.rs`                         |
+| 9.1.5  | host_id immutability after install                     | E2E manual: `vagrant/scripts/test-mac.sh` T12                                 |

@@ -622,6 +622,63 @@ auth required pam_certauth.so \
 См. [operations.md §1.6](operations.md) — скриптуемая версия
 этой проверки.
 
+## MAC integrity (Astra МКЦ, 0.3.0+)
+
+Секция `[mac]` опциональна. На сборке без feature `astra-mac` (Debian,
+Ubuntu, Astra без strict-mode) присутствие секции не запрещено — но
+`cert_integrity = "required"` отвергается на этапе загрузки конфига:
+stub-бэкенд не может применить метки и не должен молча пропускать
+аутентификацию, которая обязалась их применять.
+
+### Поля
+
+| Поле                              | Тип           | По умолчанию | Описание                                                                                                  |
+|-----------------------------------|---------------|--------------|-----------------------------------------------------------------------------------------------------------|
+| `cert_integrity`                  | enum          | `"ignore"`   | Один из `required` / `optional` / `ignore`. См. ниже.                                                     |
+| `fallback_max_integrity.level`    | int (-128..127) | —          | Уровень fallback-метки, если расширение `MAX_INTEGRITY` отсутствует и `cert_integrity = "optional"`.       |
+| `fallback_max_integrity.categories` | string (hex или CSV) | —    | Битовая маска категорий для fallback. Пустая строка = `''B`.                                              |
+
+### Семантика `cert_integrity`
+
+- **`required`** — сертификат обязан содержать `MAX_INTEGRITY`. Если
+  расширения нет или DER битый, аутентификация отклоняется
+  (`mac_required_no_label` / `mac_parse_failed`).
+- **`optional`** — расширение применяется при наличии. Если его нет:
+  - есть `[mac.fallback_max_integrity]` → применяется fallback;
+  - нет fallback → шаг применения метки пропускается (логируется
+    `mac_label_skipped`).
+- **`ignore`** — расширение распарсивается для диагностики
+  (`mac_label_parsed`), но не применяется. Безопасно для миграции
+  парка машин без runtime МКЦ.
+
+### Эффективная метка
+
+При `open_session` выбирается:
+
+```
+effective = intersect(cert_label, runtime_caps)
+```
+
+где `runtime_caps` — потолок, который libpdp возвращает из
+`ipdp_get_caps()`. Уровень эффективной метки — `min(cert.level,
+caps.level)`; категории — `cert.categories & caps.categories`. Если
+после пересечения `effective.level < cert.level` — пишется событие
+`mac_level_intersected`; аналогично для категорий.
+
+### Полный пример
+
+```toml
+[mac]
+cert_integrity = "optional"
+
+[mac.fallback_max_integrity]
+level = 0
+categories = ""
+```
+
+См. `docs/threat-model.md` §«Privilege-escalation via MAC label» и
+`docs/cert-issuance.md` §«MAX_INTEGRITY».
+
 ## Дальнейшее чтение
 
 - [docs/install.md](install.md) — пошаговая установка.
