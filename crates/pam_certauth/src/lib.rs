@@ -1,4 +1,11 @@
 //! `libpam_certauth.so` PAM service module.
+//!
+//! Safety policy: `unsafe_code` is `deny`'d at the crate root.  Only the
+//! modules that interact with the libpam C API (`entry`, `data_handle`,
+//! `pam_conv`, `pam_helpers`) relax this with a module-level
+//! `#![allow(unsafe_code)]`, so new unsafe added anywhere else in the
+//! cdylib trips the lint.
+#![deny(unsafe_code)]
 #![deny(missing_docs)]
 #![allow(clippy::missing_panics_doc)]
 #![allow(clippy::module_name_repetitions)]

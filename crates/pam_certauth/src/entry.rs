@@ -15,6 +15,10 @@
 //! The other `pam_sm_*` hooks (`acct_mgmt`, `open_session`, `close_session`,
 //! `setcred`) are wired to the [`AuthContext`] stored in PAM data by
 //! `pam_sm_authenticate`.
+// PAM entry points are `unsafe extern "C"` by signature; this module is one
+// of the few that legitimately needs unsafe.  Crate root `#![deny(unsafe_code)]`
+// is locally relaxed here.
+#![allow(unsafe_code)]
 #![allow(
     clippy::similar_names,
     clippy::doc_markdown,

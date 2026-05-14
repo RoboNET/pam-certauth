@@ -1,4 +1,8 @@
 //! Policy parser + rule resolver. See `docs/policy.md`.
+//!
+//! Pure parsing/validation logic — no FFI, no syscalls, no raw pointers.
+//! `#![forbid(unsafe_code)]` guarantees no unsafe is ever added here.
+#![forbid(unsafe_code)]
 
 use serde::Deserialize;
 use std::collections::HashMap;
