@@ -27,6 +27,9 @@ use crate::state::{spawn_state_manager, OnUsbRemoved, StateConfig};
 use crate::udev_query::{AlwaysPresent, UdevQuery};
 use crate::{actions, logging, logind, notify, registry, server, shutdown, state, udev_monitor};
 
+pub mod singleton;
+use singleton::{DaemonLock, LockError};
+
 /// CLI arguments for `pam-certauth daemon`.
 ///
 /// Long flag names match the legacy `pam-certauth-monitord` binary so the
@@ -132,6 +135,44 @@ async fn run_async(args: DaemonArgs) -> anyhow::Result<()> {
     let suspend_grace_seconds = args
         .suspend_grace_seconds
         .unwrap_or(monitor_cfg.suspend_grace.as_secs());
+
+    // -- singleton flock (defence-in-depth) ------------------------------
+    // Acquire an exclusive non-blocking flock on `<state_dir>/daemon.lock`
+    // BEFORE binding the listener. If a stale pre-0.2.1 daemon (or any
+    // second instance of the current one) is already running this fails
+    // fast with a CRITICAL audit event identifying the conflicting PID,
+    // so operators see it in journald / pam_certauth.daemon. The lock fd
+    // is held in `_daemon_lock` for the lifetime of `run_async`; the
+    // kernel releases it automatically on process exit.
+    let lock_path = state_file_path
+        .parent()
+        .map_or_else(
+            || std::path::PathBuf::from("/var/lib/pam_certauth/daemon.lock"),
+            |dir| dir.join("daemon.lock"),
+        );
+    let _daemon_lock = match DaemonLock::acquire(&lock_path) {
+        Ok(l) => l,
+        Err(LockError::AlreadyHeld { path, pid }) => {
+            tracing::error!(
+                target: "pam_certauth.daemon.singleton",
+                event = "daemon_already_running",
+                lock_path = %path.display(),
+                conflicting_pid = ?pid,
+                audit_level = "CRITICAL",
+                "another pam-certauth daemon instance already holds the singleton lock; refusing to start"
+            );
+            return Err(anyhow::anyhow!(
+                "another daemon instance holds {} (pid={:?}); refusing to start",
+                path.display(),
+                pid
+            ));
+        }
+        Err(e) => {
+            return Err(anyhow::anyhow!(
+                "failed to acquire daemon singleton lock: {e}"
+            ));
+        }
+    };
 
     let store = RegistryStore::new(state_file_path);
     let initial = store.load().unwrap_or_default();
