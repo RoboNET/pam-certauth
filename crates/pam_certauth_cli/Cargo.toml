@@ -26,7 +26,6 @@ mac-tests = ["pam_certauth_core/mac-tests"]
 [dependencies]
 pam_certauth_core = { path = "../pam_certauth_core", version = "0.2.1" }
 pam_certauth_proto = { path = "../pam_certauth_proto", version = "0.2.1" }
-pam_certauth_policy = { path = "../pam_certauth_policy", version = "0.2.1" }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "signal", "io-util", "time", "sync", "process"] }
 tokio-util = { workspace = true, features = ["rt"] }
 tracing = { workspace = true }

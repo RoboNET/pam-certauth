@@ -1210,7 +1210,6 @@ dependencies = [
  "once_cell",
  "openssl",
  "pam_certauth_core",
- "pam_certauth_policy",
  "pam_certauth_proto",
  "parking_lot",
  "rustix 0.38.44",
@@ -1263,21 +1262,10 @@ dependencies = [
  "thiserror",
  "toml",
  "tracing",
+ "tracing-subscriber",
  "udev",
  "uuid",
  "zeroize",
-]
-
-[[package]]
-name = "pam_certauth_policy"
-version = "0.2.1"
-dependencies = [
- "hex",
- "serde",
- "sha2",
- "tempfile",
- "thiserror",
- "toml",
 ]
 
 [[package]]
