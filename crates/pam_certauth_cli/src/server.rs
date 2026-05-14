@@ -62,8 +62,6 @@ pub enum ServerError {
 /// briefly expose the socket with world-accessible permissions between
 /// `bind` and `set_permissions`.
 pub async fn bind_listener(path: &Path) -> io::Result<UnixListener> {
-    use std::os::unix::fs::PermissionsExt;
-
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
@@ -73,62 +71,54 @@ pub async fn bind_listener(path: &Path) -> io::Result<UnixListener> {
     #[cfg(not(feature = "astra-mac"))]
     let backend = pam_certauth_core::mac::backend::StubBackend::new();
 
-    // Apply МКЦ irelax label on a per-PID temp path, then atomically
-    // rename into place. The same temp path is used to fix permissions
-    // before the socket becomes observable at the final path.
-    let tmp_path = build_tmp_socket_path(path);
-    // Safe: tmp_path embeds our PID, so any leftover here is from a
-    // prior aborted run of THIS process — never from a concurrent
-    // observer. We deliberately drop the `if path.exists()` race.
-    let _ = std::fs::remove_file(&tmp_path);
-
-    let std_listener = bind_with_label_tmp(&tmp_path, &backend)?;
-    let mut perms = std::fs::metadata(&tmp_path)?.permissions();
-    perms.set_mode(0o660);
-    std::fs::set_permissions(&tmp_path, perms)?;
-    // Atomic publish: from this instant on, the socket at `path` is
-    // guaranteed to have 0660 mode for any peer that connects.
-    std::fs::rename(&tmp_path, path)?;
+    // Single labeled-bind code path: bind on per-PID temp, set 0660
+    // perms, label via fd (TOCTOU-safe), then atomic rename into place.
+    let std_listener = bind_with_label(path, &backend)?;
     std_listener.set_nonblocking(true)?;
     UnixListener::from_std(std_listener)
 }
 
 /// Bind a Unix-domain socket at `final_path` with МКЦ irelax label
-/// applied atomically: bind on `.tmp.$PID`, label via [`MacBackend::set_file_label`]
-/// (`level=0`, `irelax=true`), emit `mac_socket_label_set`, then rename
+/// applied atomically: bind on `.tmp.$PID`, set mode `0660`, label via
+/// [`MacBackend::set_fd_label`] on the listener's fd (`level=0`,
+/// `irelax=true`) — closes the bind/label TOCTOU window that a path-based
+/// labeler would leave open — emit `mac_socket_label_set`, then rename
 /// into place. Returns the standard-library listener so callers may
 /// adopt it into any async runtime.
 ///
 /// # Errors
-/// Returns I/O error on bind/rename, or a wrapped `MacError` when the
-/// label set fails.
+/// Returns I/O error on bind/permissions/rename, or a wrapped `MacError`
+/// when the label set fails.
 pub fn bind_with_label<B: MacBackend>(
     final_path: &Path,
     backend: &B,
 ) -> io::Result<std::os::unix::net::UnixListener> {
-    let tmp_path = build_tmp_socket_path(final_path);
-    let _ = std::fs::remove_file(&tmp_path);
-    let listener = bind_with_label_tmp(&tmp_path, backend)?;
-    std::fs::rename(&tmp_path, final_path)?;
-    Ok(listener)
-}
+    use std::os::unix::fs::PermissionsExt;
+    use std::os::unix::io::AsRawFd;
 
-/// Bind on `tmp_path`, label via backend with irelax, emit the audit
-/// breadcrumb, and return the still-temp listener. Caller is responsible
-/// for the subsequent rename onto the final path.
-fn bind_with_label_tmp<B: MacBackend>(
-    tmp_path: &Path,
-    backend: &B,
-) -> io::Result<std::os::unix::net::UnixListener> {
-    let listener = std::os::unix::net::UnixListener::bind(tmp_path)?;
+    let tmp_path = build_tmp_socket_path(final_path);
+    // Safe: tmp_path embeds our PID, so any leftover here is from a
+    // prior aborted run of THIS process — never from a concurrent
+    // observer. We deliberately drop the `if path.exists()` race.
+    let _ = std::fs::remove_file(&tmp_path);
+
+    let listener = std::os::unix::net::UnixListener::bind(&tmp_path)?;
+    // DAC: 0660 before publish so peers never observe a world-accessible
+    // socket. Path is still per-PID temp, not yet renamed.
+    std::fs::set_permissions(&tmp_path, std::fs::Permissions::from_mode(0o660))?;
+    // MAC: label by fd to close the bind→label TOCTOU window that a
+    // same-uid attacker could exploit by swapping the path for a symlink.
     let label = IntegrityLabel {
         level: 0,
         categories: 0,
     };
     backend
-        .set_file_label(tmp_path, label, true)
-        .map_err(|e| io::Error::other(format!("set_file_label: {e}")))?;
+        .set_fd_label(listener.as_raw_fd(), label, true)
+        .map_err(|e| io::Error::other(format!("set_fd_label: {e}")))?;
     mac_audit::emit_socket_label(&tmp_path.to_string_lossy());
+    // Atomic publish: from this instant on, peers connecting at
+    // `final_path` see a socket that is already 0660 and labeled.
+    std::fs::rename(&tmp_path, final_path)?;
     Ok(listener)
 }
 
