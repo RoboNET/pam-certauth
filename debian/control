@@ -32,11 +32,17 @@ Depends:
  lsb-base (>= 3.0-6),
  adduser,
  polkitd | policykit-1,
- libgost-engine | gost-engine,
- libpdp3 (>= 3.11+ci97~)
+ libgost-engine | gost-engine
+# libpdp3: required at runtime only when the binary is built with the
+# `astra-mac` feature; on non-Astra hosts (Debian/Ubuntu) the package
+# functions as a stub (postinst skips МКЦ setup). Kept as a Recommends
+# so apt on Astra still pulls it in, while standard Debian/Ubuntu
+# installs do not fail on a missing package. For an Astra-specific deb
+# build, promote this to a hard Depends in the Astra build script.
 Recommends:
  libpkcs11-helper1,
- librtpkcs11ecp
+ librtpkcs11ecp,
+ libpdp3 (>= 3.11+ci97~)
 Suggests:
  opensc,
  p11-kit,
