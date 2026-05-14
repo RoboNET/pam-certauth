@@ -11,3 +11,4 @@
 # without rewriting the relevant Rust crates in C.
 pam-certauth: hardening-no-fortify-functions [lib/security/pam_certauth.so]
 pam-certauth: hardening-no-fortify-functions [usr/bin/pam-certauth]
+pam-certauth: hardening-no-fortify-functions [usr/bin/pam-certauth-execute]

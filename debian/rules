@@ -45,6 +45,12 @@ override_dh_auto_install:
 	# by dh_strip.
 	install -D -m 0755 target/release/pam-certauth \
 		debian/pam-certauth/usr/bin/pam-certauth
+	# 0.2.4: the M-of-N execute path lives in its own binary so the
+	# privileged sudo target has a minimal dep closure (no zbus / udev
+	# / multi-thread tokio runtime). Sudoers now scopes NOPASSWD to
+	# /usr/bin/pam-certauth-execute instead of `pam-certauth execute *`.
+	install -D -m 0755 target/release/pam-certauth-execute \
+		debian/pam-certauth/usr/bin/pam-certauth-execute
 
 override_dh_auto_test:
 	# We rely on `cargo test` having been run before invoking
