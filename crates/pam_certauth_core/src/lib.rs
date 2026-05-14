@@ -24,6 +24,7 @@ pub mod host_binding;
 pub mod host_identity;
 pub mod ipc;
 pub mod logging;
+pub mod mac;
 pub mod mapping;
 pub mod mount;
 pub mod mount_guard;
