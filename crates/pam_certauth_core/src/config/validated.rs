@@ -459,6 +459,16 @@ fn validate_mac(raw: &RawMacPolicy) -> Result<MacPolicy, Error> {
         Some(RawCertIntegrityMode::Ignore) => CertIntegrityMode::Ignore,
         Some(RawCertIntegrityMode::Optional) | None => CertIntegrityMode::Optional,
     };
+    // Fail-fast: stub builds (without `astra-mac`) cannot honour
+    // `cert_integrity = "required"` because there is no real backend
+    // to enforce the label.  Reject at config load so the operator sees
+    // the misconfiguration immediately rather than at first session.
+    #[cfg(not(feature = "astra-mac"))]
+    if matches!(cert_integrity, CertIntegrityMode::Required) {
+        return Err(Error::ConfigInvalid {
+            reason: "[mac].cert_integrity = \"required\" but binary built without `astra-mac` feature".into(),
+        });
+    }
     let fallback_max_integrity = raw
         .fallback_max_integrity
         .as_ref()
@@ -781,10 +791,7 @@ fn validate_policy(raw: &RawPolicySection) -> Result<PolicySection, Error> {
         .unwrap_or_else(|| PathBuf::from(DEFAULT_POLICY_PATH));
     if !path.is_absolute() {
         return Err(Error::ConfigInvalid {
-            reason: format!(
-                "policy.path must be absolute (got {})",
-                path.display()
-            ),
+            reason: format!("policy.path must be absolute (got {})", path.display()),
         });
     }
     let krl_secs = raw
@@ -908,13 +915,14 @@ fn validate_monitor(
         RawOnUsbRemoved::Shutdown => OnUsbRemoved::Shutdown,
     };
     let on_usb_removed_hook_path = if matches!(on_usb_removed, OnUsbRemoved::Hook) {
-        let path = raw.on_usb_removed_hook_path.clone().ok_or_else(|| {
-            Error::ConfigInvalid {
+        let path = raw
+            .on_usb_removed_hook_path
+            .clone()
+            .ok_or_else(|| Error::ConfigInvalid {
                 reason:
                     "monitor.on_usb_removed = \"hook\" requires monitor.on_usb_removed_hook_path"
                         .to_string(),
-            }
-        })?;
+            })?;
         if !path.is_absolute() {
             return Err(Error::ConfigInvalid {
                 reason: format!(
