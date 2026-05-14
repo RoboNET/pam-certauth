@@ -40,6 +40,73 @@ use openssl::pkey::{PKey, Public};
 use openssl::x509::{X509NameRef, X509};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+/// Identifiers extracted from a verified cert for audit purposes.
+///
+/// All four fields appear in every cert-related MAC audit event
+/// (spec §4.1.3) and can be cheaply cloned into log records.
+#[derive(Debug, Clone)]
+pub struct CertIdent {
+    /// Serial number (uppercase hex, no separators).
+    pub serial: String,
+    /// Issuer DN in RFC 4514-style `attr=value,attr=value` form.
+    pub issuer: String,
+    /// Subject Common Name, or empty string if absent.
+    pub cn: String,
+    /// SHA-256 fingerprint of the DER (lowercase hex).
+    pub fingerprint: String,
+}
+
+impl From<&VerifiedX509> for CertIdent {
+    fn from(v: &VerifiedX509) -> Self {
+        use openssl::hash::MessageDigest;
+        let x = v.as_x509();
+        let serial = x
+            .serial_number()
+            .to_bn()
+            .ok()
+            .and_then(|bn| bn.to_hex_str().ok().map(|s| s.to_string()))
+            .unwrap_or_default();
+        let issuer = x
+            .issuer_name()
+            .entries()
+            .map(|e| {
+                let nid = e.object().nid().short_name().unwrap_or("").to_string();
+                let val = e
+                    .data()
+                    .as_utf8()
+                    .map(|u| u.to_string())
+                    .unwrap_or_default();
+                format!("{nid}={val}")
+            })
+            .collect::<Vec<_>>()
+            .join(",");
+        let cn = x
+            .subject_name()
+            .entries_by_nid(Nid::COMMONNAME)
+            .next()
+            .and_then(|e| e.data().as_utf8().ok().map(|u| u.to_string()))
+            .unwrap_or_default();
+        let fingerprint = x
+            .digest(MessageDigest::sha256())
+            .ok()
+            .map(|d| {
+                use std::fmt::Write as _;
+                d.iter()
+                    .fold(String::with_capacity(d.len() * 2), |mut acc, b| {
+                        let _ = write!(&mut acc, "{b:02x}");
+                        acc
+                    })
+            })
+            .unwrap_or_default();
+        Self {
+            serial,
+            issuer,
+            cn,
+            fingerprint,
+        }
+    }
+}
+
 /// A leaf certificate whose trust chain, EKU, and signature have already
 /// been validated by the main authentication flow.
 ///

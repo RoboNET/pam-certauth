@@ -1,15 +1,196 @@
-//! Audit events for the MAC subsystem.  Placeholder; full event set is wired
-//! up in Phase 5 (Task 5.1).
+//! Audit events for the MAC subsystem.
+//!
+//! Every event uses the `mac.audit` tracing target and carries the
+//! canonical `F_*` field set declared in the MAC integrity spec
+//! (§4.1.3): `F_event`, `F_pam_user`, `F_pam_service`, `F_cert_serial`,
+//! `F_cert_issuer`, `F_cert_cn`, `F_cert_fingerprint`, plus
+//! per-event extra fields.
+//!
+//! Use the `emit_*` helpers — they freeze the event name and field
+//! schema in code so tests can assert on `EVENT_*` constants without
+//! mistyping a string literal.
 
-/// Emit a warning that the running process is missing the `PARSEC_CAP_CHMAC`
-/// capability.  Operations that set file labels in IRELAX mode will still be
-/// attempted and rejected by the kernel — this is a soft warning, not a
-/// failure.
-#[cfg(feature = "astra-mac")]
-pub fn emit_caps_missing(reason: &str) {
+use crate::mac::IntegrityLabel;
+use crate::x509::CertIdent;
+
+/// `mac_skipped` — orchestrator decided not to touch the kernel
+/// (policy = ignore, runtime not Active, etc.).
+pub const EVENT_MAC_SKIPPED: &str = "mac_skipped";
+/// `mac_runtime_required` — `cert_integrity=required` but `probe()`
+/// reported a non-Active runtime.
+pub const EVENT_MAC_RUNTIME_REQUIRED: &str = "mac_runtime_required";
+/// `cert_lacks_ext` — `cert_integrity=required` but the leaf is missing
+/// the `MAX_INTEGRITY` extension.
+pub const EVENT_CERT_LACKS_EXT: &str = "cert_lacks_ext";
+/// `integrity_applied` — process label resolved and applied.
+pub const EVENT_INTEGRITY_APPLIED: &str = "integrity_applied";
+/// `integrity_capped` — effective label strictly below user MNKC.
+pub const EVENT_INTEGRITY_CAPPED: &str = "integrity_capped";
+/// `homedir_label_above` — `$HOME` label exceeds the effective process
+/// label (advisory; warn-only).
+pub const EVENT_HOMEDIR_LABEL_ABOVE: &str = "homedir_label_above";
+/// `apply_failed` — `apply_session` returned an error.
+pub const EVENT_APPLY_FAILED: &str = "apply_failed";
+/// `mac_caps_missing` — process is missing `PARSEC_CAP_CHMAC`.
+pub const EVENT_MAC_CAPS_MISSING: &str = "mac_caps_missing";
+/// `mac_user_unknown` — `get_user_mnkc` reported `UserUnknown`.
+pub const EVENT_MAC_USER_UNKNOWN: &str = "mac_user_unknown";
+/// `mac_fallback_used` — falling back to `fallback_max_integrity`
+/// because the cert carries no `MAX_INTEGRITY` extension.
+pub const EVENT_MAC_FALLBACK_USED: &str = "mac_fallback_used";
+/// `mac_categories_above_32bit` — DER decoder observed integrity
+/// category bits beyond bit 31; advisory.
+pub const EVENT_MAC_CATEGORIES_ABOVE_32BIT: &str = "mac_categories_above_32bit";
+
+/// Emit `mac_skipped`.
+pub fn emit_mac_skipped(reason: &str) {
+    tracing::info!(
+        target: "mac.audit",
+        F_event = EVENT_MAC_SKIPPED,
+        F_reason = reason,
+    );
+}
+
+/// Emit `mac_runtime_required`.
+pub fn emit_mac_runtime_required(runtime: &str) {
+    tracing::error!(
+        target: "mac.audit",
+        F_event = EVENT_MAC_RUNTIME_REQUIRED,
+        F_runtime = runtime,
+    );
+}
+
+/// Emit `cert_lacks_ext`.
+pub fn emit_cert_lacks_ext(ident: &CertIdent, pam_user: &str, pam_service: &str) {
+    tracing::error!(
+        target: "mac.audit",
+        F_event = EVENT_CERT_LACKS_EXT,
+        F_pam_user = pam_user,
+        F_pam_service = pam_service,
+        F_cert_serial = ident.serial.as_str(),
+        F_cert_issuer = ident.issuer.as_str(),
+        F_cert_cn = ident.cn.as_str(),
+        F_cert_fingerprint = ident.fingerprint.as_str(),
+    );
+}
+
+/// Emit `integrity_applied`.
+pub fn emit_integrity_applied(
+    ident: &CertIdent,
+    pam_user: &str,
+    pam_service: &str,
+    label: IntegrityLabel,
+) {
+    tracing::info!(
+        target: "mac.audit",
+        F_event = EVENT_INTEGRITY_APPLIED,
+        F_pam_user = pam_user,
+        F_pam_service = pam_service,
+        F_cert_serial = ident.serial.as_str(),
+        F_cert_issuer = ident.issuer.as_str(),
+        F_cert_cn = ident.cn.as_str(),
+        F_cert_fingerprint = ident.fingerprint.as_str(),
+        F_level = i64::from(label.level),
+        F_categories = format!("{:016x}", label.categories).as_str(),
+    );
+}
+
+/// Emit `integrity_capped`.
+pub fn emit_integrity_capped(
+    ident: &CertIdent,
+    pam_user: &str,
+    pam_service: &str,
+    effective: IntegrityLabel,
+    user_mnkc: IntegrityLabel,
+) {
     tracing::warn!(
         target: "mac.audit",
-        event = "mac_caps_missing",
-        reason = reason,
+        F_event = EVENT_INTEGRITY_CAPPED,
+        F_pam_user = pam_user,
+        F_pam_service = pam_service,
+        F_cert_serial = ident.serial.as_str(),
+        F_cert_issuer = ident.issuer.as_str(),
+        F_cert_cn = ident.cn.as_str(),
+        F_cert_fingerprint = ident.fingerprint.as_str(),
+        F_effective_level = i64::from(effective.level),
+        F_effective_categories = format!("{:016x}", effective.categories).as_str(),
+        F_user_level = i64::from(user_mnkc.level),
+        F_user_categories = format!("{:016x}", user_mnkc.categories).as_str(),
+    );
+}
+
+/// Emit `homedir_label_above`.
+pub fn emit_homedir_label_above(
+    pam_user: &str,
+    pam_service: &str,
+    home_dir: &std::path::Path,
+    home_label: IntegrityLabel,
+    effective: IntegrityLabel,
+) {
+    tracing::warn!(
+        target: "mac.audit",
+        F_event = EVENT_HOMEDIR_LABEL_ABOVE,
+        F_pam_user = pam_user,
+        F_pam_service = pam_service,
+        F_home_dir = %home_dir.display(),
+        F_home_level = i64::from(home_label.level),
+        F_home_categories = format!("{:016x}", home_label.categories).as_str(),
+        F_effective_level = i64::from(effective.level),
+        F_effective_categories = format!("{:016x}", effective.categories).as_str(),
+    );
+}
+
+/// Emit `apply_failed`.
+pub fn emit_apply_failed(ident: &CertIdent, pam_user: &str, pam_service: &str, detail: &str) {
+    tracing::error!(
+        target: "mac.audit",
+        F_event = EVENT_APPLY_FAILED,
+        F_pam_user = pam_user,
+        F_pam_service = pam_service,
+        F_cert_serial = ident.serial.as_str(),
+        F_cert_issuer = ident.issuer.as_str(),
+        F_cert_cn = ident.cn.as_str(),
+        F_cert_fingerprint = ident.fingerprint.as_str(),
+        F_detail = detail,
+    );
+}
+
+/// Emit `mac_caps_missing` — process lacks `PARSEC_CAP_CHMAC`.
+pub fn emit_caps_missing(detail: &str) {
+    tracing::warn!(
+        target: "mac.audit",
+        F_event = EVENT_MAC_CAPS_MISSING,
+        F_detail = detail,
+    );
+}
+
+/// Emit `mac_user_unknown`.
+pub fn emit_user_unknown(pam_user: &str, pam_service: &str) {
+    tracing::error!(
+        target: "mac.audit",
+        F_event = EVENT_MAC_USER_UNKNOWN,
+        F_pam_user = pam_user,
+        F_pam_service = pam_service,
+    );
+}
+
+/// Emit `mac_fallback_used`.
+pub fn emit_fallback_used(pam_user: &str, pam_service: &str, fallback: IntegrityLabel) {
+    tracing::info!(
+        target: "mac.audit",
+        F_event = EVENT_MAC_FALLBACK_USED,
+        F_pam_user = pam_user,
+        F_pam_service = pam_service,
+        F_level = i64::from(fallback.level),
+        F_categories = format!("{:016x}", fallback.categories).as_str(),
+    );
+}
+
+/// Emit `mac_categories_above_32bit` — diagnostic only.
+pub fn emit_categories_above_32bit(categories: u64) {
+    tracing::info!(
+        target: "mac.audit",
+        F_event = EVENT_MAC_CATEGORIES_ABOVE_32BIT,
+        F_categories = format!("{categories:016x}").as_str(),
     );
 }
