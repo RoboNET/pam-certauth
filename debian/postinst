@@ -59,17 +59,17 @@ case "$1" in
         chmod 0640 "$STATE_DIR/.installed-by-deb"
         chown root:pamcertauth "$STATE_DIR/.installed-by-deb"
 
-        # Migration: pre-0.2.1 shipped the daemon as
-        # /usr/sbin/pam-certauth-monitord running under root. After an
-        # in-place upgrade the old daemon stays alive as a root orphan
-        # alongside the new /usr/bin/pam-certauth daemon (which now runs
-        # as the pamcertauth user). Reap it before the systemd unit
-        # restarts so the singleton flock in 0.2.3+ is the only thing
-        # left to enforce. Safe even when no stale binary exists.
-        if [ "$1" = "configure" ] && [ -n "$2" ] && dpkg --compare-versions "$2" lt "0.2.1"; then
-            pkill --signal TERM -f "^/usr/sbin/pam-certauth-monitord( |$)" 2>/dev/null || true
+        # Reap any leftover pre-0.2.1 monitord. The binary path
+        # /usr/sbin/pam-certauth-monitord was removed in 0.2.1, so a
+        # running process under that path can ONLY be an orphan from a
+        # pre-0.2.1 install. Cleanup runs on every configure (install +
+        # upgrade) since narrowing by old-version comparison would miss
+        # hosts that already upgraded to 0.2.1/0.2.2 with the orphan
+        # still present. Safe even when no stale binary exists.
+        if [ "$1" = "configure" ]; then
+            pkill --signal TERM -f '^/usr/sbin/pam-certauth-monitord( |$)' 2>/dev/null || true
             sleep 1
-            pkill --signal KILL -f "^/usr/sbin/pam-certauth-monitord( |$)" 2>/dev/null || true
+            pkill --signal KILL -f '^/usr/sbin/pam-certauth-monitord( |$)' 2>/dev/null || true
         fi
 
         # systemd integration.
