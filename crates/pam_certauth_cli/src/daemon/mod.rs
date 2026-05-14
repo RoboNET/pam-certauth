@@ -142,15 +142,24 @@ async fn run_async(args: DaemonArgs) -> anyhow::Result<()> {
     // second instance of the current one) is already running this fails
     // fast with a CRITICAL audit event identifying the conflicting PID,
     // so operators see it in journald / pam_certauth.daemon. The lock fd
-    // is held in `_daemon_lock` for the lifetime of `run_async`; the
+    // is held in `daemon_lock` for the lifetime of `run_async`; the
     // kernel releases it automatically on process exit.
+    //
+    // M2: the binding is intentionally NOT named `_daemon_lock`. A
+    // leading underscore signals "intentionally unused" to clippy and
+    // to readers, but this binding is load-bearing — dropping it
+    // releases the singleton flock. A future refactor that "tidies"
+    // `let _daemon_lock = ...` into `let _ = ...` would silently break
+    // the singleton invariant. The explicit `let _ = &daemon_lock;` at
+    // the end of scope is a no-op for codegen but keeps the binding
+    // visibly used to clippy and to humans skimming the function.
     let lock_path = state_file_path
         .parent()
         .map_or_else(
             || std::path::PathBuf::from("/var/lib/pam_certauth/daemon.lock"),
             |dir| dir.join("daemon.lock"),
         );
-    let _daemon_lock = match DaemonLock::acquire(&lock_path) {
+    let daemon_lock = match DaemonLock::acquire(&lock_path) {
         Ok(l) => l,
         Err(LockError::AlreadyHeld { path, pid }) => {
             tracing::error!(
@@ -323,6 +332,11 @@ async fn run_async(args: DaemonArgs) -> anyhow::Result<()> {
         handles.push(h);
     }
     shutdown::graceful_finish(handles, Duration::from_secs(5), &socket_path).await;
+
+    // M2: keep `daemon_lock` visibly used so a future refactor cannot
+    // silently demote it to `let _ = DaemonLock::acquire(...)` (which
+    // would drop the guard immediately and lose the singleton flock).
+    let _ = &daemon_lock;
 
     // Reference unused symbols to silence dead-code in the binary build.
     let _ = registry::ActiveSession {

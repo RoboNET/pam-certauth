@@ -5,6 +5,11 @@
 //! Phases 7 / 8 of the scopes & M-of-N plan add `execute`, `policy`, … as
 //! sibling subcommands; their wiring should follow the same pattern.
 
+// M2: warn on `let _ = …` for #[must_use] returns so a future refactor
+// of `let daemon_lock = DaemonLock::acquire(...)` into `let _ = ...`
+// trips a lint instead of silently breaking the singleton invariant.
+#![warn(clippy::let_underscore_must_use)]
+
 use std::process::ExitCode;
 
 use clap::{Parser, Subcommand};
