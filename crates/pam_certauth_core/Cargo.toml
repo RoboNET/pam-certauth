@@ -28,7 +28,7 @@ pkcs11-tests = []
 astra-mac = []
 # Enables in-process MacBackend mock for unit tests on dev hosts without
 # libpdp. Independent of astra-mac.
-mac-tests = []
+mac-tests = ["dep:mockall"]
 
 [dependencies]
 pam_certauth_proto = { path = "../pam_certauth_proto", version = "0.2.1" }
@@ -55,6 +55,7 @@ cryptoki = { workspace = true }
 parking_lot = { workspace = true }
 serde_json = { workspace = true }
 uuid = { workspace = true }
+mockall = { workspace = true, optional = true }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 udev = { workspace = true }

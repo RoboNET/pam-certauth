@@ -8,5 +8,7 @@ pub mod label;
 #[cfg(not(feature = "astra-mac"))]
 mod stub;
 
-pub use backend::{MacBackend, MacError, MacRuntime};
+#[cfg(feature = "mac-tests")]
+pub use backend::MockMacBackend;
+pub use backend::{MacBackend, MacError, MacRuntime, StubBackend};
 pub use label::IntegrityLabel;
