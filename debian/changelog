@@ -1,3 +1,21 @@
+pam-certauth (0.3.0-1) unstable; urgency=medium
+
+  * MAC integrity (МКЦ): new `[mac]` config section, `pam_cert_max_integrity`
+    X.509 extension (OID 2.25.273824307386008814506455310913083078403),
+    libpdp FFI binding under the `astra-mac` cargo feature. Orchestrator
+    intersects cert max integrity with the user's МНКЦ and applies the
+    resulting label to the session via fd-based labeling, closing the
+    path-based TOCTOU window. Verified end-to-end on Astra Linux SE 1.8.4
+    strict-mode kernel.
+  * Strip: removed M-of-N approval, scope policies, and the `execute`
+    subcommand path that shipped in 0.2.x. The remaining surface is base
+    USB+X.509 PAM auth plus MAC integrity labelling.
+  * FFI fixes: libpdp text grammar corrected to "level:ilevel:cat[:flags]",
+    dropped `irelax` flag on `pdp_set_fd` (kernel rejects it through the
+    fd-based API), link against `libparsec-mic` for `getmicnam`.
+
+ -- Mikhail Korolev <mikhail@robonet.me>  Fri, 15 May 2026 14:43:40 +0300
+
 pam-certauth (0.2.1-1) unstable; urgency=medium
 
   * Security: RFC 3161 TimeStampToken is now actually enforced when
