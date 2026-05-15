@@ -63,6 +63,20 @@ jobs:
             || apt-get install -y libparsec-dev \
             || apt-get install -y parsec-base-dev \
             || echo "no pdp dev headers package available; relying on hand-written FFI declarations"
+          # Astra ships only versioned libs (libpdp.so.3, libparsec-base.so.3);
+          # rustc/-l*-flag needs unversioned symlinks (libpdp.so, libparsec-base.so).
+          # The dev packages above create them; if absent, fall back to manual
+          # symlinks so the astra-mac build can still link.
+          for L in pdp parsec-base; do
+            for D in /usr/lib /usr/lib/x86_64-linux-gnu /lib /lib/x86_64-linux-gnu; do
+              [ -e "$D/lib${L}.so" ] && break
+              SRC="$(ls "$D/lib${L}.so."* 2>/dev/null | sort -V | tail -n1 || true)"
+              if [ -n "$SRC" ]; then
+                ln -sfv "$SRC" "$D/lib${L}.so"
+                break
+              fi
+            done
+          done
 
       - name: Verify libpdp runtime symbols
         run: |
