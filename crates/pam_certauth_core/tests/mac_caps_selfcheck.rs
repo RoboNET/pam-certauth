@@ -5,6 +5,7 @@
 #![allow(missing_docs)]
 
 #[test]
+#[allow(clippy::no_effect_underscore_binding)]
 fn parsec_backend_new_compiles() {
     // Cannot actually call `new()` on a Mac dev box (no libpdp linker
     // target), but ensure the type and constructor exist.
