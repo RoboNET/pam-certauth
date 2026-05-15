@@ -99,14 +99,16 @@ jobs:
         # recompilation of unchanged compilation units across cache misses.
         uses: mozilla-actions/sccache-action@v0.0.10
 
-      - name: Run cargo test with real libpdp (astra-mac feature)
+      - name: Run cargo nextest with real libpdp (astra-mac feature)
         # This is the main value of the job: actually link against libpdp
         # and exercise the MAC FFI on Astra. Workflow-level env aligns
         # the test build with debian/rules so build-deb only relinks.
+        # cargo-nextest (pre-installed in builder image) parallelises
+        # test execution and shaves 30–50% off plain `cargo test`.
         env:
           RUSTC_WRAPPER: sccache
           SCCACHE_GHA_ENABLED: "true"
-        run: cargo test --workspace --features astra-mac --release
+        run: cargo nextest run --workspace --features astra-mac --release
 
       - name: Build .deb with astra-mac feature
         env:

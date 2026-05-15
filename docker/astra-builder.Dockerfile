@@ -46,6 +46,14 @@ RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
         --component rustfmt \
     && rustup default ${RUST_VERSION}
 
+# cargo-nextest: 30–50% faster test run via parallel runner +
+# per-test process isolation. Pre-install pinned binary so CI doesn't
+# pay the install cost every run.
+ARG NEXTEST_VERSION=0.9.103
+RUN curl -fsSL "https://get.nexte.st/${NEXTEST_VERSION}/linux" \
+        | tar -xz -C /usr/local/cargo/bin cargo-nextest \
+    && /usr/local/cargo/bin/cargo-nextest --version
+
 # Sanity check
 RUN gcc --version && rustc --version && \
     nm -D /usr/lib/libpdp.so* 2>/dev/null | grep -E 'pdpl_get_from_text|pdp_set_pid' | head && \
