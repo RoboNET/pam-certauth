@@ -6,3 +6,4 @@ dist/pam.d/certauth-optional                etc/pam.d
 dist/pam.d/certauth-only                    etc/pam.d
 dist/polkit/49-pam-certauth.rules           usr/share/polkit-1/rules.d
 dist/scripts/integrate-pam.sh               usr/share/pam-certauth
+dist/systemd/pam-certauth.service.d/mac-integrity.conf.example  usr/share/pam-certauth/systemd

@@ -93,6 +93,16 @@ case "$1" in
             fi
         fi
 
+        # On Astra hosts, remind operators that МКЦ-label enforcement is
+        # opt-in. The daemon runs as `pamcertauth` without CAP_MAC_ADMIN /
+        # PARSEC_CAP_CHMAC by default; activation requires the shipped
+        # drop-in. See docs/install.md for the full procedure.
+        if [ -f /etc/astra_version ]; then
+            echo "Note: МКЦ (MAC integrity) support is opt-in." >&2
+            echo "      See /usr/share/pam-certauth/systemd/mac-integrity.conf.example" >&2
+            echo "      and docs/install.md for the activation procedure." >&2
+        fi
+
         # Print one-time setup hint if no config has been deployed yet.
         if [ ! -f "$CONFIG_DIR/config.toml" ]; then
             cat <<EOF

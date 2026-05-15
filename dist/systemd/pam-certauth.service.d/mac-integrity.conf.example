@@ -1,0 +1,26 @@
+# Drop-in for МКЦ (MAC integrity) on Astra Linux SE.
+#
+# Copy this file to /etc/systemd/system/pam-certauth.service.d/mac-integrity.conf
+# AFTER granting the daemon's user the PARSEC_CAP_CHMAC capability:
+#
+#     sudo /sbin/usercaps -m "+3" pamcertauth
+#
+# Then reload and restart:
+#
+#     sudo systemctl daemon-reload
+#     sudo systemctl restart pam-certauth.service
+#
+# Without this drop-in the daemon still runs, but PDP labelling is best-effort
+# and `[mac] cert_integrity = "required"` will deny sessions because
+# `pdp_set_fd` returns EPERM.
+
+[Service]
+# CAP_MAC_ADMIN: allow the daemon to set MAC labels on file descriptors.
+# CAP_MAC_OVERRIDE: allow opening files across integrity levels.
+AmbientCapabilities=CAP_DAC_READ_SEARCH CAP_MAC_ADMIN CAP_MAC_OVERRIDE
+CapabilityBoundingSet=CAP_DAC_READ_SEARCH CAP_MAC_ADMIN CAP_MAC_OVERRIDE
+
+# Wrap ExecStart in execaps so PARSEC_CAP_CHMAC (bit 3 = 0x8) transfers from
+# the user's capdb entry into the daemon process's effective set.
+ExecStart=
+ExecStart=/usr/sbin/execaps -c 0x8 -- /usr/bin/pam-certauth daemon --config /etc/pam_certauth/config.toml
