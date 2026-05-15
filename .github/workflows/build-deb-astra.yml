@@ -82,7 +82,7 @@ jobs:
         # Caches rustc object output keyed by source hash. Combined with
         # Swatinem (which caches deps + target/), sccache eliminates
         # recompilation of unchanged compilation units across cache misses.
-        uses: mozilla-actions/sccache-action@v0.0.7
+        uses: mozilla-actions/sccache-action@v0.0.10
 
       - name: Run cargo test with real libpdp (astra-mac feature)
         # This is the main value of the job: actually link against libpdp
