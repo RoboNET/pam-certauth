@@ -4,4 +4,5 @@ etc/pam_certauth/crl
 var/cache/pam_certauth/ocsp
 var/lib/pam_certauth
 usr/share/pam-certauth
+usr/share/pam-certauth/pam.d
 usr/share/pam-certauth/systemd
