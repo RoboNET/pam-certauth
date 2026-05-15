@@ -24,6 +24,12 @@ permissions:
   contents: read
   packages: read
 
+# Cancel in-progress builds when a newer commit lands on the same branch.
+# Saves runner-minutes when WIP iteratively pushes fixes.
+concurrency:
+  group: build-deb-astra-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   build-astra:
     runs-on: ubuntu-22.04
