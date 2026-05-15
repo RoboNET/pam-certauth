@@ -847,6 +847,71 @@ sudo systemctl restart pam-certauth.service
   intersect с MNKC пользователя) описаны в `docs/configuration.md`
   §«MAC integrity».
 
+### МКЦ — поведение по среде установки
+
+Postinst автоматически адаптирует МКЦ-настройку под среду:
+
+| Среда | Что делает postinst |
+|---|---|
+| Не-Astra (Debian/Ubuntu без parsec) | Полный no-op: `pdpl-file`/`usercaps` отсутствуют, MAC-блок постинста пропускается |
+| Astra без strict mode (`astra-strictmode-control is-enabled` = НЕАКТИВНО) | MAC-блок пропускается; кernel не enforce'нет метки, postinst не тратит впустую |
+| Astra со strict mode | Ставит `iinh` на конфиг/state-директории, поднимает ilevel=63 на конфиг-файлах, печатает напоминание про opt-in drop-in для daemon'а |
+
+Файл `/usr/share/pam-certauth/systemd/mac-integrity.conf.example`
+устанавливается всегда (≈500 байт), но активируется только когда
+оператор сам копирует его в `/etc/systemd/system/pam-certauth.service.d/`
+и granted `usercaps -m "+3" pamcertauth`.
+
+### Защита конфига через МКЦ
+
+После установки на Astra strict mode:
+
+- `/etc/pam_certauth/config.toml`, `anchors.pem`, `host_acl.toml` имеют
+  **ilevel=63 (Высокий)**.
+- Процессы с ilevel<63 (включая обычного root без CAP_MAC_ADMIN,
+  обычного пользователя) **не могут писать** в эти файлы — kernel
+  returns EACCES на любой `O_WRONLY`/`O_RDWR`/`unlink`/`rename`.
+- Чтение разрешено (read-down): daemon `pamcertauth` на ilevel=0
+  нормально читает конфиг на старте.
+
+Чтобы редактировать конфиг (rotate CA, изменить policy, обновить
+host_acl):
+
+```bash
+# 1. Поднять max ilevel пользователя-администратора:
+sudo /sbin/pdpl-user --ilevel 63 <admin_user>
+
+# 2. Войти под ним и поднять текущий ilevel сессии:
+ssh <admin_user>@host
+sudo /usr/sbin/execaps -p 0x4 -- /bin/bash    # PARSEC_CAP_SETMAC bit
+sudo pdp_set_pid 0 "0:63::"  # set process ilevel to 63
+
+# 3. Теперь можно редактировать:
+sudo vim /etc/pam_certauth/config.toml
+```
+
+Альтернативно через короткоживущий wrapper:
+
+```bash
+sudo /usr/sbin/execaps -i 63 -c 0x4 -- vim /etc/pam_certauth/config.toml
+```
+
+Это design choice: **только владелец maximum integrity** может
+tamper'нуть конфиг pam-certauth'а. Low-integrity malware (даже с full
+Linux caps) физически не способно write на ilevel=63 файл.
+
+### Не использую МКЦ — что делать?
+
+Если МКЦ не используется (default `[mac] cert_integrity = "ignore"`):
+
+- На non-Astra хосте — ничего не нужно делать, install no-op для MAC.
+- На Astra strict mode — postinst всё равно поднимет ilevel=63 на
+  конфиг. Это безвредно: daemon продолжает работать (read-down), просто
+  редактировать конфиг можно только из high-integrity сессии. Если эта
+  защита не нужна (e.g. тестовый стенд), отключите strict mode
+  (`astra-strictmode-control disable`+reboot) или явно опустите ilevel
+  назад: `sudo pdpl-file -v "0:0::iinh" /etc/pam_certauth/config.toml`.
+
 ### Проверка применения метки
 
 ```bash
