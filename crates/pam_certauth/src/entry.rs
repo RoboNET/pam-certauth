@@ -64,31 +64,6 @@ pub unsafe fn collect_args(
     args
 }
 
-/// Collect the raw `key=value` strings from the PAM C `argv` so we can
-/// hand them to [`crate::pam_args::parse_pam_args`] without re-parsing.
-/// Lossy UTF-8 conversion is acceptable: every real-world PAM arg is
-/// ASCII, and the parser ignores values it cannot match.
-///
-/// # Safety
-///
-/// `argv` must point to `argc` valid C string pointers, as provided by PAM.
-#[cfg(target_os = "linux")]
-pub unsafe fn collect_args_raw(argc: i32, argv: *const *const std::ffi::c_char) -> Vec<String> {
-    let mut out = Vec::new();
-    if argc <= 0 || argv.is_null() {
-        return out;
-    }
-    for i in 0..argc {
-        let ptr = unsafe { *argv.add(i as usize) };
-        if ptr.is_null() {
-            continue;
-        }
-        let s = unsafe { std::ffi::CStr::from_ptr(ptr) }.to_string_lossy();
-        out.push(s.into_owned());
-    }
-    out
-}
-
 #[cfg(target_os = "linux")]
 fn config_path_from_args(args: &BTreeMap<String, String>) -> PathBuf {
     args.get("config").map_or_else(
@@ -151,9 +126,6 @@ pub unsafe extern "C" fn pam_sm_authenticate(
         crate::logging::init_once();
         // 1. Args + config.
         let args = unsafe { collect_args(argc, argv) };
-        let raw_args = unsafe { collect_args_raw(argc, argv) };
-        let raw_arg_refs: Vec<&str> = raw_args.iter().map(String::as_str).collect();
-        let parsed_args = crate::pam_args::parse_pam_args(&raw_arg_refs);
         let cfg_path = config_path_from_args(&args);
         let cfg = match pam_certauth_core::config::load_validated_config(&cfg_path) {
             Ok(c) => c,

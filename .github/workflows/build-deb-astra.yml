@@ -69,27 +69,35 @@ jobs:
           nm -D /lib/libparsec-base.so* /usr/lib/libparsec-base.so* /usr/lib/x86_64-linux-gnu/libparsec-base.so* 2>/dev/null \
             | grep -E 'parsec_capget|parsec_capset' | head || true
 
-      - name: Cache cargo registry + target
-        uses: actions/cache@v4
+      - name: Cache cargo registry + target (Swatinem/rust-cache)
+        # Smarter than raw actions/cache: scopes by job + rustc version,
+        # auto-evicts stale target/ entries, writes only when reused.
+        uses: Swatinem/rust-cache@v2
         with:
-          path: |
-            /usr/local/cargo/registry
-            /usr/local/cargo/git
-            target
-          key: cargo-astra-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}-${{ hashFiles('**/Cargo.toml') }}
-          restore-keys: |
-            cargo-astra-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}-
-            cargo-astra-${{ runner.os }}-
+          shared-key: astra-mac
+          cache-on-failure: true
+          cache-all-crates: true
+
+      - name: Configure sccache (compiler-level cache)
+        # Caches rustc object output keyed by source hash. Combined with
+        # Swatinem (which caches deps + target/), sccache eliminates
+        # recompilation of unchanged compilation units across cache misses.
+        uses: mozilla-actions/sccache-action@v0.0.7
 
       - name: Run cargo test with real libpdp (astra-mac feature)
         # This is the main value of the job: actually link against libpdp
         # and exercise the MAC FFI on Astra. A regression here means the
         # feature is broken on the target platform.
+        env:
+          RUSTC_WRAPPER: sccache
+          SCCACHE_GHA_ENABLED: "true"
         run: cargo test --workspace --features astra-mac --release
 
       - name: Build .deb with astra-mac feature
         env:
           DEB_CARGO_EXTRA_OPTIONS: "--features astra-mac"
+          RUSTC_WRAPPER: sccache
+          SCCACHE_GHA_ENABLED: "true"
         run: scripts/build-deb.sh --allow-dirty --skip-lintian
 
       - name: Show deb contents
