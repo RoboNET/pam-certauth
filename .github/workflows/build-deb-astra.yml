@@ -28,7 +28,7 @@ jobs:
   build-astra:
     runs-on: ubuntu-22.04
     container:
-      image: ghcr.io/${{ github.repository_owner }}/pam-certauth-astra-builder:latest
+      image: ghcr.io/robonet/pam-certauth-astra-builder:latest
       credentials:
         username: ${{ github.actor }}
         password: ${{ secrets.GITHUB_TOKEN }}
