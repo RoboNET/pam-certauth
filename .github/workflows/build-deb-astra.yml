@@ -22,11 +22,13 @@ jobs:
   build-astra:
     runs-on: ubuntu-22.04
     container:
-      # Primary image: Astra 1.8 base + Rust toolchain. If this image is
-      # unavailable / requires auth, fall back manually to
-      # `registry.astralinux.ru/library/astra/ubi18:latest` and install
-      # rustup in the bootstrap step.
-      image: registry.astralinux.ru/library/astra/ubi18-rust:latest
+      # Astra 1.8 base userspace (ubi18). No Rust toolchain pre-installed —
+      # we bootstrap rustup unconditionally below. Pinning to `latest` is
+      # intentional: the matching ubi18-rust image was 404 as of 2026-05,
+      # and we'd rather track the moving base than a stale fixed tag. If
+      # reproducibility becomes a concern, pin to a specific revision
+      # (e.g. `ubi18:1.8.4`) that matches the target Astra VM.
+      image: registry.astralinux.ru/library/astra/ubi18:latest
     steps:
       - uses: actions/checkout@v4
         with:
@@ -37,10 +39,8 @@ jobs:
           set -euxo pipefail
           cat /etc/astra_version || true
           uname -a
-          # Toolchain presence is best-effort; bootstrap step below installs
-          # whatever is missing.
-          (which gcc && which rustc && which cargo) || true
-          rustc --version || true
+          which gcc || true
+          dpkg --version || true
 
       - name: Install build deps (Astra apt)
         env:
@@ -80,22 +80,21 @@ jobs:
           echo "found libpdp at $LIBPDP"
           nm -D "$LIBPDP" | grep -E 'pdpl_get_from_text|pdp_set_pid|parsec_strict_mode' || true
 
-      - name: Ensure rustup toolchain matches workspace pin
-        # Astra's ubi18-rust ships a Rust toolchain, but its channel may not
-        # satisfy the workspace's rust-version. Install rustup if absent and
-        # pin to the same toolchain as build-deb.yml.
+      - name: Install rustup + pinned toolchain
+        # Base ubi18 image has no Rust toolchain. Install rustup
+        # unconditionally and pin to the same toolchain as build-deb.yml so
+        # the astra-mac feature compiles against the workspace MSRV.
         run: |
           set -euxo pipefail
-          if ! command -v rustup >/dev/null 2>&1; then
-            curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
-              | sh -s -- -y --default-toolchain none --profile minimal
-            echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
-            export PATH="$HOME/.cargo/bin:$PATH"
-          fi
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
+            | sh -s -- -y --default-toolchain none --profile minimal
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+          export PATH="$HOME/.cargo/bin:$PATH"
           rustup toolchain install 1.95.0 \
             --profile minimal \
             --component clippy \
             --component rustfmt
+          rustup default 1.95.0
 
       - name: Print toolchain versions
         run: |
