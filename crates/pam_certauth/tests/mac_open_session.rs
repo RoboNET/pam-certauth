@@ -150,7 +150,10 @@ fn mac_denial_invokes_close_session_for_cleanup() {
 
     let closes = monitor.closes.lock().unwrap();
     assert_eq!(closes.len(), 1, "expected exactly one close_session call");
-    assert_eq!(closes[0].0, "sess-1", "close_session must carry ctx.session_id");
+    assert_eq!(
+        closes[0].0, "sess-1",
+        "close_session must carry ctx.session_id"
+    );
     assert_eq!(
         closes[0].1, "mac_denied",
         "close_session reason must identify the MAC denial cause",

@@ -481,19 +481,18 @@ where
     // MAC integrity inputs captured for `pam_sm_open_session`.
     let verified_leaf = verified.verified_leaf();
     let cert_ident_value = pam_certauth_core::x509::CertIdent::from(&verified_leaf);
-    let cert_max_integrity = match pam_certauth_core::x509::max_integrity_ext::extract_max_integrity(
-        &verified_leaf,
-    ) {
-        Ok(label) => label,
-        Err(e) => {
-            pam_certauth_core::mac::audit::emit_cert_ext_parse_failed(
-                pam_user,
-                &cert_ident_value,
-                &e.to_string(),
-            );
-            None
-        }
-    };
+    let cert_max_integrity =
+        match pam_certauth_core::x509::max_integrity_ext::extract_max_integrity(&verified_leaf) {
+            Ok(label) => label,
+            Err(e) => {
+                pam_certauth_core::mac::audit::emit_cert_ext_parse_failed(
+                    pam_user,
+                    &cert_ident_value,
+                    &e.to_string(),
+                );
+                None
+            }
+        };
     let cert_ident = Some(cert_ident_value);
     let home_dir = resolve_home_dir(pam_user);
 
@@ -829,19 +828,18 @@ where
     let cert_not_after = Some(cert.certificate.not_after());
     let verified_leaf = verified.verified_leaf();
     let cert_ident_value = pam_certauth_core::x509::CertIdent::from(&verified_leaf);
-    let cert_max_integrity = match pam_certauth_core::x509::max_integrity_ext::extract_max_integrity(
-        &verified_leaf,
-    ) {
-        Ok(label) => label,
-        Err(e) => {
-            pam_certauth_core::mac::audit::emit_cert_ext_parse_failed(
-                pam_user,
-                &cert_ident_value,
-                &e.to_string(),
-            );
-            None
-        }
-    };
+    let cert_max_integrity =
+        match pam_certauth_core::x509::max_integrity_ext::extract_max_integrity(&verified_leaf) {
+            Ok(label) => label,
+            Err(e) => {
+                pam_certauth_core::mac::audit::emit_cert_ext_parse_failed(
+                    pam_user,
+                    &cert_ident_value,
+                    &e.to_string(),
+                );
+                None
+            }
+        };
     let cert_ident = Some(cert_ident_value);
     let home_dir = resolve_home_dir(pam_user);
     let auth_ctx = AuthContext {

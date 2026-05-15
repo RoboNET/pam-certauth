@@ -56,7 +56,9 @@ extern "C" {
 /// * [`PamHelperError::PamRc`] when the underlying PAM call fails.
 /// * [`PamHelperError::Null`] if PAM returned a NULL user pointer.
 /// * [`PamHelperError::NonUtf8`] if PAM returned non-UTF-8 bytes.
-pub unsafe fn pam_get_user_string(pamh: *mut pam_sys::pam_handle_t) -> Result<String, PamHelperError> {
+pub unsafe fn pam_get_user_string(
+    pamh: *mut pam_sys::pam_handle_t,
+) -> Result<String, PamHelperError> {
     let mut user_ptr: *const c_char = std::ptr::null();
     // SAFETY: `pamh` is owned by PAM; `user_ptr` is a valid out-pointer.
     let rc = pam_get_user(pamh, &raw mut user_ptr, std::ptr::null());

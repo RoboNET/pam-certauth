@@ -64,7 +64,8 @@ fn session_open_v1_payload_still_parses() {
       "cert_cn":"Alice",
       "cert_serial":"01"
     }"#;
-    let parsed: ClientMessage = serde_json::from_str(j).expect("v1 session_open should still parse");
+    let parsed: ClientMessage =
+        serde_json::from_str(j).expect("v1 session_open should still parse");
     match parsed {
         ClientMessage::SessionOpen {
             engineer_ski,

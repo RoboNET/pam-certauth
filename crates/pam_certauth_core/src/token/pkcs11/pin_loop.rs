@@ -37,16 +37,11 @@ pub trait PinSessionOpener {
     ///
     /// Forwards every [`Pkcs11Error`] returned by the underlying
     /// `Pkcs11Session::open` (or test mock).
-    fn open_with_pin(&self, slot: Slot, pin: &SecretString)
-        -> Result<Pkcs11Session, Pkcs11Error>;
+    fn open_with_pin(&self, slot: Slot, pin: &SecretString) -> Result<Pkcs11Session, Pkcs11Error>;
 }
 
 impl PinSessionOpener for Pkcs11Backend {
-    fn open_with_pin(
-        &self,
-        slot: Slot,
-        pin: &SecretString,
-    ) -> Result<Pkcs11Session, Pkcs11Error> {
+    fn open_with_pin(&self, slot: Slot, pin: &SecretString) -> Result<Pkcs11Session, Pkcs11Error> {
         Pkcs11Session::open(self, slot, pin)
     }
 }

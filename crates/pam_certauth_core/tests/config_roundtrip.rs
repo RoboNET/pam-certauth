@@ -278,8 +278,7 @@ fn validated_config_rejects_hook_mode_without_hook_path() -> Result<(), Box<dyn 
     let dir = tempfile::tempdir()?;
     let anchor = write_anchor(dir.path());
     let body = fixture_with_anchor(&anchor);
-    let injected =
-        format!("{body}\n[monitor]\non_usb_removed = \"hook\"\n");
+    let injected = format!("{body}\n[monitor]\non_usb_removed = \"hook\"\n");
     let raw: RawConfig = toml::from_str(&injected)?;
     let err = ValidatedConfig::try_from(&raw).expect_err("must reject hook without path");
     assert!(
@@ -305,4 +304,3 @@ fn validated_config_needs_gost_false_for_pkcs11_backend_even_with_gost_oid(
     assert!(!v.needs_gost());
     Ok(())
 }
-

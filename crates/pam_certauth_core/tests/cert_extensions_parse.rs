@@ -25,7 +25,10 @@ const TAG_UTF8_STRING: u8 = 0x0C;
 
 /// Encode a single TLV with a short-form length prefix (test inputs are tiny).
 fn encode_short_tlv(tag: u8, body: &[u8]) -> Vec<u8> {
-    assert!(body.len() < 0x80, "test helper only supports short-form length");
+    assert!(
+        body.len() < 0x80,
+        "test helper only supports short-form length"
+    );
     let mut out = Vec::with_capacity(2 + body.len());
     out.push(tag);
     out.push(u8::try_from(body.len()).unwrap());
@@ -64,15 +67,18 @@ fn build_cert(extensions: &[(&str, Vec<u8>)]) -> X509 {
 
     let serial = {
         let mut bn = BigNum::new().unwrap();
-        bn.rand(64, openssl::bn::MsbOption::MAYBE_ZERO, false).unwrap();
+        bn.rand(64, openssl::bn::MsbOption::MAYBE_ZERO, false)
+            .unwrap();
         Asn1Integer::from_bn(&bn).unwrap()
     };
     b.set_serial_number(&serial).unwrap();
     b.set_subject_name(&name).unwrap();
     b.set_issuer_name(&name).unwrap();
     b.set_pubkey(&pkey).unwrap();
-    b.set_not_before(&Asn1Time::days_from_now(0).unwrap()).unwrap();
-    b.set_not_after(&Asn1Time::days_from_now(365).unwrap()).unwrap();
+    b.set_not_before(&Asn1Time::days_from_now(0).unwrap())
+        .unwrap();
+    b.set_not_after(&Asn1Time::days_from_now(365).unwrap())
+        .unwrap();
 
     for (oid, value) in extensions {
         let oid_obj = Asn1Object::from_str(oid).unwrap();

@@ -6,7 +6,9 @@
 //! PAM symbols.
 
 use pam_certauth_core::config::ValidatedConfig;
-use pam_certauth_core::ipc::{ConnectPerCall, FailModeWrapper, MonitorClient, MonitorClientFactory};
+use pam_certauth_core::ipc::{
+    ConnectPerCall, FailModeWrapper, MonitorClient, MonitorClientFactory,
+};
 use pam_certauth_core::mac::backend::MacBackend;
 #[cfg(feature = "astra-mac")]
 use pam_certauth_core::mac::backend::ParsecBackend;
@@ -62,8 +64,10 @@ pub fn run_open_session_pipeline(
     // `open_session` call site.
     let factory = MonitorClientFactory::new(cfg.monitor.socket_path.clone(), cfg.monitor.timeout);
     let connect_per_call = ConnectPerCall::new(factory);
-    let monitor: Box<dyn MonitorClient> =
-        Box::new(FailModeWrapper::new(connect_per_call, cfg.monitor.fail_mode.into()));
+    let monitor: Box<dyn MonitorClient> = Box::new(FailModeWrapper::new(
+        connect_per_call,
+        cfg.monitor.fail_mode.into(),
+    ));
     run_open_session_pipeline_with_backend_and_monitor(
         backend.as_ref(),
         Some(monitor.as_ref()),

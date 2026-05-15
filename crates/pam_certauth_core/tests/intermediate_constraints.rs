@@ -48,7 +48,8 @@ fn build_ca_like(
     b.set_version(2).unwrap();
 
     let mut bn = BigNum::new().unwrap();
-    bn.rand(64, openssl::bn::MsbOption::MAYBE_ZERO, false).unwrap();
+    bn.rand(64, openssl::bn::MsbOption::MAYBE_ZERO, false)
+        .unwrap();
     let serial = Asn1Integer::from_bn(&bn).unwrap();
     b.set_serial_number(&serial).unwrap();
 
@@ -112,13 +113,17 @@ fn make_leaf() -> Certificate {
     let mut b = X509Builder::new().unwrap();
     b.set_version(2).unwrap();
     let mut bn = BigNum::new().unwrap();
-    bn.rand(64, openssl::bn::MsbOption::MAYBE_ZERO, false).unwrap();
-    b.set_serial_number(&Asn1Integer::from_bn(&bn).unwrap()).unwrap();
+    bn.rand(64, openssl::bn::MsbOption::MAYBE_ZERO, false)
+        .unwrap();
+    b.set_serial_number(&Asn1Integer::from_bn(&bn).unwrap())
+        .unwrap();
     b.set_subject_name(&n).unwrap();
     b.set_issuer_name(&n).unwrap();
     b.set_pubkey(&pkey).unwrap();
-    b.set_not_before(&Asn1Time::days_from_now(0).unwrap()).unwrap();
-    b.set_not_after(&Asn1Time::days_from_now(365).unwrap()).unwrap();
+    b.set_not_before(&Asn1Time::days_from_now(0).unwrap())
+        .unwrap();
+    b.set_not_after(&Asn1Time::days_from_now(365).unwrap())
+        .unwrap();
     b.sign(&pkey, MessageDigest::sha256()).unwrap();
     cert_from(b.build())
 }

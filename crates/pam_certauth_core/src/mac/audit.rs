@@ -45,8 +45,7 @@ pub const EVENT_MAC_USER_UNKNOWN: &str = "mac_user_unknown";
 pub const EVENT_MAC_FALLBACK_USED: &str = "mac_fallback_used";
 /// `cert_max_integrity_categories_above_32bit` — DER decoder observed
 /// integrity category bits beyond bit 31; advisory.
-pub const EVENT_CERT_MAX_INT_CATS_ABOVE_32BIT: &str =
-    "cert_max_integrity_categories_above_32bit";
+pub const EVENT_CERT_MAX_INT_CATS_ABOVE_32BIT: &str = "cert_max_integrity_categories_above_32bit";
 /// `cert_max_integrity_parse_failed` — the `MAX_INTEGRITY` extension
 /// was present but failed to decode.
 pub const EVENT_CERT_EXT_PARSE_FAILED: &str = "cert_max_integrity_parse_failed";
@@ -232,11 +231,7 @@ pub fn should_emit_parse_failed(fingerprint: &str) -> bool {
     }
 
     if cache.len() >= PARSE_FAIL_CACHE_CAP {
-        if let Some(oldest_key) = cache
-            .iter()
-            .min_by_key(|(_, t)| *t)
-            .map(|(k, _)| k.clone())
-        {
+        if let Some(oldest_key) = cache.iter().min_by_key(|(_, t)| *t).map(|(k, _)| k.clone()) {
             cache.remove(&oldest_key);
         }
     }
