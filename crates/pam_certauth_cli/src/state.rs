@@ -383,11 +383,18 @@ async fn handle_logind(
 }
 
 /// Atomically write the sessions registry snapshot to `final_path` with
-/// an МКЦ irelax (`level=0`) label applied to the file descriptor BEFORE
-/// the inode becomes visible at the published path. This closes the
-/// path-based TOCTOU window between `open()` and `set_file_label()` per
-/// MAC integrity spec §5.3.1: a peer never observes the file without
-/// the irelax label attached.
+/// an МКЦ integrity (`level=0`) label applied to the file descriptor
+/// BEFORE the inode becomes visible at the published path. This closes
+/// the path-based TOCTOU window between `open()` and `set_file_label()`
+/// per MAC integrity spec §5.3.1: a peer never observes the file
+/// without the integrity label attached.
+///
+/// The kernel rejects the `irelax` flag through the fd-based API
+/// (`pdp_set_fd` returns `EINVAL` for `"0:0:0:irelax"`), so the fd is
+/// labeled with the bare `"0:0:0"` form (`irelax=false`). The daemon
+/// runs at level 0 already and does not need write-down semantics for
+/// its own state file; `irelax` remains available on the path-based
+/// [`MacBackend::set_file_label`] for callers that do.
 ///
 /// Labeling is best-effort — if `set_fd_label` fails the write still
 /// proceeds and an `mac_sessions_file_label_warning` audit event is
@@ -415,7 +422,7 @@ pub fn write_sessions_atomic<B: MacBackend>(
         level: 0,
         categories: 0_u64,
     };
-    if let Err(e) = backend.set_fd_label(fd, label, /* irelax= */ true) {
+    if let Err(e) = backend.set_fd_label(fd, label, /* irelax= */ false) {
         mac_audit::emit_sessions_file_warn(&final_path.to_string_lossy(), Some(&format!("{e}")));
         // Continue — best-effort labeling; DAC + parent dir iinh still apply.
     }
