@@ -23,14 +23,11 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::SystemTime;
 
-use pam_certauth_core::cert_claims::CertClaims;
 use pam_certauth_core::challenge::{challenge_response, CryptoError};
 use pam_certauth_core::config::ValidatedConfig;
 use pam_certauth_core::discovery::{discover_credentials, DiscoveredCreds, DiscoveryError};
 use pam_certauth_core::hooks::{run_hooks_for_stage, HookError, HookExecutor, HookStage, HookVars};
-use pam_certauth_core::host_binding::{
-    verify_host_binding, verify_user_binding, HostBindingError,
-};
+use pam_certauth_core::host_binding::{verify_host_binding, verify_user_binding, HostBindingError};
 use pam_certauth_core::host_identity::HostIdSourceKind;
 use pam_certauth_core::ipc::{MonitorClient, OpenSessionInfo};
 use pam_certauth_core::mapping::{match_user, MappingError, MatchedMapping};
@@ -309,12 +306,6 @@ pub struct FlowOutcome<O: MountOps + 'static> {
     pub auth_ctx: AuthContext,
     /// Owns the lifetime of the USB mount.  `None` for PKCS#11 mode.
     pub mount: Option<MountGuard<O>>,
-    /// Scopes claimed by the validated engineer cert
-    /// (`pam_cert_scopes` X.509 extension), normalised to their string
-    /// form (`"*"`, `"bios.*"`, `"bios.flash"`). Empty when the extension
-    /// is absent or could not be parsed — callers MUST treat that as the
-    /// cert claiming no scopes (so any `require_scope` PAM arg denies).
-    pub cert_scopes: Vec<String>,
 }
 
 impl<O: MountOps + 'static> std::fmt::Debug for FlowOutcome<O> {
@@ -322,7 +313,6 @@ impl<O: MountOps + 'static> std::fmt::Debug for FlowOutcome<O> {
         f.debug_struct("FlowOutcome")
             .field("auth_ctx", &self.auth_ctx)
             .field("mount", &self.mount.as_ref().map(|_| "<MountGuard>"))
-            .field("cert_scopes", &self.cert_scopes)
             .finish()
     }
 }
@@ -460,7 +450,7 @@ where
     }
 
     // Step 8 — trust verification (path build, signatures, CRLs, pinning).
-    let _verified = deps.trust.verify(&loaded.end_entity, &presented)?;
+    let verified = deps.trust.verify(&loaded.end_entity, &presented)?;
 
     // Step 9 — cert scope (cert authorises this host).
     //
@@ -488,6 +478,24 @@ where
     let cert_not_after = Some(loaded.end_entity.not_after());
     let usb_vid_pid = Some(format!("{:04x}:{:04x}", dev.vid, dev.pid));
 
+    // MAC integrity inputs captured for `pam_sm_open_session`.
+    let verified_leaf = verified.verified_leaf();
+    let cert_ident_value = pam_certauth_core::x509::CertIdent::from(&verified_leaf);
+    let cert_max_integrity =
+        match pam_certauth_core::x509::max_integrity_ext::extract_max_integrity(&verified_leaf) {
+            Ok(label) => label,
+            Err(e) => {
+                pam_certauth_core::mac::audit::emit_cert_ext_parse_failed(
+                    pam_user,
+                    &cert_ident_value,
+                    &e.to_string(),
+                );
+                None
+            }
+        };
+    let cert_ident = Some(cert_ident_value);
+    let home_dir = resolve_home_dir(pam_user);
+
     let auth_ctx = AuthContext {
         session_id,
         cert_cn,
@@ -499,6 +507,9 @@ where
         host_id_source: deps.host_id_source,
         authenticated_at: SystemTime::now(),
         cert_not_after,
+        cert_max_integrity,
+        cert_ident,
+        home_dir,
     };
 
     // Step 11b — post_auth_success hooks (Stage 5). Run after every
@@ -521,7 +532,6 @@ where
     let cert_cn_str = auth_ctx.cert_cn.as_deref().unwrap_or("");
     let cert_serial_str = auth_ctx.cert_serial.as_deref().unwrap_or("");
     let extras = session_open_extras(&loaded.end_entity, pam_user);
-    let scope_refs: Vec<&str> = extras.scopes.iter().map(String::as_str).collect();
     let info = OpenSessionInfo {
         session_id: &auth_ctx.session_id,
         pam_user,
@@ -533,7 +543,6 @@ where
         cert_serial: cert_serial_str,
         engineer_ski: &extras.engineer_ski,
         engineer_cert_sha256: &extras.engineer_cert_sha256,
-        scopes: &scope_refs,
         uid: extras.uid,
     };
     if let Err(e) = deps.monitor.open_session(&info) {
@@ -547,7 +556,6 @@ where
     Ok(FlowOutcome {
         auth_ctx,
         mount: Some(mount),
-        cert_scopes: extras.scopes,
     })
 }
 
@@ -796,7 +804,7 @@ where
     // long as the cert chains to a configured anchor, which is the
     // common case for both Rutoken and JaCarta deployments.
     let presented_chain: Vec<Certificate> = Vec::new();
-    let _verified = deps.trust.verify(&cert.certificate, &presented_chain)?;
+    let verified = deps.trust.verify(&cert.certificate, &presented_chain)?;
 
     // Step 9 — cert scope (cert authorises this host).
     // `pam_cert_host_binding` is mandatory; user_binding is checked in
@@ -810,8 +818,7 @@ where
     if pam_certauth_core::x509::user_binding_ext::parse(cert.certificate.x509()).is_ok() {
         verify_user_binding(cert.certificate.x509(), pam_user)?;
     } else {
-        let _matched: MatchedMapping =
-            match_user(&cert.certificate, pam_user, deps.user_mappings)?;
+        let _matched: MatchedMapping = match_user(&cert.certificate, pam_user, deps.user_mappings)?;
     }
 
     // Step 11 — assemble AuthContext.  The token serial replaces the
@@ -819,6 +826,22 @@ where
     let cert_cn = cert.certificate.subject_cn().ok();
     let cert_serial = Some(cert.certificate.serial_hex().to_lowercase());
     let cert_not_after = Some(cert.certificate.not_after());
+    let verified_leaf = verified.verified_leaf();
+    let cert_ident_value = pam_certauth_core::x509::CertIdent::from(&verified_leaf);
+    let cert_max_integrity =
+        match pam_certauth_core::x509::max_integrity_ext::extract_max_integrity(&verified_leaf) {
+            Ok(label) => label,
+            Err(e) => {
+                pam_certauth_core::mac::audit::emit_cert_ext_parse_failed(
+                    pam_user,
+                    &cert_ident_value,
+                    &e.to_string(),
+                );
+                None
+            }
+        };
+    let cert_ident = Some(cert_ident_value);
+    let home_dir = resolve_home_dir(pam_user);
     let auth_ctx = AuthContext {
         session_id,
         cert_cn,
@@ -830,6 +853,9 @@ where
         host_id_source: deps.host_id_source,
         authenticated_at: SystemTime::now(),
         cert_not_after,
+        cert_max_integrity,
+        cert_ident,
+        home_dir,
     };
 
     // Drop the session here so `C_Logout` runs before we return.
@@ -851,7 +877,6 @@ where
     let cert_cn_str = auth_ctx.cert_cn.as_deref().unwrap_or("");
     let cert_serial_str = auth_ctx.cert_serial.as_deref().unwrap_or("");
     let extras = session_open_extras(&cert.certificate, pam_user);
-    let scope_refs: Vec<&str> = extras.scopes.iter().map(String::as_str).collect();
     let info = OpenSessionInfo {
         session_id: &auth_ctx.session_id,
         pam_user,
@@ -863,7 +888,6 @@ where
         cert_serial: cert_serial_str,
         engineer_ski: &extras.engineer_ski,
         engineer_cert_sha256: &extras.engineer_cert_sha256,
-        scopes: &scope_refs,
         uid: extras.uid,
     };
     if let Err(e) = deps.monitor.open_session(&info) {
@@ -877,48 +901,41 @@ where
     Ok(FlowOutcome {
         auth_ctx,
         mount: None,
-        cert_scopes: extras.scopes,
     })
 }
 
-/// v2 IPC fields derived from the validated engineer cert.
+/// IPC fields derived from the validated engineer cert.
 ///
 /// Bundled together so the two emission sites in this module (USB-PKCS#12
-/// and PKCS#11) build them identically. Owned strings + owned scope vec
-/// so the consumer can borrow with the right lifetime when constructing
-/// [`OpenSessionInfo`].
+/// and PKCS#11) build them identically. Owned strings so the consumer can
+/// borrow with the right lifetime when constructing [`OpenSessionInfo`].
 #[derive(Debug, Default)]
 pub(crate) struct SessionOpenExtras {
     pub engineer_ski: String,
     pub engineer_cert_sha256: String,
-    pub scopes: Vec<String>,
     pub uid: u32,
 }
 
-/// Best-effort extraction of v2 `SessionOpen` fields. Logs at `warn` and
-/// returns defaults on failure — the daemon will see empty strings and
-/// the IPC will continue to work for the legacy fields. This matches the
-/// existing "monitor failures are non-fatal" policy.
+/// Best-effort extraction of `SessionOpen` engineer-cert fields. Logs at
+/// `warn` and returns defaults on failure — the daemon will see empty
+/// strings and the IPC will continue to work for the legacy fields. This
+/// matches the existing "monitor failures are non-fatal" policy.
 pub(crate) fn session_open_extras(cert: &Certificate, pam_user: &str) -> SessionOpenExtras {
+    use sha2::Digest;
     let mut out = SessionOpenExtras::default();
-    match CertClaims::from_cert(cert.x509()) {
-        Ok(c) => {
-            out.engineer_ski = c.subject_key_identifier;
-            out.engineer_cert_sha256 = c.cert_sha256;
-            out.scopes = c
-                .scopes
-                .into_iter()
-                .map(|s| match s {
-                    pam_certauth_core::x509::scopes_ext::Scope::Wildcard => "*".to_string(),
-                    pam_certauth_core::x509::scopes_ext::Scope::Exact(s) => s,
-                })
-                .collect();
+    let x = cert.x509();
+    if let Some(ski) = x.subject_key_id() {
+        out.engineer_ski = hex::encode(ski.as_slice());
+    }
+    match x.to_der() {
+        Ok(der) => {
+            out.engineer_cert_sha256 = hex::encode(sha2::Sha256::digest(&der));
         }
         Err(e) => {
             tracing::warn!(
                 target: "pam_certauth.flow",
                 error = %e,
-                "failed to extract CertClaims for SessionOpen v2 fields (non-fatal)"
+                "failed to encode engineer cert as DER for SessionOpen sha256 (non-fatal)"
             );
         }
     }
@@ -950,6 +967,16 @@ fn resolve_uid(pam_user: &str) -> u32 {
             );
             0
         }
+    }
+}
+
+/// Resolve `pam_user`'s `$HOME` via NSS.  Returns `None` when the user
+/// is not in passwd or has no home set; the MAC orchestrator's
+/// home-label advisory tolerates `None`.
+fn resolve_home_dir(pam_user: &str) -> Option<PathBuf> {
+    match nix::unistd::User::from_name(pam_user) {
+        Ok(Some(u)) => Some(u.dir),
+        _ => None,
     }
 }
 

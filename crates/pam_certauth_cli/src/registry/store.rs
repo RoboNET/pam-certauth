@@ -1,38 +1,16 @@
 //! Atomic JSON persistence for the session registry.
 //!
-//! The file is written to a temp path opened with `O_CREAT | O_EXCL`
-//! and `mode=0o600` (so the create itself sets the secure mode without a
-//! race against `umask`), then `fsync`'d, `rename(2)`'d into place, and
-//! the parent directory is then `fsync`'d so the rename hits stable storage
-//! across power loss. Sessions include cert CN/serial which we do not want
-//! exposed — the file therefore stays at `0600`.
+//! The file is written through [`crate::state::write_sessions_atomic`]:
+//! a same-filesystem tempfile receives the bytes (with an МКЦ irelax
+//! `level=0` label applied to its fd BEFORE publication — see spec
+//! §5.3.1), then `fsync(2)` + `rename(2)` make the new snapshot visible
+//! at the final path. The parent directory is then `fsync`'d so the
+//! rename survives power loss. Sessions include cert CN/serial which we
+//! do not want exposed — the file therefore stays at `0600`.
 
-use std::fs::{File, OpenOptions};
-use std::io::{self, Write};
-use std::os::unix::fs::OpenOptionsExt;
+use std::fs::File;
+use std::io;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::{SystemTime, UNIX_EPOCH};
-
-/// Per-process counter for temp filename uniqueness; mixed with the current
-/// nanos so two persists in the same nanosecond collide neither on the
-/// filename nor on `O_CREAT|O_EXCL`.
-static TMP_COUNTER: AtomicU64 = AtomicU64::new(0);
-
-/// Inline cleanup guard for [`RegistryStore::persist`]: removes the temp
-/// file if the function aborts before the rename completes.
-struct PersistCleanupGuard<'a> {
-    path: &'a Path,
-    armed: bool,
-}
-
-impl Drop for PersistCleanupGuard<'_> {
-    fn drop(&mut self) {
-        if self.armed {
-            let _ = std::fs::remove_file(self.path);
-        }
-    }
-}
 
 use super::ActiveSession;
 
@@ -85,15 +63,12 @@ impl RegistryStore {
 
     /// Atomically replace the on-disk file with a new snapshot.
     ///
-    /// Implementation notes:
-    ///
-    /// * The temp file is opened via `O_CREAT | O_EXCL` with `mode=0o600`
-    ///   so the secure mode is set at creation time — closing the
-    ///   `umask`-vs-`set_permissions` race window where the world-readable
-    ///   bits could otherwise be observable for an instant.
-    /// * After writing, the temp file is `fsync`'d and renamed into place.
-    /// * The containing directory is then `fsync`'d so the rename survives
-    ///   a power loss.
+    /// Delegates the tempfile + fd-label + fsync + rename sequence to
+    /// [`crate::state::write_sessions_atomic`] so the МКЦ irelax label
+    /// is set on the inode before it becomes visible at the published
+    /// path (closes the path-based TOCTOU window per spec §5.3.1).
+    /// After the rename the parent directory is `fsync`'d so the rename
+    /// survives a power loss.
     ///
     /// This call is synchronous and may block; async callers should run it
     /// inside `tokio::task::spawn_blocking`.
@@ -101,83 +76,27 @@ impl RegistryStore {
     /// # Errors
     ///
     /// Returns the underlying `io::Error` for any failure during temp-file
-    /// creation, write, rename, or directory fsync.
+    /// creation, write, rename, or directory fsync. Label failures are
+    /// downgraded to a warning by `write_sessions_atomic`.
     pub fn persist(&self, snapshot: &[ActiveSession]) -> io::Result<()> {
         let parent = self.path.parent().ok_or_else(|| {
             io::Error::new(io::ErrorKind::InvalidInput, "registry path has no parent")
         })?;
         std::fs::create_dir_all(parent)?;
 
-        // Race-free temp create: pick a unique sibling name and open with
-        // O_CREAT|O_EXCL|mode=0o600. Retry a small bounded number of times
-        // on the (extremely unlikely) collision.
-        let mut last_err: Option<io::Error> = None;
-        let mut tmp_path: Option<PathBuf> = None;
-        let mut tmp_file: Option<File> = None;
-        for _ in 0..16 {
-            let candidate = parent.join(format!(
-                ".sessions.{}.{}.tmp",
-                std::process::id(),
-                rand_suffix()
-            ));
-            match OpenOptions::new()
-                .write(true)
-                .create_new(true)
-                .mode(0o600)
-                .open(&candidate)
-            {
-                Ok(f) => {
-                    tmp_file = Some(f);
-                    tmp_path = Some(candidate);
-                    break;
-                }
-                Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {
-                    last_err = Some(e);
-                }
-                Err(e) => return Err(e),
-            }
-        }
-        let (mut tmp, tmp_path) = match (tmp_file, tmp_path) {
-            (Some(f), Some(p)) => (f, p),
-            _ => {
-                return Err(last_err.unwrap_or_else(|| {
-                    io::Error::other("failed to create unique tmp file for registry persist")
-                }))
-            }
-        };
-
-        // Best-effort cleanup if we abort partway through write/fsync/rename.
-        let mut guard = PersistCleanupGuard {
-            path: &tmp_path,
-            armed: true,
-        };
-
         let bytes = serde_json::to_vec_pretty(snapshot)?;
-        tmp.write_all(&bytes)?;
-        tmp.sync_all()?;
-        // Drop the file handle before rename to avoid Windows-isms (no-op
-        // here but keeps the close ordering tidy).
-        drop(tmp);
 
-        std::fs::rename(&tmp_path, &self.path)?;
-        guard.armed = false;
+        #[cfg(feature = "astra-mac")]
+        let backend = pam_certauth_core::mac::backend::ParsecBackend::new();
+        #[cfg(not(feature = "astra-mac"))]
+        let backend = pam_certauth_core::mac::backend::StubBackend::new();
+
+        crate::state::write_sessions_atomic(&self.path, &bytes, &backend)?;
 
         // fsync the parent directory so the rename is durable.
-        // Best-effort: on filesystems that don't support it (very rare on
-        // Linux for native FS), surface the error.
         let dir = File::open(parent)?;
         dir.sync_all()?;
 
         Ok(())
     }
-}
-
-/// Cheap pseudo-random suffix for temp filenames. We only need uniqueness
-/// within the same parent dir/process, not cryptographic strength.
-fn rand_suffix() -> String {
-    let nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |d| d.subsec_nanos());
-    let c = TMP_COUNTER.fetch_add(1, Ordering::Relaxed);
-    format!("{nanos:x}{c:x}")
 }

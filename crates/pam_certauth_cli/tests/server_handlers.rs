@@ -11,11 +11,11 @@
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
-use pam_certauth_core::ipc::client::MonitordClient;
 use pam_certauth_cli::registry::{RegistryStore, SessionRegistry};
 use pam_certauth_cli::state::OnUsbRemoved;
 use pam_certauth_cli::testing::spawn_test_server_with;
 use pam_certauth_cli::udev_query::{AlwaysAbsent, AlwaysPresent};
+use pam_certauth_core::ipc::client::MonitordClient;
 use pam_certauth_proto::{SessionOpenPayload, SessionTarget};
 use uuid::Uuid;
 
@@ -32,7 +32,6 @@ fn sample(usb: Option<&str>) -> SessionOpenPayload {
         cert_serial: "01".into(),
         engineer_ski: String::new(),
         engineer_cert_sha256: String::new(),
-        scopes: Vec::new(),
         uid: 0,
     }
 }

@@ -45,9 +45,6 @@ pub struct ActiveSession {
     /// Lowercase hex of `SHA-256(cert DER)` of the engineer leaf. v2.
     #[serde(default)]
     pub engineer_cert_sha256: String,
-    /// Engineer-cert scopes (`"*"` for wildcard). v2.
-    #[serde(default)]
-    pub scopes: Vec<String>,
     /// Unix uid the PAM module authenticated. v2 — used as the lookup
     /// key for `find_by_uid`. `0` means "v1 client / unknown".
     #[serde(default)]

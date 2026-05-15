@@ -76,10 +76,7 @@ pub fn pre_validate_end_entity(
     //      let `sha1WithRSAEncryption` slip past a `sha` whitelist entry).
     let sig_alg = cert.signature_algorithm();
     if !cfg.signature_alg_whitelist.is_empty()
-        && !cfg
-            .signature_alg_whitelist
-            .iter()
-            .any(|w| w == &sig_alg)
+        && !cfg.signature_alg_whitelist.iter().any(|w| w == &sig_alg)
     {
         return Err(TrustError::SignatureAlgorithm(sig_alg));
     }

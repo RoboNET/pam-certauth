@@ -5,12 +5,13 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use crate::config::raw::{
-    RawConfig, RawCryptoBackend, RawHostIdFallback, RawHostIdentity, RawMode, RawMonitor,
-    RawMonitorFailMode, RawOnUsbRemoved, RawPkcs11LockingMode, RawPolicySection,
+    RawCertIntegrityMode, RawConfig, RawCryptoBackend, RawHostIdFallback, RawHostIdentity,
+    RawMacPolicy, RawMode, RawMonitor, RawMonitorFailMode, RawOnUsbRemoved, RawPkcs11LockingMode,
     RawRevocationMode, RawTrust, RawTrustOverride, RawUserMapping,
 };
 use crate::error::TrustError;
 use crate::hooks::{validate_hook, HookConfig};
+use crate::mac::IntegrityLabel;
 use crate::token::pkcs11::LockingMode as Pkcs11LockingMode;
 use crate::x509::SignatureAlg;
 use crate::{Error, LogLevel, SyslogFacility};
@@ -63,14 +64,6 @@ pub struct ValidatedConfig {
     pub monitor: MonitorSection,
     /// Trust section.
     pub trust: TrustSection,
-    /// Optional approver-CA trust section (spec §2.2, m-of-n approvers).
-    /// `None` when `[approver_trust]` is absent in raw config.
-    pub approver_trust: Option<TrustSection>,
-    /// Optional TSA trust section (spec §2.3, RFC 3161 `TimestampToken`).
-    /// `None` when `[tsa_trust]` is absent in raw config.
-    pub tsa_trust: Option<TrustSection>,
-    /// Policy section (spec §5.4).
-    pub policy: PolicySection,
     /// Trust overrides.
     pub trust_overrides: Vec<TrustOverride>,
     /// Host identity.
@@ -81,6 +74,44 @@ pub struct ValidatedConfig {
     pub logging: LoggingSection,
     /// Hooks.
     pub hooks: Vec<HookConfig>,
+    /// MAC integrity policy (spec §2.4).
+    pub mac: MacPolicy,
+}
+
+/// Validated `[mac]` policy block.
+#[derive(Debug, Clone)]
+pub struct MacPolicy {
+    /// Trinary policy for the X.509 `MAX_INTEGRITY` extension on the
+    /// authenticating certificate. Default [`CertIntegrityMode::Optional`].
+    pub cert_integrity: CertIntegrityMode,
+    /// Fallback upper bound applied when the cert carries no extension and
+    /// [`Self::cert_integrity`] is [`CertIntegrityMode::Optional`].
+    pub fallback_max_integrity: Option<IntegrityLabel>,
+    /// Whether to emit a warning when the resolved process label disagrees
+    /// with the user's `$HOME` label at session-open time. Default `true`.
+    pub warn_on_homedir_label_mismatch: bool,
+}
+
+impl Default for MacPolicy {
+    fn default() -> Self {
+        Self {
+            cert_integrity: CertIntegrityMode::Optional,
+            fallback_max_integrity: None,
+            warn_on_homedir_label_mismatch: true,
+        }
+    }
+}
+
+/// Trinary policy for the X.509 `MAX_INTEGRITY` extension.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CertIntegrityMode {
+    /// Extension MUST be present; missing extension fails authentication.
+    Required,
+    /// Extension is consulted when present; absent falls back to
+    /// `fallback_max_integrity` or admin-default.
+    Optional,
+    /// Extension is not consulted; integrity comes from admin policy only.
+    Ignore,
 }
 
 /// Crypto backend.
@@ -272,33 +303,6 @@ pub enum UserMatchCriteria {
     SanUpn(String),
 }
 
-/// Validated `[policy]` section (spec §5.4).
-#[derive(Debug, Clone)]
-pub struct PolicySection {
-    /// Absolute path to the external policy TOML.  Defaults to
-    /// `/etc/pam_certauth/policy.toml`.
-    pub path: PathBuf,
-    /// How often to re-poll the KRL for changes.  Defaults to 5 minutes.
-    pub krl_poll_interval: Duration,
-    /// Whether approver certificates must carry the approver-EKU.
-    /// Defaults to `true`.
-    pub require_approver_eku: bool,
-    /// Allowed skew between approval signing time and verification
-    /// time.  Defaults to 5 minutes.
-    pub signing_time_skew: Duration,
-}
-
-impl Default for PolicySection {
-    fn default() -> Self {
-        Self {
-            path: PathBuf::from(DEFAULT_POLICY_PATH),
-            krl_poll_interval: Duration::from_secs(DEFAULT_KRL_POLL_INTERVAL_SECS),
-            require_approver_eku: true,
-            signing_time_skew: Duration::from_secs(DEFAULT_SIGNING_TIME_SKEW_SECS),
-        }
-    }
-}
-
 /// Logging section.
 #[derive(Debug, Clone)]
 pub struct LoggingSection {
@@ -334,13 +338,6 @@ impl TryFrom<&RawConfig> for ValidatedConfig {
 
     fn try_from(raw: &RawConfig) -> Result<Self, Self::Error> {
         let trust = validate_trust(&raw.trust)?;
-        let approver_trust = raw
-            .approver_trust
-            .as_ref()
-            .map(validate_trust)
-            .transpose()?;
-        let tsa_trust = raw.tsa_trust.as_ref().map(validate_trust).transpose()?;
-        let policy = validate_policy(&raw.policy)?;
         let host_identity = validate_host_identity(&raw.host_identity)?;
         let user_mappings = validate_user_mappings(&raw.user_mapping)?;
         let logging = LoggingSection {
@@ -394,9 +391,6 @@ impl TryFrom<&RawConfig> for ValidatedConfig {
             },
             monitor: validate_monitor(raw, &raw.monitor, raw.monitor_fail_mode)?,
             trust,
-            approver_trust,
-            tsa_trust,
-            policy,
             trust_overrides: raw
                 .trust_override
                 .iter()
@@ -406,8 +400,64 @@ impl TryFrom<&RawConfig> for ValidatedConfig {
             user_mappings,
             logging,
             hooks,
+            mac: validate_mac(&raw.mac)?,
         })
     }
+}
+
+/// Maximum length of the hex-encoded `categories` field: 16 hex chars = 64 bits.
+const MAC_CATEGORIES_HEX_MAX_LEN: usize = 16;
+
+fn validate_mac(raw: &RawMacPolicy) -> Result<MacPolicy, Error> {
+    let cert_integrity = match raw.cert_integrity {
+        Some(RawCertIntegrityMode::Required) => CertIntegrityMode::Required,
+        Some(RawCertIntegrityMode::Ignore) => CertIntegrityMode::Ignore,
+        Some(RawCertIntegrityMode::Optional) | None => CertIntegrityMode::Optional,
+    };
+    // Fail-fast: stub builds (without `astra-mac`) cannot honour
+    // `cert_integrity = "required"` because there is no real backend
+    // to enforce the label.  Reject at config load so the operator sees
+    // the misconfiguration immediately rather than at first session.
+    #[cfg(not(feature = "astra-mac"))]
+    if matches!(cert_integrity, CertIntegrityMode::Required) {
+        return Err(Error::ConfigInvalid {
+            reason:
+                "[mac].cert_integrity = \"required\" but binary built without `astra-mac` feature"
+                    .into(),
+        });
+    }
+    let fallback_max_integrity = raw
+        .fallback_max_integrity
+        .as_ref()
+        .map(|r| {
+            let cats = if r.categories.is_empty() {
+                0u64
+            } else {
+                if r.categories.len() > MAC_CATEGORIES_HEX_MAX_LEN {
+                    return Err(Error::ConfigInvalid {
+                        reason: format!(
+                            "mac.fallback_max_integrity.categories must be at most {MAC_CATEGORIES_HEX_MAX_LEN} hex chars (got {})",
+                            r.categories.len()
+                        ),
+                    });
+                }
+                u64::from_str_radix(&r.categories, 16).map_err(|e| Error::ConfigInvalid {
+                    reason: format!(
+                        "mac.fallback_max_integrity.categories must be hex: {e}"
+                    ),
+                })?
+            };
+            Ok(IntegrityLabel {
+                level: r.level,
+                categories: cats,
+            })
+        })
+        .transpose()?;
+    Ok(MacPolicy {
+        cert_integrity,
+        fallback_max_integrity,
+        warn_on_homedir_label_mismatch: raw.warn_on_homedir_label_mismatch.unwrap_or(true),
+    })
 }
 
 /// Hard cap on `max_chain_depth` to keep verifier loops bounded.
@@ -680,62 +730,10 @@ fn validate_pkcs11_section(raw: &RawConfig, mode: Mode) -> Result<(), Error> {
     Ok(())
 }
 
-/// Default external policy file path (spec §5.4).
-const DEFAULT_POLICY_PATH: &str = "/etc/pam_certauth/policy.toml";
-/// Default KRL re-poll interval (spec §5.4).  5 minutes.
-const DEFAULT_KRL_POLL_INTERVAL_SECS: u64 = 300;
-/// Default approval signing-time skew tolerance (spec §5.4).  5 minutes.
-const DEFAULT_SIGNING_TIME_SKEW_SECS: u64 = 300;
-/// Hard cap on `[policy].krl_poll_interval_seconds` (1 day).
-const POLICY_KRL_POLL_INTERVAL_MAX: u64 = 86_400;
-/// Hard cap on `[policy].signing_time_skew_seconds` (1 hour).
-const POLICY_SIGNING_TIME_SKEW_MAX: u64 = 3_600;
-
-fn validate_policy(raw: &RawPolicySection) -> Result<PolicySection, Error> {
-    let path = raw
-        .path
-        .clone()
-        .unwrap_or_else(|| PathBuf::from(DEFAULT_POLICY_PATH));
-    if !path.is_absolute() {
-        return Err(Error::ConfigInvalid {
-            reason: format!(
-                "policy.path must be absolute (got {})",
-                path.display()
-            ),
-        });
-    }
-    let krl_secs = raw
-        .krl_poll_interval_seconds
-        .unwrap_or(DEFAULT_KRL_POLL_INTERVAL_SECS);
-    if krl_secs == 0 || krl_secs > POLICY_KRL_POLL_INTERVAL_MAX {
-        return Err(Error::ConfigInvalid {
-            reason: format!(
-                "policy.krl_poll_interval_seconds must be in 1..={POLICY_KRL_POLL_INTERVAL_MAX} (got {krl_secs})"
-            ),
-        });
-    }
-    let skew_secs = raw
-        .signing_time_skew_seconds
-        .unwrap_or(DEFAULT_SIGNING_TIME_SKEW_SECS);
-    if skew_secs > POLICY_SIGNING_TIME_SKEW_MAX {
-        return Err(Error::ConfigInvalid {
-            reason: format!(
-                "policy.signing_time_skew_seconds must be <= {POLICY_SIGNING_TIME_SKEW_MAX} (got {skew_secs})"
-            ),
-        });
-    }
-    Ok(PolicySection {
-        path,
-        krl_poll_interval: Duration::from_secs(krl_secs),
-        require_approver_eku: raw.require_approver_eku,
-        signing_time_skew: Duration::from_secs(skew_secs),
-    })
-}
-
 /// Default monitord socket path when `[monitor].socket_path` is unset.
 const DEFAULT_MONITORD_SOCKET: &str = "/run/pam_certauth/monitord.sock";
 /// Default monitord state-file path when `[monitor].state_file_path` is unset.
-const DEFAULT_MONITORD_STATE_FILE: &str = "/var/lib/pam_certauth/sessions.json";
+const DEFAULT_MONITORD_STATE_FILE: &str = "/run/pam_certauth/sessions.json";
 /// Default per-RPC timeout in milliseconds.
 const DEFAULT_MONITORD_TIMEOUT_MS: u64 = 2000;
 /// Lower bound on `timeout_ms` (100 ms).
@@ -825,13 +823,14 @@ fn validate_monitor(
         RawOnUsbRemoved::Shutdown => OnUsbRemoved::Shutdown,
     };
     let on_usb_removed_hook_path = if matches!(on_usb_removed, OnUsbRemoved::Hook) {
-        let path = raw.on_usb_removed_hook_path.clone().ok_or_else(|| {
-            Error::ConfigInvalid {
+        let path = raw
+            .on_usb_removed_hook_path
+            .clone()
+            .ok_or_else(|| Error::ConfigInvalid {
                 reason:
                     "monitor.on_usb_removed = \"hook\" requires monitor.on_usb_removed_hook_path"
                         .to_string(),
-            }
-        })?;
+            })?;
         if !path.is_absolute() {
             return Err(Error::ConfigInvalid {
                 reason: format!(

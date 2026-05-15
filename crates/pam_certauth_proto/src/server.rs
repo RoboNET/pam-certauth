@@ -18,9 +18,7 @@ pub enum ServerMessage {
     /// Reply to a [`crate::ClientMessage::GetActiveSessionByUid`] lookup.
     ///
     /// Carries the engineer cert metadata that PAM recorded when the
-    /// session was opened, so the consumer (typically
-    /// `pam-certauth execute`) can verify scopes without re-reading the
-    /// cert from the USB token.
+    /// session was opened.
     ActiveSession {
         /// Session id recorded at `SessionOpen` time.
         session_id: String,
@@ -30,8 +28,6 @@ pub enum ServerMessage {
         engineer_ski: String,
         /// Lowercase hex of `SHA-256(cert DER)` of the engineer leaf.
         engineer_cert_sha256: String,
-        /// Scopes recorded for this session (`"*"` for wildcard).
-        scopes: Vec<String>,
         /// Hex-encoded host id hash recorded at session open time.
         host_id_hash: String,
     },

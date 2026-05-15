@@ -5,7 +5,7 @@
 //!    `"type":"get_active_session_by_uid"` on the wire.
 //! 2. `ServerMessage::ActiveSession` includes the `engineer_ski` field so
 //!    consumers know v2 carries cert metadata in the reply.
-//! 3. A legacy v1 `SessionOpen` frame (no `engineer_ski` / `scopes` / `uid`)
+//! 3. A legacy v1 `SessionOpen` frame (no `engineer_ski` / `uid`)
 //!    still deserialises — guarantees backwards-compatible upgrade paths.
 
 #![allow(
@@ -40,7 +40,6 @@ fn active_session_serialises_with_engineer_ski() {
         cert_cn: "Alice".into(),
         engineer_ski: "abcd".into(),
         engineer_cert_sha256: "1234".into(),
-        scopes: vec!["bios.flash".into()],
         host_id_hash: "h".into(),
     };
     let j = serde_json::to_string(&m).expect("encode");
@@ -50,7 +49,7 @@ fn active_session_serialises_with_engineer_ski() {
 
 #[test]
 fn session_open_v1_payload_still_parses() {
-    // A frame produced by a v1 PAM module — no engineer_ski, no scopes, no uid.
+    // A frame produced by a v1 PAM module — no engineer_ski, no uid.
     // The session_id below is a valid UUID; the v2 decoder must accept this
     // frame and default the missing fields.
     let j = r#"{
@@ -65,18 +64,17 @@ fn session_open_v1_payload_still_parses() {
       "cert_cn":"Alice",
       "cert_serial":"01"
     }"#;
-    let parsed: ClientMessage = serde_json::from_str(j).expect("v1 session_open should still parse");
+    let parsed: ClientMessage =
+        serde_json::from_str(j).expect("v1 session_open should still parse");
     match parsed {
         ClientMessage::SessionOpen {
             engineer_ski,
             engineer_cert_sha256,
-            scopes,
             uid,
             ..
         } => {
             assert!(engineer_ski.is_empty());
             assert!(engineer_cert_sha256.is_empty());
-            assert!(scopes.is_empty());
             assert_eq!(uid, 0);
         }
         other => panic!("expected SessionOpen, got {other:?}"),

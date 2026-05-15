@@ -5,11 +5,10 @@ members = [
     "crates/pam_certauth_proto",
     "crates/pam_certauth",
     "crates/pam_certauth_cli",
-    "crates/pam_certauth_policy",
 ]
 
 [workspace.package]
-version = "0.2.1"
+version = "0.3.0"
 edition = "2021"
 rust-version = "1.95"
 license = "Apache-2.0"

@@ -1,97 +1,93 @@
 # Changelog
 
-## [0.2.1] — 2026-05-13
-
-### Security
-
-- RFC 3161 `TimeStampToken` теперь действительно проверяется, когда
-  scope-policy выставляет `require_timestamp_token = true`. В 0.2.0
-  флаг был silently no-op: CMS без TSA-токена принимался, что
-  понижало гарантию spec §4 (row 4). Теперь `cms::verify` извлекает
-  `unsignedAttrs[id-aa-timeStampToken]` каждого signer, парсит его
-  как RFC 3161 `TimeStampToken` (вложенный CMS) и валидирует цепочку
-  против `[tsa_trust]`-store. Отсутствие токена либо невалидная TSA
-  chain → `CmsVerifyError::TimestampTokenMissing` /
-  `CmsVerifyError::Verify`.
-- RFC 3161 §2.4.1 `messageImprint` binding теперь enforced:
-  `TSTInfo.messageImprint.hashedMessage` сравнивается с
-  `hash(signature_bytes)` соответствующего `SignerInfo` (SHA-256/384/512).
-  Без этой привязки скомпрометированный, но ещё не отозванный TSA
-  ключ можно было использовать, чтобы выписать токен для произвольного
-  контента. Несовпадение → `CmsVerifyError::Verify("TST messageImprint
-  does not match signature")`. Неподдерживаемый hash-OID отклоняется.
-
-### Fixed (post-0.2.0)
-
-- `cms`: `signing-time` теперь сопоставляется с подписантом по
-  `SubjectKeyIdentifier` (RFC 5652 v3) либо `issuerAndSerialNumber`
-  (v1), а не по позиционному индексу. Раньше второй подписант в
-  M-of-N мог попасть под чужой `signing-time` skew-check.
-- `cms`: `argv_pattern` перенесён в подписанный
-  `encapContentInfo.eContent` (см. breaking-changes ниже).
-- `packaging`: `postinst` теперь включает `pam-certauth-gc.timer`
-  и проставляет права `0750 root:root` на `/var/lib/pam_certauth/work_orders/`.
-- `hooks`: docstring пути исправлен; `scope-match` dedup-логика
-  стабилизирована; fail-closed для `host_id_hash`.
-- `monitord`: запуск под non-root уже не падает на `gid_t` cast.
-
-### Changed (breaking)
-
-- `argv_pattern` теперь читается из подписанного
-  `encapContentInfo.eContent` CMS (TOML payload), а не из
-  unsigned-сайдкара `<work_order>.cms.pattern`. Сайдкар-формат был
-  тампер-уязвим: любой локальный актор мог переписать паттерн без
-  инвалидации подписей одобряющих. Все scope с
-  `require_argv_pattern = true` требуют перевыпуска work order в
-  embedded-режиме (`openssl cms -sign -nodetach`). См.
-  [docs/migration.md](migration.md).
-- `pam_certauth_core::cms::verify` теперь возвращает `VerifyResult`
-  (`signers` + `encap_payload`) вместо `Vec<VerifiedSigner>`.
-  Внутреннее API — callers внутри workspace обновлены.
-
-## [0.2.0] — 2026-05-13
+## [0.3.0] — 2026-05-15
 
 ### Added
 
-- X.509-расширение `pam_cert_scopes` объявляет список scope на
-  сертификате инженера и подписанта.
-- CMS-based M-of-N work order verification — новая subcommand
-  `pam-certauth execute --scope=… --work-order=… -- <cmd>`.
-- Новый крейт `pam_certauth_policy` с TOML-форматом
-  `/etc/pam_certauth/policy.toml` (см. [docs/policy.md](policy.md)).
-- Subcommands `pam-certauth policy validate|explain` и
-  `pam-certauth gc --retention-days=N`.
-- PAM-параметр `require_scope=...` с `scope_match=any|all` — фильтр
-  по `pam_cert_scopes` на этапе логина.
-- Audit-drift detection: каждое audit-событие пишет
-  `policy_sha256` для отслеживания подмены `policy.toml`.
-- Retention-store CMS-артефактов в
-  `/var/lib/pam_certauth/work_orders/` с systemd-timer GC.
-- Static hook framework с builtin `audit_critical`.
+- **MAC integrity (МКЦ) integration for Astra SE strict-mode.**
+  Сессия теперь получает метку `(level, categories)`, выбранную как
+  пересечение расширения `MAX_INTEGRITY` сертификата
+  (OID `2.25.273824307386008814506455310913083078403`) с потолком
+  рантайма от libpdp/libparsec. Новая секция `[mac]` в `config.toml`
+  c полями `cert_integrity` (`required` / `optional` / `ignore`) и
+  `fallback_max_integrity`.
+- Feature-флаг `astra-mac` (включается на сборке для Astra SE);
+  stub-бэкенд используется на не-Astra хостах и отвергает
+  `cert_integrity = "required"` на этапе загрузки конфига.
+- DER-кодек `IntegrityLabel` со строгим парсером и компонентным
+  `strictly_below` для сравнения меток.
+- Метки `pdpl-file :::iinh` накладываются на
+  `/etc/pam_certauth/`, `/var/lib/pam_certauth/`,
+  `/var/cache/pam_certauth/` через postinst при `astra-strictmode-control
+  is-enabled`. `host_id` получает `chattr +i` после первой записи.
+- Атомарная запись `sessions.json` теперь использует fd-based labeling
+  через `pdp_set_fd` (метка накладывается до публикации имени файла,
+  закрывает TOCTOU-окно). `irelax` через fd-API ядро не принимает
+  (EINVAL) — relax-семантика для `sessions.json` обеспечивается
+  `iinh`-наследованием от parent dir.
+- E2E-сценарии T1-T12 (`vagrant/scripts/test-mac.sh`) и
+  perf-bench (`vagrant/scripts/bench-mac.sh`) для Astra VM.
+- Документация: `docs/install.md`, `docs/cert-issuance.md`,
+  `docs/configuration.md`, `docs/threat-model.md` пополнены секциями
+  по МКЦ.
 
-### Changed
+### Build
 
-- Бинарь `pam-certauth-monitord` переименован в `pam-certauth`
-  (мульти-команда). Daemon-функция — `pam-certauth daemon`.
-- IPC bump 1 → 2; payload `SessionOpen` теперь содержит
-  `engineer_ski`, `engineer_cert_sha256`, `scopes`, `uid`.
-  Новое сообщение `GetActiveSessionByUid` (для `execute`).
-- Конфиг-схема расширена секциями `[approver_trust]`,
-  `[tsa_trust]`, `[policy]`. Старые конфиги парсятся без правок.
+- `debian/control`: добавлен `Recommends: libpdp3 (>= 3.11+ci97~)` и
+  `libparsec-base3 (>= 3.11+ci97~)` (оба runtime-dep при сборке с
+  `astra-mac`).
+- **Linker fix:** `parsec_capget` оказался экспортируемым из
+  `libparsec-base.so`, а не `libpdp.so` — Astra CI build падал с
+  `undefined symbol: parsec_capget` (verified run 25903325006,
+  2026-05-15). `build.rs` теперь emits и `-lpdp`, и `-lparsec-base`;
+  extern-блок с `parsec_capget` помечен `#[link(name = "parsec-base")]`.
+- **Linker fix:** `getmicnam` / `freemicent_r` живут в
+  `libparsec-mic.so.3`, а не в `libpdp.so` (комментарий в `build.rs`,
+  утверждавший обратное, исправлен). `build.rs` / `Dockerfile` теперь
+  линкуют `-lparsec-mic`.
 
-### Known limitations
+### Fixed
 
-- RFC 3161 TSA валидация отложена; scope с
-  `require_timestamp_token = true` отклоняется до phase 2.
-- `argv_pattern` доставляется sidecar-файлом `<wo>.pattern`, не
-  encapContent CMS (MVP-упрощение). **Закрыто в 0.2.1** — паттерн
-  перенесён внутрь подписанного CMS.
-- Подписывание `policy.toml` не реализовано; защита —
-  root-containment + audit drift через `policy_sha256`.
+- **libpdp text-codec grammar.** Кодировщик `encode_label_text`
+  раньше формировал строку `"0:0:cat:flags:level"` (пять сегментов,
+  пятый = линейный ilevel) — это была устаревшая интерпретация
+  заголовков. Реальное strict-mode-ядро Astra 1.8.4 принимает
+  четырёхсегментную грамматику `level:ilevel:cat[:flags]`.
+  Кодек переписан, e2e-применение метки на `sessions.json` теперь
+  отображается `pdpl-file` как
+  `Уровень_0:Сетевые_сервисы:Нет:0x0!`.
+- **`pdp_set_fd` + `irelax` несовместимы.** Ядро возвращает EINVAL,
+  если irelax передан через fd-based API. Демон теперь вызывает
+  `set_fd_label(.., irelax=false)`. Path-based `pdp_set_path`
+  irelax по-прежнему принимает (используется postinst через
+  `pdpl-file`).
+- **`getmicnam` возвращает library-private static memory** (per
+  `man getmicnam` на Astra 1.8.4), а не heap-аллоцированную структуру.
+  Прежний код звал `freemicent_r` на результат и падал в
+  `pam_sm_open_session` с `free(): invalid pointer` → SIGABRT.
+  Указатель больше не освобождается.
+- **Daemon под `User=pamcertauth` (не root)** при опциональной
+  активации МКЦ. Шипованный drop-in `mac-integrity.conf.example`
+  использует `PAMName=pam-certauth` + парный PAM-стек
+  `dist/pam.d/pam-certauth.example` (`pam_parsec_cap.so` +
+  `pam_parsec_mac.so`) для подъёма ilevel=63 и `PARSEC_CAP_CHMAC` на
+  процессе демона. Ранее обсуждавшийся `execaps -c 0x8 -- ...`-обход
+  не используется — `execaps` сам требует `PARSEC_CAP_CAP` у
+  запускающего процесса, которой у `pamcertauth` нет.
+- **Sessions registry на tmpfs.** Переехал из
+  `/var/lib/pam_certauth/sessions.json` (persistent) в
+  `/run/pam_certauth/sessions.json` (volatile, `RuntimeDirectory=`).
+  Снимает stale-state-after-reboot foot-gun и MAC-labelling churn на
+  каталоге. `daemon.lock` и кэши остаются в `/var/lib/`.
 
-### Migration
+### Removed
 
-См. [docs/migration.md](migration.md).
+- Откат 0.2.x-набора `pam_cert_scopes` / CMS M-of-N work-order /
+  approver-EKU / external policy TOML / `pam-certauth execute|policy|gc`.
+  Бинарь оставляет только `pam-certauth daemon`. IPC v2 retains
+  `engineer_ski` + `engineer_cert_sha256` (МКЦ-audit), `scopes`
+  убран. Подробности см. в плане
+  `docs/superpowers/plans/2026-05-14-strip-scopes-mofn.md`.
 
 ## [0.1.1] — 2026-05-06
 

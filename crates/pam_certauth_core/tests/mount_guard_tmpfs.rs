@@ -52,9 +52,8 @@ fn mount_guard_drop_calls_umount_then_rmdir() {
     // P0-3 regression: umount MUST be invoked before rmdir on Drop.
     let ops = Arc::new(CountingMockOps::default());
     {
-        let _guard =
-            MountGuard::new_tmpfs(Arc::clone(&ops), &PathBuf::from("/tmp"), "p0-3-test")
-                .unwrap_or_else(|err| panic!("guard: {err}"));
+        let _guard = MountGuard::new_tmpfs(Arc::clone(&ops), &PathBuf::from("/tmp"), "p0-3-test")
+            .unwrap_or_else(|err| panic!("guard: {err}"));
     }
     assert_eq!(ops.mounted.load(Ordering::SeqCst), 1, "mount called once");
     assert_eq!(

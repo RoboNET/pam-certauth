@@ -25,48 +25,6 @@
 - пользовательские хуки, прописанные в `[[hooks]]`;
 - Inkscape, fly-dm, gdm и прочие потребители PAM.
 
-### 1.2 Операционная модель: на банкомате нет интерактивного root
-
-Ключевое архитектурное свойство развёртывания: на ATM-машине **нет
-интерактивно доступного root-аккаунта** и **нет учётных записей с
-`sudo -i` / `sudo bash`**. Все привилегированные действия инженеров
-проходят через `pam-certauth execute`, защищённый M-of-N CMS work
-order.
-
-- Аккаунты инженеров на ATM — обычные пользователи. Они **не входят**
-  в группы `wheel`, `sudo`, `admin` и не имеют ни одного broad
-  sudoers-правила вида `NOPASSWD: ALL`.
-- В `/etc/sudoers.d/pam-certauth-execute` есть единственное узкое
-  правило:
-
-  ```text
-  %atm_engineers ALL=(root) NOPASSWD: /usr/bin/pam-certauth execute *
-  ```
-
-  Инженер может запустить **только** `pam-certauth execute` и ничего
-  больше — ни `sudo -i`, ни `sudo cat`, ни `sudo bash`.
-- Внутри `pam-certauth execute` повышение привилегий открывается
-  **только** после успешной валидации CMS-подписи M-of-N
-  одобряющих + проверки `scope` / `host` / `argv_pattern` против
-  `policy.toml`. См. [execute.md](execute.md) и [policy.md](policy.md).
-- Компрометация учётных данных инженера в одиночку
-  (украденный токен + подсмотренный PIN) даёт **только логин на ATM**
-  — никакого root-действия без `N` независимых подписей операторов
-  выполнить нельзя. Эта защита — **архитектурная**, не post-hoc
-  audit: вектор «получил токен → `sudo -i` → root» закрыт отсутствием
-  широкого sudoers-правила, а не только подписями в журнале.
-- Break-glass / recovery пути (Ansible push с bastion'а под отдельной
-  identity, оффлайн-сейф с root-паролем, recovery USB с подписанным
-  initramfs) — out-of-band и описаны отдельно: они **не** доступны с
-  обычной сессии инженера и требуют физического доступа либо
-  отдельной авторизации.
-
-Следствие для модели угроз: угроза «lateral root из скомпрометированной
-учётки инженера» (раздел 4 и атак-tree в §7) переходит из категории
-«mitigated by audit» в категорию **mitigated by architecture** — на
-машине просто нет команды, которую вор токена мог бы выполнить от
-root без согласия `N` других операторов.
-
 ## 2. Допущения о развёртывании
 
 | #   | Допущение                                                                                  | Почему важно                                                                            |
@@ -309,112 +267,6 @@ mitigation → evidence (код, конфиг, тест).
   - тесты — [`chain_verify.rs`](../crates/pam_certauth_core/tests/chain_verify.rs),
     [`gost_chain_verify.rs`](../crates/pam_certauth_core/tests/gost_chain_verify.rs).
 
-### 3.14 Компрометация approver-токена в течение валидного окна (0.2.0)
-
-- **Описание:** атакующий получает контроль над approver-сертификатом
-  и его ключом. Сертификат ещё не отозван в CRL/OCSP.
-- **STRIDE:** Spoofing, Elevation of Privilege.
-- **Mitigation:**
-  - Short-lived approver-сертификаты (24–72 ч);
-  - `[approver_trust.revocation]` `mode = "crl"` или `"ocsp"` с
-    регулярным `krl_poll_interval_seconds` (минуты, не часы);
-  - `forbid_self_approval = true` в `policy.toml` гарантирует, что
-    одного компрометированного токена недостаточно (нужно `m_of_n`
-    подписей от **разных** SKI).
-- **Residual risk:** если `m` независимых approver-токенов
-  скомпрометированы одновременно, угроза реализуется. Принимается;
-  компенсирующий контроль — separation of duties в банке.
-- **Evidence:** `crates/pam_certauth_core/src/cms.rs` — отказ при
-  повторяющихся SKI; tests `cms_*.rs`.
-
-### 3.15 Стэшеный approver-токен + подделка `signing-time` (0.2.0)
-
-- **Описание:** атакующий с украденным approver-токеном подписывает
-  CMS «задним числом» — выставляет `signing-time` в прошлое, когда
-  approver был ещё активен (например, при истечении срока действия
-  cert'а).
-- **STRIDE:** Tampering.
-- **Mitigation:**
-  - `signing_time_skew_seconds` в `[policy]` (по умолчанию 300 сек):
-    `signing-time` должно быть в окне `now ± skew`.
-  - RFC 3161 TSA TimeStampToken — для критических scope
-    (`require_timestamp_token = true`).
-- **Residual risk:** **0.2.0 TSA НЕ валидируется** — известное
-  ограничение. Защита держится только на skew-окне + быстрой
-  revocation. Для scope с `require_timestamp_token = true` модуль
-  отклоняет CMS до phase 2 (fail-closed). Подробности —
-  [docs/changelog.md](changelog.md), [docs/work-order.md](work-order.md).
-
-### 3.16 Cross-role атака через общий trust-anchor (0.2.0)
-
-- **Описание:** инженерская CA и approver CA имеют один общий root.
-  Атакующий с инженерским токеном пытается подписать CMS work order,
-  выдав себя за approver.
-- **STRIDE:** Spoofing.
-- **Mitigation:**
-  - Разделённые секции `[trust]` (инженерская) и `[approver_trust]`
-    (approver) — разные anchors;
-  - `extendedKeyUsage` с OID `approver_eku` обязателен (`require_approver_eku = true`).
-    Инженерские leaf'ы выпускаются без `approver_eku`, поэтому
-    CMS verify падает с `DisallowedRole`.
-- **Residual risk:** если оператор оставит общий root и забудет EKU,
-  атака возможна. Защита: `pam-certauth policy validate` логирует
-  warning при отсутствии `[approver_trust]`. См.
-  [docs/x509-extensions.md](x509-extensions.md).
-
-### 3.17 Подмена `policy.toml` (0.2.0)
-
-- **Описание:** атакующий с временным root-доступом меняет
-  `policy.toml` — снижает `m_of_n`, отключает `forbid_self_approval`,
-  расширяет wildcard.
-- **STRIDE:** Tampering, Elevation of Privilege.
-- **Mitigation:**
-  - Hardening АРМ: нет интерактивного root, AppArmor-профиль для
-    `pam-certauth`, IMA на `/etc/pam_certauth/`;
-  - **Audit drift detection:** каждое audit-событие `execute` пишет
-    `policy_sha256`. Внешняя система мониторинга должна alert'ить
-    при изменении этого хеша без сопровождающего change-window.
-- **Residual risk:** root, имеющий время изменить файл и подделать
-  audit-логи (compromise journald), — вне TOE. Defense-in-depth:
-  cryptographic signing of `policy.toml` — phase 2.
-- **Evidence:** `crates/pam_certauth_cli/src/execute/audit.rs` —
-  `policy_sha256` пишется всегда; [docs/operations.md §8.2](operations.md).
-
-### 3.18 TOCTOU на файле work order (0.2.0)
-
-- **Описание:** атакующий подменяет содержимое `work_order.cms`
-  между моментом чтения и моментом валидации CMS (race).
-- **STRIDE:** Tampering.
-- **Mitigation:**
-  - `open(O_NOFOLLOW)` блокирует подмену через symlink-flip;
-  - **Hash-before/hash-after invariance:** содержимое читается в
-    буфер, считается SHA-256, перечитывается, считается снова —
-    если совпало, дальше работаем с буфером в памяти.
-- **Evidence:** `crates/pam_certauth_cli/src/execute/work_order.rs`.
-
-### 3.19 Log-injection через `cert_cn` / argv (0.2.0)
-
-- **Описание:** атакующий вшивает `\n`, ANSI-escape или JSON-control
-  bytes в CN сертификата или в argv команды, чтобы исказить
-  журнальное поле и спрятать audit-событие.
-- **STRIDE:** Tampering.
-- **Mitigation:** sanitizer удаляет control bytes (`\x00`..`\x1F`,
-  кроме `\t`) и ASCII-escape sequences перед записью в journald
-  payload. Тег события (`pam_certauth.execute.*`) — статический,
-  не зависит от пользовательских данных.
-- **Evidence:** unit-тесты в
-  `crates/pam_certauth_cli/src/execute/audit.rs`.
-
-### 3.20 Argv `--` smuggling в sudo (0.2.0)
-
-- **Описание:** атакующий передаёт литерал `--` среди args, чтобы
-  sudo / последующий парсер argv воспринял остаток как новые опции.
-- **STRIDE:** Elevation of Privilege.
-- **Mitigation:** argv-canonicalize отклоняет `--` среди args
-  (`EXIT_DENIED`). Также отвергаются NUL и любые control bytes.
-- **Evidence:** `crates/pam_certauth_cli/src/execute/argv.rs` +
-  `crates/pam_certauth_cli/tests/execute_argv.rs`.
-
 ## 4. Угрозы, ОТ КОТОРЫХ модуль НЕ защищает
 
 | #   | Угроза                                                                                       | Рекомендуемый компенсирующий контроль                          |
@@ -539,3 +391,99 @@ graph TD
 | 3.13   | weak signature → DisallowedSignatureAlgorithm           | `crates/pam_certauth_core/tests/chain_verify.rs`                          |
 | 3.13   | ГОСТ chain verify (реальный engine)                     | `crates/pam_certauth_core/tests/gost_chain_verify_real.rs`                |
 | Reproducibility / supply-chain | reproducible build (двойная сборка) | `scripts/verify-reproducible-build.sh` |
+
+## 9. МКЦ (Astra strict-mode, 0.3.0+)
+
+### 9.1 Угрозы
+
+- **9.1.1 Privilege-escalation via MAC label.** Сертификат
+  декларирует чрезмерно высокий `MAX_INTEGRITY`; без контроля рантайма
+  пользователь поднимает уровень сессии выше потолка хоста.
+- **9.1.2 Bypass through missing extension.** Сертификат, выпущенный
+  до развёртывания МКЦ, не содержит `MAX_INTEGRITY` — без
+  `cert_integrity = "required"` сессия открывается без метки и
+  получает «прозрачный» доступ.
+- **9.1.3 DER-tampering.** Атакующий, контролирующий УЦ, кладёт
+  битый/нестандартный DER в расширение, рассчитывая на сбой парсера
+  и fallback-поведение «accept-by-default».
+- **9.1.4 sessions.json TOCTOU.** Файл состояния перезаписывается
+  атомарно. Ранее irelax-лейбл на новом inode восстанавливался
+  отдельной сисколлой → окно гонки, в котором демон с MAC=0 не может
+  прочитать только что записанный файл. В 0.3.0 устранено: файл
+  лежит на tmpfs `/run/pam_certauth/` (`RuntimeDirectory=`), родительский
+  каталог получает `iinh`, лейбл накладывается на fd до публикации
+  имени через `pdp_set_fd` (см. §9.2.4); reboot снимает состояние
+  полностью.
+- **9.1.5 host_id rebind.** Подменив `host_id`, атакующий
+  перепривязывает сертификат к другому хосту.
+
+### 9.1.6 `irelax` + UID 0 = forge (in-scope, out-of-mitigation)
+
+monitord и pam_certauth.so применяют `irelax` к собственным файлам
+(`/run/pam_certauth/monitord.sock`, `/run/pam_certauth/sessions.json`)
+через `PARSEC_CAP_CHMAC` privilege пользователя `pamcertauth`. Это
+необходимо: engineer с НКЦ=1 должен мочь писать receipt'ы в lvl=0
+daemon через socket, который и сам помечен `irelax`.
+
+Hostile UID-0 process (root-equivalent) с тем же `PARSEC_CAP_CHMAC`
+capability может attach identical `irelax` labels к собственным
+файлам и forge entries в `sessions.json`, либо подключаться к
+сокету из произвольного НКЦ. **Не блокируется в коде**: defense — UID
+boundary (root-equivalence axiomatically wins under МКЦ), не
+integrity.
+
+Mitigations за границами этой угрозы:
+
+- DAC `0600 root:root` на `sessions.json` + parent dir
+  `0750 pamcertauth:pamcertauth` ограничивают write-access non-CHMAC
+  процессам.
+- digsig verification на `pam-certauth(-monitord)` бинарях детектит
+  runtime tampering.
+- Audit log на каждый `mac_apply_failed` / `mac_caps_missing` exposes
+  unexpected backend behavior.
+
+Trust boundary этого дизайна — **UID 0 vs non-root**, не integrity
+level. Угроза признана in-scope и явно out-of-mitigation для PAM-слоя:
+защита от UID-0 forge — задача ОС (digsig, ЗПС, hardware root-of-trust),
+не модуля аутентификации.
+
+### 9.2 Защиты
+
+- **9.2.1** Эффективная метка всегда пересекается с
+  `ipdp_get_caps()` — потолок задаёт ядро, не сертификат. См.
+  `MacOrchestrator::compute_effective_label`.
+- **9.2.2** `cert_integrity = "required"` отвергает сертификаты без
+  расширения; stub-бэкенд отказывается стартовать с `required`.
+- **9.2.3** Парсер `IntegrityLabel::from_der` strict: проверка длин,
+  отсутствие trailing bytes, BIT STRING `unused-bits ≤ 7`. Битый DER
+  → отказ + аудит-событие `mac_parse_failed`.
+- **9.2.4** Запись `sessions.json` идёт через `openat(O_TMPFILE)` →
+  `fchmod` → `pdp_set_fd(label)` → `linkat`/`rename` атомарно, лейбл
+  накладывается **на fd до публикации имени**. `irelax` через
+  fd-based API ядро не принимает (EINVAL) — relax-семантика для
+  `sessions.json` обеспечивается `iinh`-наследованием от parent dir
+  `/run/pam_certauth/` (tmpfs).
+- **9.2.5** postinst накладывает `chattr +i` на `host_id` после
+  первой записи, сам файл лежит в дир. `/var/lib/pam_certauth/`
+  (0750 root:pamcertauth).
+
+### 9.3 Открытые риски
+
+- libparsec `parsec_capget` symbol-сонейм не зафиксирован
+  публично; build.rs не линкует `libparsec-base3` по умолчанию. Если
+  на конкретном Astra-релизе сборка выдаст «undefined symbol», нужно
+  добавить `libparsec-base3` в `debian/control` и
+  `cargo:rustc-link-lib=parsec-base` в build.rs.
+- `libpdp.so.3` — proprietary, без публичного fuzzing-покрытия.
+  Защита: `LD_LIBRARY_PATH` фиксирован, ABI обёрнут в return-pointer
+  signature (см. `5337fea`), все вызовы — под `panic=abort`.
+
+### 9.4 Тесты
+
+| Угроза | Тест                                                  | Файл                                                                         |
+|--------|--------------------------------------------------------|------------------------------------------------------------------------------|
+| 9.1.1  | intersect(cert, caps) capping level                    | `crates/pam_certauth_core/tests/mac_orchestrator.rs`                          |
+| 9.1.2  | `cert_integrity=required` rejects no-ext leaf          | `crates/pam_certauth/tests/mac_open_session.rs::open_session_fails_when_required_but_cert_lacks_ext` |
+| 9.1.3  | malformed DER → parse-failed event                     | `crates/pam_certauth_core/tests/cert_extensions_parse.rs`                     |
+| 9.1.4  | fd-based irelax label on atomic write                  | `crates/pam_certauth_core/tests/mount_guard_tmpfs.rs`                         |
+| 9.1.5  | host_id immutability after install                     | E2E manual: `vagrant/scripts/test-mac.sh` T12                                 |

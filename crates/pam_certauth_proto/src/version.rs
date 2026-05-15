@@ -6,7 +6,7 @@
 /// - `ClientMessage::GetActiveSessionByUid`
 /// - `ServerMessage::ActiveSession`
 /// - new optional fields on `SessionOpen` / `SessionOpenPayload`
-///   (`engineer_ski`, `engineer_cert_sha256`, `scopes`, `uid`)
+///   (`engineer_ski`, `engineer_cert_sha256`, `uid`)
 /// - new error code `NO_ACTIVE_SESSION` (1200)
 ///
 /// All new fields on the `SessionOpen` payload use `#[serde(default)]` so

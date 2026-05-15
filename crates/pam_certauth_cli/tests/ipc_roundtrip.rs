@@ -9,9 +9,9 @@
 
 use std::time::{Duration, SystemTime};
 
-use pam_certauth_core::ipc::client::MonitordClient;
 use pam_certauth_cli::registry::{RegistryStore, SessionRegistry};
 use pam_certauth_cli::testing::spawn_test_server;
+use pam_certauth_core::ipc::client::MonitordClient;
 use pam_certauth_proto::{SessionOpenPayload, SessionTarget};
 use uuid::Uuid;
 
@@ -38,7 +38,6 @@ async fn full_session_lifecycle_via_real_socket() {
         cert_serial: "01".into(),
         engineer_ski: String::new(),
         engineer_cert_sha256: String::new(),
-        scopes: Vec::new(),
         uid: 0,
     };
     // Drive a sync client from a worker thread.

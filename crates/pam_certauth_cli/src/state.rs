@@ -6,9 +6,15 @@
 //! requests for the action-runner task.
 
 use std::collections::HashMap;
+use std::io::{self, Write};
+use std::os::unix::io::AsRawFd;
+use std::path::Path;
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime};
 
+use pam_certauth_core::mac::audit as mac_audit;
+use pam_certauth_core::mac::backend::MacBackend;
+use pam_certauth_core::mac::IntegrityLabel;
 use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
@@ -230,7 +236,6 @@ async fn handle_ipc(
                     cert_cn: rec.cert_cn,
                     engineer_ski: rec.engineer_ski,
                     engineer_cert_sha256: rec.engineer_cert_sha256,
-                    scopes: rec.scopes,
                     host_id_hash: rec.host_id_hash,
                 },
                 None => ServerMessage::Error {
@@ -375,4 +380,54 @@ async fn handle_logind(
             persist_async(&cfg.registry_store, registry.snapshot()).await;
         }
     }
+}
+
+/// Atomically write the sessions registry snapshot to `final_path` with
+/// an МКЦ integrity (`level=0`) label applied to the file descriptor
+/// BEFORE the inode becomes visible at the published path. This closes
+/// the path-based TOCTOU window between `open()` and `set_file_label()`
+/// per MAC integrity spec §5.3.1: a peer never observes the file
+/// without the integrity label attached.
+///
+/// The kernel rejects the `irelax` flag through the fd-based API
+/// (`pdp_set_fd` returns `EINVAL` for `"0:0:0:irelax"`), so the fd is
+/// labeled with the bare `"0:0:0"` form (`irelax=false`). The daemon
+/// runs at level 0 already and does not need write-down semantics for
+/// its own state file; `irelax` remains available on the path-based
+/// [`MacBackend::set_file_label`] for callers that do.
+///
+/// Labeling is best-effort — if `set_fd_label` fails the write still
+/// proceeds and an `mac_sessions_file_label_warning` audit event is
+/// emitted; DAC mode (`0600`) and `iinh` on the parent directory remain
+/// the guardrails. The file is `fsync`'d before the atomic rename.
+///
+/// # Errors
+/// Returns the underlying `io::Error` for any tempfile/write/sync/rename
+/// failure. Label failures are downgraded to a warning and do not
+/// propagate.
+pub fn write_sessions_atomic<B: MacBackend>(
+    final_path: &Path,
+    bytes: &[u8],
+    backend: &B,
+) -> io::Result<()> {
+    let parent = final_path
+        .parent()
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "no parent dir"))?;
+    // `NamedTempFile::new_in` opens with `O_CREAT|O_EXCL` and a secure
+    // mode in the same filesystem as the destination, so `persist`
+    // becomes a same-fs `rename(2)`.
+    let mut tmp = tempfile::NamedTempFile::new_in(parent)?;
+    let fd = tmp.as_file().as_raw_fd();
+    let label = IntegrityLabel {
+        level: 0,
+        categories: 0_u64,
+    };
+    if let Err(e) = backend.set_fd_label(fd, label, /* irelax= */ false) {
+        mac_audit::emit_sessions_file_warn(&final_path.to_string_lossy(), Some(&format!("{e}")));
+        // Continue — best-effort labeling; DAC + parent dir iinh still apply.
+    }
+    tmp.write_all(bytes)?;
+    tmp.as_file().sync_all()?;
+    tmp.persist(final_path).map_err(|e| e.error)?;
+    Ok(())
 }

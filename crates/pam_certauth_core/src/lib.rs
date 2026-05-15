@@ -11,9 +11,7 @@
 #![allow(clippy::missing_panics_doc)]
 #![allow(clippy::must_use_candidate)]
 
-pub mod cert_claims;
 pub mod challenge;
-pub mod cms;
 pub mod config;
 pub mod crl;
 pub mod discovery;
@@ -24,6 +22,7 @@ pub mod host_binding;
 pub mod host_identity;
 pub mod ipc;
 pub mod logging;
+pub mod mac;
 pub mod mapping;
 pub mod mount;
 pub mod mount_guard;

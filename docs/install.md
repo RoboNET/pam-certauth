@@ -160,16 +160,14 @@ sha256sum -c pam-certauth_0.1.1-1_amd64.deb.sha256
 ### 2.4 Установка
 
 ```bash
-# 0.2.0:
-sudo apt install ./pam-certauth_0.2.0-1_amd64.deb
+sudo apt install ./pam-certauth_0.3.0-1_amd64.deb
 # или legacy 0.1.x:
 # sudo apt install ./pam-certauth_0.1.1-1_amd64.deb
 ```
 
-> **0.2.0:** бинарь `pam-certauth-monitord` переименован в
-> `pam-certauth` (мульти-команда). Daemon-режим запускается
-> как `pam-certauth daemon`; systemd-юнит `pam-certauth.service`
-> уже использует новое имя. См. [docs/migration.md](migration.md).
+> Начиная с 0.2.0 бинарь `pam-certauth-monitord` переименован в
+> `pam-certauth`. Daemon-режим запускается как `pam-certauth daemon`;
+> systemd-юнит `pam-certauth.service` уже использует новое имя.
 
 `apt` подтянет недостающие зависимости (`libgost-engine | gost-engine`,
 `libpkcs11-helper1`, `librtpkcs11ecp`).
@@ -195,83 +193,7 @@ test -d /run/pam_certauth && echo "runtime dir OK"
 test -S /run/pam_certauth/monitord.sock && echo "socket OK"
 ```
 
-Ожидание: версия `0.2.0` (или `0.1.1` для legacy), обе строки `OK`.
-
-### 2.6 (опционально) GC-timer для work-order retention (0.2.0)
-
-Если планируется использовать `pam-certauth execute`, включите
-сборку мусора:
-
-```bash
-sudo systemctl enable --now pam-certauth-gc.timer
-systemctl list-timers pam-certauth-gc.timer
-```
-
-Подробности — [docs/operations.md](operations.md).
-
-### 2.7 Отключение интерактивного sudo на ATM
-
-Целевая модель развёртывания — **на ATM нет аккаунтов с правом
-`sudo -i` / `sudo bash`**. Инженеры остаются обычными пользователями;
-единственный путь к root — через `pam-certauth execute` с M-of-N CMS
-work order. См. архитектурное обоснование в
-[architecture.md §1.1.1](architecture.md) и
-[threat-model.md §1.2](threat-model.md).
-
-1. **Убрать инженерские аккаунты из admin-групп** (если они там
-   оказались на этапе провижининга):
-
-   ```bash
-   for u in $(getent group atm_engineers | cut -d: -f4 | tr ',' ' '); do
-       sudo gpasswd -d "$u" sudo  2>/dev/null || true
-       sudo gpasswd -d "$u" wheel 2>/dev/null || true
-       sudo gpasswd -d "$u" admin 2>/dev/null || true
-   done
-   ```
-
-2. **Проверить, что в sudoers нет broad-правил** для инженеров.
-   Любое `NOPASSWD: ALL` или `(ALL) ALL` для группы `atm_engineers`
-   (или конкретного инженерского UID) недопустимо:
-
-   ```bash
-   sudo grep -rE 'NOPASSWD:\s*ALL|\(ALL\)\s*ALL' /etc/sudoers /etc/sudoers.d/
-   ```
-
-   Ожидание: либо пусто, либо только строки, не относящиеся к
-   `atm_engineers` (например, recovery-аккаунт, см. ниже).
-
-3. **Оставить единственное узкое правило** `pam-certauth execute`
-   в `/etc/sudoers.d/pam-certauth-execute` (поставляется пакетом,
-   см. [execute.md](execute.md) §sudoers):
-
-   ```text
-   %atm_engineers ALL=(root) NOPASSWD: /usr/bin/pam-certauth execute *
-   ```
-
-4. **Проверка для конкретного пользователя** — должна показывать
-   **только** разрешение на `pam-certauth execute`:
-
-   ```bash
-   sudo -l -U <engineer_user>
-   ```
-
-   Ожидаемая строка вида:
-   `(root) NOPASSWD: /usr/bin/pam-certauth execute *` и ничего больше.
-
-5. **Аварийный доступ (out-of-band).** Для break-glass-сценариев
-   используются отдельные пути, **не доступные** из обычной
-   инженерской сессии:
-
-   - Ansible push с bastion-хоста под отдельной service-identity
-     (см. runbook оператора, вне scope этого документа);
-   - оффлайн-сейф с root-паролем (вскрытие — оператор + аудит-журнал);
-   - recovery USB с подписанным initramfs (физический доступ).
-
-   Эти пути документируются и проверяются отдельно; в день-to-day
-   эксплуатации инженер с ATM не имеет к ним доступа.
-
-Периодический аудит этих инвариантов описан в
-[operations.md §1.6](operations.md).
+Ожидание: версия `0.3.0` (или `0.1.1` для legacy), обе строки `OK`.
 
 ## 3. Создание тестового CA (ГОСТ)
 
@@ -796,3 +718,258 @@ SysV-скрипт не требуется — авторитативный ис�
   процедуры incident response.
 - [docs/threat-model.md](threat-model.md) — модель угроз и какие
   атаки модуль защищает.
+
+## МКЦ (MAC integrity) — опциональная активация
+
+На хостах Astra SE с включённым strict-mode `pam-certauth` опционально
+поддерживает мандатный контроль целостности (МКЦ) — назначает сессии
+метку `(level, categories)` согласно расширению `MAX_INTEGRITY` сертификата
+пользователя.
+
+**По умолчанию МКЦ-fd-labelling не активируется.** Демон запускается как
+`User=pamcertauth` с минимальным capability-set (только
+`CAP_DAC_READ_SEARCH`) и без `PARSEC_CAP_CHMAC`. При `[mac]
+cert_integrity = "ignore"` (значение по умолчанию) ни один шаг ниже не
+требуется — **эта конфигурация production-готова без активации МКЦ.**
+postinst на Astra-хостах печатает напоминание о том, как активировать
+МКЦ, если оператору это нужно.
+
+### Активация МКЦ
+
+1. **Проверьте strict-mode ядра:**
+
+   ```bash
+   sudo /sbin/astra-strictmode-control status
+   # ожидается: АКТИВНО
+   ```
+
+   Если не активно — включите и перезагрузитесь:
+
+   ```bash
+   sudo /sbin/astra-strictmode-control enable
+   sudo reboot
+   ```
+
+2. **Выдайте PARSEC_CAP_CHMAC демону и поднимите ему МНКЦ=63:**
+
+   ```bash
+   sudo /sbin/usercaps -m "+3" pamcertauth
+   sudo /sbin/usercaps pamcertauth          # должен содержать parsec_cap_chmac
+   sudo /sbin/pdpl-user --ilevel 63 pamcertauth
+   ```
+
+   Первая команда добавляет запись в `/etc/parsec/capdb/<uid>` с битом
+   3 (`PARSEC_CAP_CHMAC`). Вторая ставит МНКЦ пользователя
+   `pamcertauth` в 63 в `/etc/parsec/micdb/<uid>` — это потолок, до
+   которого `pam_parsec_mac.so` поднимет ilevel самого процесса демона
+   при старте.
+
+3. **Установите шипованный PAM-стек для демона:**
+
+   ```bash
+   sudo install -m 0644 \
+     /usr/share/pam-certauth/pam.d/pam-certauth.example \
+     /etc/pam.d/pam-certauth
+   ```
+
+   Стек содержит `session required pam_parsec_cap.so` и `session
+   required pam_parsec_mac.so` — две session-фазы, которые перенесут
+   parsec capabilities из capdb и поставят ilevel из micdb на сам
+   процесс демона в момент `fork+exec`. `auth`/`account` короткозамкнуты
+   на `pam_permit.so` — они не используются (демон — service account, а
+   не интерактивная сессия).
+
+4. **Установите шипованный drop-in:**
+
+   ```bash
+   sudo install -m 0644 \
+     /usr/share/pam-certauth/systemd/mac-integrity.conf.example \
+     /etc/systemd/system/pam-certauth.service.d/mac-integrity.conf
+   sudo systemctl daemon-reload
+   sudo systemctl restart pam-certauth.service
+   ```
+
+   Drop-in задаёт `AmbientCapabilities=CAP_MAC_ADMIN CAP_MAC_OVERRIDE`
+   и `PAMName=pam-certauth`. Последняя директива говорит systemd
+   открыть PAM-сессию против `/etc/pam.d/pam-certauth` при запуске
+   юнита, благодаря чему `pam_parsec_cap.so`/`pam_parsec_mac.so`
+   успевают применить parsec caps и ilevel к процессу демона до того,
+   как стартует `ExecStart=`.
+
+   **Историческая заметка.** Ранее эта же активация делалась через
+   обёртку `/usr/sbin/execaps -c 0x8 -- ...`. От подхода отказались:
+   `execaps` сам зовёт `parsec_capset` на дочерний процесс и требует
+   для этого `PARSEC_CAP_CAP` у *запускающего* процесса. Демон под
+   `User=pamcertauth` этой capability не имеет — `execaps` падает с
+   EPERM ещё до `exec` бинаря. `PAMName=`-подход обходит проблему,
+   потому что capability ставится изнутри уже-форкнутого процесса
+   через PAM-модуль, а не снаружи через wrapper.
+
+5. **Убедитесь, что capabilities и ilevel активированы в процессе:**
+
+   ```bash
+   DPID=$(systemctl show -p MainPID pam-certauth.service | cut -d= -f2)
+   sudo cat /proc/$DPID/status | grep ^CapEff
+   # должен быть выставлен бит CAP_MAC_ADMIN (33, маска ~0x200000000)
+   sudo pdpl-ps $DPID
+   # должен показывать ilevel=63 (Уровень_0:...:Нет:0x3f!)
+   sudo journalctl -u pam-certauth.service --since="1 min ago" | grep -i mac_caps
+   # НЕ должно быть строки "mac_caps_missing"
+   ```
+
+6. **Назначьте per-user максимальный integrity (`MNKC`)** для
+   end-users, открывающих сессии через pam_certauth — иначе intersect
+   с `MAX_INTEGRITY` сертификата всегда выдаст 0:
+
+   ```bash
+   sudo /sbin/pdpl-user --ilevel 63 <pam_user>
+   ```
+
+7. **Включите политику в `config.toml`:**
+
+   ```toml
+   [mac]
+   cert_integrity = "required"   # или "optional"
+   ```
+
+   ```bash
+   sudo systemctl restart pam-certauth.service
+   ```
+
+### sudo не требуется
+
+Активация МКЦ не требует выдачи sudo-прав пользователю `pamcertauth`.
+Демон никогда не делает privilege-escalation: linux-capabilities приходят
+из `AmbientCapabilities=` юнита (выставляется systemd на этапе fork),
+а PARSEC capability и ilevel — из parsec capdb/micdb-записей, созданных
+`usercaps(8)` и `pdpl-user(8)`, активируемых через `PAMName=pam-certauth`
++ `pam_parsec_cap.so` / `pam_parsec_mac.so` в шипованном PAM-стеке.
+
+### Откат
+
+Возврат к не-МКЦ-дефолту:
+
+```bash
+sudo rm /etc/systemd/system/pam-certauth.service.d/mac-integrity.conf
+sudo rm /etc/pam.d/pam-certauth
+sudo systemctl daemon-reload
+sudo systemctl restart pam-certauth.service
+```
+
+Также установите `cert_integrity = "ignore"` в `config.toml`, если
+секция `[mac]` была добавлена.
+
+### Технический контекст активации
+
+- Runtime-пакет `libpdp3 (>= 3.11+ci97~)` подтягивается автоматически
+  при `apt install pam-certauth` (см. `debian/control`).
+- postinst на Astra-хостах (`/etc/astra_version`) при включённом
+  strict-mode выставляет MAC-лейблы `pdpl-file :::iinh` на
+  `/etc/pam_certauth/`, `/var/lib/pam_certauth/`,
+  `/var/cache/pam_certauth/` и ставит `chattr +i` на
+  `/var/lib/pam_certauth/host_id`. Эти шаги выполняются всегда — они
+  безопасны и не зависят от того, активирован МКЦ в `config.toml` или
+  нет.
+- `sessions.json` лежит в `/run/pam_certauth/` (tmpfs); systemd создаёт
+  каталог через `RuntimeDirectory=pam_certauth` на каждом boot. Файл
+  intentionally volatile: переживает перезапуск демона в пределах
+  одного boot, но не reboot — все sshd/login/sudo-процессы, держащие
+  эти сессии, всё равно умирают на reboot.
+- Перевыпустите сертификаты пользователей с расширением
+  `MAX_INTEGRITY` (OID `2.25.273824307386008814506455310913083078403`).
+  См. `docs/cert-issuance.md`. Без этого расширения значение
+  применённой метки — нулевой integrity.
+- Дополнительные параметры (`required` vs `optional`, обработка
+  intersect с MNKC пользователя) описаны в `docs/configuration.md`
+  §«MAC integrity».
+
+### МКЦ — поведение по среде установки
+
+Postinst автоматически адаптирует МКЦ-настройку под среду:
+
+| Среда | Что делает postinst |
+|---|---|
+| Не-Astra (Debian/Ubuntu без parsec) | Полный no-op: `pdpl-file`/`usercaps` отсутствуют, MAC-блок постинста пропускается |
+| Astra без strict mode (`astra-strictmode-control is-enabled` = НЕАКТИВНО) | MAC-блок пропускается; кernel не enforce'нет метки, postinst не тратит впустую |
+| Astra со strict mode | Ставит `iinh` на конфиг/state-директории, поднимает ilevel=63 на конфиг-файлах, печатает напоминание про opt-in drop-in для daemon'а |
+
+Файл `/usr/share/pam-certauth/systemd/mac-integrity.conf.example` и
+парный к нему `/usr/share/pam-certauth/pam.d/pam-certauth.example`
+устанавливаются всегда (вместе ≈2 КБ), но активируются только когда
+оператор сам копирует их в `/etc/systemd/system/pam-certauth.service.d/`
+и `/etc/pam.d/pam-certauth` соответственно, выдаёт
+`usercaps -m "+3" pamcertauth` и `pdpl-user --ilevel 63 pamcertauth`.
+
+### Защита конфига через МКЦ
+
+После установки на Astra strict mode:
+
+- `/etc/pam_certauth/config.toml`, `anchors.pem`, `host_acl.toml` имеют
+  **ilevel=63 (Высокий)**.
+- Процессы с ilevel<63 (включая обычного root без CAP_MAC_ADMIN,
+  обычного пользователя) **не могут писать** в эти файлы — kernel
+  returns EACCES на любой `O_WRONLY`/`O_RDWR`/`unlink`/`rename`.
+- Чтение разрешено (read-down): daemon `pamcertauth` на ilevel=0
+  нормально читает конфиг на старте.
+
+Чтобы редактировать конфиг (rotate CA, изменить policy, обновить
+host_acl):
+
+```bash
+# 1. Поднять max ilevel пользователя-администратора:
+sudo /sbin/pdpl-user --ilevel 63 <admin_user>
+
+# 2. Войти под ним. Astra-стандартный fly-dm/login PAM-стек уже включает
+#    pam_parsec_mac.so, который поднимет ilevel сессии до МНКЦ пользователя.
+ssh <admin_user>@host
+
+# 3. Теперь можно редактировать:
+sudo vim /etc/pam_certauth/config.toml
+```
+
+Альтернативно для одиночной правки без интерактивной high-ilevel сессии
+используйте `execaps`/`runpdp` от root:
+
+```bash
+sudo /usr/sbin/runpdp "0:63::" -- vim /etc/pam_certauth/config.toml
+```
+
+Это design choice: **только владелец maximum integrity** может
+tamper'нуть конфиг pam-certauth'а. Low-integrity malware (даже с full
+Linux caps) физически не способно write на ilevel=63 файл.
+
+### Не использую МКЦ — что делать?
+
+Если МКЦ не используется (default `[mac] cert_integrity = "ignore"`):
+
+- На non-Astra хосте — ничего не нужно делать, install no-op для MAC.
+- На Astra strict mode — postinst всё равно поднимет ilevel=63 на
+  конфиг. Это безвредно: daemon продолжает работать (read-down), просто
+  редактировать конфиг можно только из high-integrity сессии. Если эта
+  защита не нужна (e.g. тестовый стенд), отключите strict mode
+  (`astra-strictmode-control disable`+reboot) или явно опустите ilevel
+  назад: `sudo pdpl-file -v "0:0::iinh" /etc/pam_certauth/config.toml`.
+
+### Проверка применения метки
+
+```bash
+journalctl -u pam-certauth.service | grep mac_runtime_detected
+```
+
+Должна быть запись `F_runtime="libpdp"`. Если `F_runtime="stub"` —
+strict-mode не включён или libpdp не найден.
+
+После открытия сессии метка применяется к `sessions.json` через
+fd-based API:
+
+```bash
+sudo pdpl-file /run/pam_certauth/sessions.json
+# verified output (Astra 1.8.4 strict-mode):
+# Уровень_0:Сетевые_сервисы:Нет:0x0!
+```
+
+В формате метки `pdpl-file` поля идут как
+`Уровень_<level>:<categories>:<flags>:<ilevel_hex>!` (4 сегмента,
+flags=`Нет` для fd-labeled файлов — `irelax` нельзя передать через
+`pdp_set_fd`, ядро возвращает EINVAL; relax-наследование делается
+через `iinh` на parent dir).
