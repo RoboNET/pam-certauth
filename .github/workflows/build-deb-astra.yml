@@ -27,6 +27,15 @@ permissions:
 jobs:
   build-astra:
     runs-on: ubuntu-22.04
+    # Workflow-level env so Swatinem/rust-cache, sccache, cargo test и
+    # scripts/build-deb.sh видят identical fingerprint (CARGO_HOME +
+    # release profile knobs match debian/rules). Без alignment cargo
+    # пересобирает с нуля при переходе test → build-deb.
+    env:
+      CARGO_HOME: ${{ github.workspace }}/debian/cargo_home
+      CARGO_TARGET_DIR: ${{ github.workspace }}/target
+      CARGO_PROFILE_RELEASE_CODEGEN_UNITS: "1"
+      CARGO_PROFILE_RELEASE_LTO: "thin"
     container:
       image: ghcr.io/robonet/pam-certauth-astra-builder:latest
       credentials:
@@ -86,8 +95,8 @@ jobs:
 
       - name: Run cargo test with real libpdp (astra-mac feature)
         # This is the main value of the job: actually link against libpdp
-        # and exercise the MAC FFI on Astra. A regression here means the
-        # feature is broken on the target platform.
+        # and exercise the MAC FFI on Astra. Workflow-level env aligns
+        # the test build with debian/rules so build-deb only relinks.
         env:
           RUSTC_WRAPPER: sccache
           SCCACHE_GHA_ENABLED: "true"
