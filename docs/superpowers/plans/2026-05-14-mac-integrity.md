@@ -2920,10 +2920,9 @@ if command -v pdpl-file >/dev/null 2>&1 \
     pdpl-file :::iinh /etc/pam_certauth/                  # 0x80
     pdpl-file -R :::iinh /etc/pam_certauth/               # 0x80
     pdpl-file :::iinh,irelax /var/lib/pam_certauth/       # 0xA0
-    if [ ! -e /var/lib/pam_certauth/sessions.json ]; then
-        install -m 600 -o root -g root /dev/null /var/lib/pam_certauth/sessions.json
-    fi
-    pdpl-file :::irelax /var/lib/pam_certauth/sessions.json   # 0x20
+    # sessions.json now lives in /run/pam_certauth/ (tmpfs, volatile),
+    # created on demand by the daemon with an fd-based label. No
+    # postinst pre-creation needed.
     if [ -f /var/lib/pam_certauth/host_id ]; then
         pdpl-file 0:0 /var/lib/pam_certauth/host_id
         chattr +i /var/lib/pam_certauth/host_id 2>/dev/null || true
@@ -3207,7 +3206,7 @@ $SSH "sudo cp /tmp/engineer-cap-l2-c01.crt.pem /etc/pam_certauth/test/cert.pem"
 SESS_A=$($SSH "sudo PAM_TEST_USER=engineer pam-certauth-test open_session_bg 2>&1 | awk '/SESSION_ID/{print \$2}'")
 $SSH "sudo cp /tmp/engineer-cap-l1-empty.crt.pem /etc/pam_certauth/test/cert.pem"
 SESS_B=$($SSH "sudo PAM_TEST_USER=engineer pam-certauth-test open_session_bg 2>&1 | awk '/SESSION_ID/{print \$2}'")
-$SSH "sudo jq --arg a $SESS_A --arg b $SESS_B '[.sessions[] | select(.id==\$a or .id==\$b)] | length' /var/lib/pam_certauth/sessions.json" \
+$SSH "sudo jq --arg a $SESS_A --arg b $SESS_B '[.sessions[] | select(.id==\$a or .id==\$b)] | length' /run/pam_certauth/sessions.json" \
     | grep -q '^2$' \
     || { echo "T11: sessions.json missing one of concurrent sessions"; exit 1; }
 $SSH "sudo pam-certauth-test close_session $SESS_A; sudo pam-certauth-test close_session $SESS_B"

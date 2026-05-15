@@ -734,10 +734,16 @@ SysV-скрипт не требуется — авторитативный ис�
    - выставит лейблы `pdpl-file :::iinh` на `/etc/pam_certauth/`,
      `/var/lib/pam_certauth/`, `/var/cache/pam_certauth/` (если
      `astra-strictmode-control is-enabled`);
-   - предсоздаст `/var/lib/pam_certauth/sessions.json` с правильным
-     irelax-лейблом;
    - выставит `chattr +i` на `/var/lib/pam_certauth/host_id` если файл
      уже существует.
+
+   `sessions.json` лежит в `/run/pam_certauth/` (tmpfs) и
+   предсоздавать его не нужно: systemd создаёт каталог через
+   `RuntimeDirectory=pam_certauth` на каждом boot, демон пишет
+   файл по требованию с правильным fd-based МКЦ-лейблом. Файл
+   intentionally volatile: переживает перезапуск демона в пределах
+   одного boot, но не reboot — все sshd/login/sudo-процессы,
+   держащие эти сессии, всё равно умирают на reboot.
 3. Добавьте секцию `[mac]` в `/etc/pam_certauth/config.toml`:
 
    ```toml
@@ -812,7 +818,7 @@ strict-mode не включён или libpdp не найден.
 fd-based API. Проверка:
 
 ```bash
-sudo pdpl-file /var/lib/pam_certauth/sessions.json
+sudo pdpl-file /run/pam_certauth/sessions.json
 # verified output (Astra 1.8.4 strict-mode):
 # Уровень_0:Сетевые_сервисы:Нет:0x0!
 ```

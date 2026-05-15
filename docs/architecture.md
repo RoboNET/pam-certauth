@@ -235,7 +235,7 @@ flowchart LR
 | `/run/pam_certauth/monitord.sock`            | monitord                 | cdylib                         | `0660 root:pam-certauth` |
 | `/run/pam_certauth/sessions/<sid>/`          | cdylib                   | удаляет MountGuard на drop     | `0700 root:root`       |
 | `/run/pam_certauth/health`                   | monitord                 | внешний мониторинг             | `0644 root:root`       |
-| `/var/lib/pam_certauth/sessions.json`        | monitord                 | monitord (между запусками)     | `0600 root:root`       |
+| `/run/pam_certauth/sessions.json`            | monitord                 | monitord (между перезапусками демона в пределах boot; tmpfs, volatile) | `0600 pamcertauth:pamcertauth` |
 | `/var/cache/pam_certauth/ocsp/*.der`         | core                     | core                           | `0640 root:root`       |
 
 `/run/pam_certauth/` и `/var/lib/pam_certauth/` создаются systemd
@@ -486,8 +486,11 @@ fail-closed. `INTERNAL` и `BAD_REQUEST` — по политике
   (`server.rs::handle_connection`).
 - Реестр сессий — `Mutex<RegistryStore>` (см. `registry.rs`).
 - udev и logind — свои dedicated long-running tasks.
-- Запись `/var/lib/pam_certauth/sessions.json` — atomic-rename через
-  tempfile + flock.
+- Запись `/run/pam_certauth/sessions.json` — atomic-rename через
+  tempfile + flock. Файл лежит на tmpfs (`RuntimeDirectory=pam_certauth`),
+  intentionally volatile: реестр нужен только между перезапусками демона
+  в пределах одного boot — все процессы, держащие эти сессии (sshd/login/
+  sudo), всё равно умирают на reboot.
 
 ### 11.3 Совместный доступ к `/run/pam_certauth/sessions/`
 

@@ -733,7 +733,7 @@ fn validate_pkcs11_section(raw: &RawConfig, mode: Mode) -> Result<(), Error> {
 /// Default monitord socket path when `[monitor].socket_path` is unset.
 const DEFAULT_MONITORD_SOCKET: &str = "/run/pam_certauth/monitord.sock";
 /// Default monitord state-file path when `[monitor].state_file_path` is unset.
-const DEFAULT_MONITORD_STATE_FILE: &str = "/var/lib/pam_certauth/sessions.json";
+const DEFAULT_MONITORD_STATE_FILE: &str = "/run/pam_certauth/sessions.json";
 /// Default per-RPC timeout in milliseconds.
 const DEFAULT_MONITORD_TIMEOUT_MS: u64 = 2000;
 /// Lower bound on `timeout_ms` (100 ms).

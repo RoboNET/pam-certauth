@@ -13,6 +13,11 @@ pam-certauth (0.3.0-1) unstable; urgency=medium
   * FFI fixes: libpdp text grammar corrected to "level:ilevel:cat[:flags]",
     dropped `irelax` flag on `pdp_set_fd` (kernel rejects it through the
     fd-based API), link against `libparsec-mic` for `getmicnam`.
+  * Daemon: session registry moved from /var/lib/pam_certauth/sessions.json
+    to /run/pam_certauth/sessions.json (tmpfs, volatile across reboot).
+    Removes stale-state-after-reboot foot-gun and MAC-labelling churn.
+    postinst removes the stale /var/lib file on upgrade; daemon.lock and
+    caches stay in /var/lib.
 
  -- Mikhail Korolev <mikhail@robonet.me>  Fri, 15 May 2026 14:43:40 +0300
 

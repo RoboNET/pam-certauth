@@ -175,8 +175,12 @@ pub struct RawMonitor {
     /// falls back to the top-level `monitor_fail_mode`.
     #[serde(default)]
     pub fail_mode: Option<String>,
-    /// Path to the persisted session-registry JSON. Default
-    /// `/var/lib/pam_certauth/sessions.json`. Read by `pam-certauth`.
+    /// Path to the session-registry JSON. Default
+    /// `/run/pam_certauth/sessions.json` (tmpfs, volatile across reboot).
+    /// The registry only needs to survive daemon restarts within a boot —
+    /// all userspace processes holding these sessions die on reboot, so
+    /// persisting across boots would only leave stale entries. Read by
+    /// `pam-certauth`.
     #[serde(default)]
     pub state_file_path: Option<PathBuf>,
     /// Action to take when the bound USB token is removed past the

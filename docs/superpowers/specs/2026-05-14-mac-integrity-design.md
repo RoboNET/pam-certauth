@@ -443,7 +443,7 @@ monitord не управляет НКЦ сессий, ему МКЦ-API не н�
 |------|---------------|-------------|
 | `/etc/pam_certauth/` (dir + files) | `level=0`, `iinh` (= `PDPT_IINH = 0x80`) | Конфиг читается из любого НКЦ |
 | `/var/lib/pam_certauth/` (dir) | `level=0`, `iinh \| irelax` (= `0x80 \| 0x20 = 0xA0`) | Новые файлы не наследуют |
-| `/var/lib/pam_certauth/sessions.json` | `level=0`, **`irelax`** (= `PDPT_IRELAX = 0x20`) | Cross-level shared state; DAC `0600 root:root` |
+| `/run/pam_certauth/sessions.json` | `level=0`, **`irelax`** (= `PDPT_IRELAX = 0x20`) | Cross-level shared state; tmpfs (intentionally volatile across reboot — registry only spans daemon-restart within a boot); DAC `0600 pamcertauth:pamcertauth` |
 | `/var/lib/pam_certauth/daemon.lock` | `level=0` | Стандартно |
 | `/var/lib/pam_certauth/host_id` | `level=0`, `chattr +i` | Anti-tamper |
 | `/run/pam_certauth/` | `level=0`, `iinh` | tmpfs, RuntimeDirectory= |
@@ -504,12 +504,11 @@ fi
 pdpl-file :::iinh /etc/pam_certauth/
 pdpl-file -R :::iinh /etc/pam_certauth/
 
-# /var/lib/pam_certauth — iinh + sessions.json irelax
+# /var/lib/pam_certauth — iinh on the persistent state dir (daemon.lock,
+# host_id, caches). sessions.json moved to /run/pam_certauth/ (tmpfs);
+# systemd creates the runtime dir at boot and the daemon writes the file
+# on demand with an fd-based МКЦ label, so no postinst pre-creation.
 pdpl-file :::iinh /var/lib/pam_certauth/
-if [ ! -e /var/lib/pam_certauth/sessions.json ]; then
-    install -m 600 -o root -g root /dev/null /var/lib/pam_certauth/sessions.json
-fi
-pdpl-file :::irelax /var/lib/pam_certauth/sessions.json
 
 # host_id — immutable после генерации
 if [ -f /var/lib/pam_certauth/host_id ]; then
@@ -564,12 +563,12 @@ let fd = tmp.as_raw_fd();
 // irelax наследуется через `iinh` на parent dir.
 mac::set_fd_label(fd, IntegrityLabel { level: 0, categories: 0 }, /*irelax=*/false)?;
 tmp.write_all(&serialized)?;
-tmp.persist("/var/lib/pam_certauth/sessions.json")?;  // atomic rename
+tmp.persist("/run/pam_certauth/sessions.json")?;  // atomic rename (tmpfs)
 ```
 
 Этим закрывается TOCTOU: label выставлен на тот же inode, что будет
 переименован, без окна между `open()` и `rename()`. Защита от ручной правки
-админом остаётся через DAC + audit; parent dir (`/var/lib/pam_certauth/`)
+админом остаётся через DAC + audit; parent dir (`/run/pam_certauth/`)
 имеет `iinh`, что гарантирует defaults для случайно созданных файлов.
 
 **`pdp_set_fd` подтверждён в pdp.h** (см. Appendix C), → fd-based путь

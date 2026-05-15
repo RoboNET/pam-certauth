@@ -416,7 +416,7 @@ graph TD
 ### 9.1.6 `irelax` + UID 0 = forge (in-scope, out-of-mitigation)
 
 monitord и pam_certauth.so применяют `irelax` к собственным файлам
-(`/run/pam_certauth/monitord.sock`, `/var/lib/pam_certauth/sessions.json`)
+(`/run/pam_certauth/monitord.sock`, `/run/pam_certauth/sessions.json`)
 через `PARSEC_CAP_CHMAC` privilege пользователя `pamcertauth`. Это
 необходимо: engineer с НКЦ=1 должен мочь писать receipt'ы в lvl=0
 daemon через socket, который и сам помечен `irelax`.
