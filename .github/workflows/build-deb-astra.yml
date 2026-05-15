@@ -19,19 +19,32 @@ on:
     tags: ['v*']
   pull_request:
     branches: [main]
+  # Re-run after the builder image finishes rebuilding so we link against a
+  # fresh `:latest` (avoids race when a single push touches both the
+  # Dockerfile and Rust code linking new system libraries).
+  workflow_run:
+    workflows: ["build-builder-image"]
+    types: [completed]
+    branches: [main, 'feat/**']
 
 permissions:
   contents: read
   packages: read
 
 # Cancel in-progress builds when a newer commit lands on the same branch.
-# Saves runner-minutes when WIP iteratively pushes fixes.
+# Saves runner-minutes when WIP iteratively pushes fixes. For workflow_run
+# triggers github.ref points at the default branch, so prefer the upstream
+# run's head_branch to keep the concurrency group aligned with the source
+# branch (and let a fresh-image rerun cancel a stale push-triggered run).
 concurrency:
-  group: build-deb-astra-${{ github.ref }}
+  group: build-deb-astra-${{ github.event.workflow_run.head_branch || github.ref }}
   cancel-in-progress: true
 
 jobs:
   build-astra:
+    # Skip when triggered by a failed/cancelled upstream builder run; keep
+    # normal push/PR runs unconditional.
+    if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
     runs-on: ubuntu-22.04
     # Workflow-level env so Swatinem/rust-cache, sccache, cargo test и
     # scripts/build-deb.sh видят identical fingerprint (CARGO_HOME +
@@ -51,6 +64,12 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0   # full history for SOURCE_DATE_EPOCH
+          # On workflow_run triggers github.sha points at the default branch
+          # tip, not the commit that produced the freshly-built image. Pull
+          # the upstream run's head_sha so we build the right revision. The
+          # `||` fallback collapses to github.sha for push/PR events where
+          # workflow_run context is absent.
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
 
       - name: Trust workspace as git repository
         # Container-uid mismatch + GHA workspace mount makes git refuse to
