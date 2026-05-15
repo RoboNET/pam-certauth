@@ -30,6 +30,16 @@ jobs:
       # (e.g. `ubi18:1.8.4`) that matches the target Astra VM.
       image: registry.astralinux.ru/library/astra/ubi18:latest
     steps:
+      - name: Bootstrap git for actions/checkout
+        # ubi18 base image ships без git; install before checkout (which
+        # would otherwise fall back to REST tarball + no .git directory).
+        env:
+          DEBIAN_FRONTEND: noninteractive
+        run: |
+          set -euxo pipefail
+          apt-get update
+          apt-get install -y git ca-certificates
+
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0   # full history for SOURCE_DATE_EPOCH
