@@ -160,16 +160,14 @@ sha256sum -c pam-certauth_0.1.1-1_amd64.deb.sha256
 ### 2.4 Установка
 
 ```bash
-# 0.2.0:
-sudo apt install ./pam-certauth_0.2.0-1_amd64.deb
+sudo apt install ./pam-certauth_0.3.0-1_amd64.deb
 # или legacy 0.1.x:
 # sudo apt install ./pam-certauth_0.1.1-1_amd64.deb
 ```
 
-> **0.2.0:** бинарь `pam-certauth-monitord` переименован в
-> `pam-certauth` (мульти-команда). Daemon-режим запускается
-> как `pam-certauth daemon`; systemd-юнит `pam-certauth.service`
-> уже использует новое имя. См. [docs/migration.md](migration.md).
+> Начиная с 0.2.0 бинарь `pam-certauth-monitord` переименован в
+> `pam-certauth`. Daemon-режим запускается как `pam-certauth daemon`;
+> systemd-юнит `pam-certauth.service` уже использует новое имя.
 
 `apt` подтянет недостающие зависимости (`libgost-engine | gost-engine`,
 `libpkcs11-helper1`, `librtpkcs11ecp`).
@@ -195,83 +193,7 @@ test -d /run/pam_certauth && echo "runtime dir OK"
 test -S /run/pam_certauth/monitord.sock && echo "socket OK"
 ```
 
-Ожидание: версия `0.2.0` (или `0.1.1` для legacy), обе строки `OK`.
-
-### 2.6 (опционально) GC-timer для work-order retention (0.2.0)
-
-Если планируется использовать `pam-certauth execute`, включите
-сборку мусора:
-
-```bash
-sudo systemctl enable --now pam-certauth-gc.timer
-systemctl list-timers pam-certauth-gc.timer
-```
-
-Подробности — [docs/operations.md](operations.md).
-
-### 2.7 Отключение интерактивного sudo на ATM
-
-Целевая модель развёртывания — **на ATM нет аккаунтов с правом
-`sudo -i` / `sudo bash`**. Инженеры остаются обычными пользователями;
-единственный путь к root — через `pam-certauth execute` с M-of-N CMS
-work order. См. архитектурное обоснование в
-[architecture.md §1.1.1](architecture.md) и
-[threat-model.md §1.2](threat-model.md).
-
-1. **Убрать инженерские аккаунты из admin-групп** (если они там
-   оказались на этапе провижининга):
-
-   ```bash
-   for u in $(getent group atm_engineers | cut -d: -f4 | tr ',' ' '); do
-       sudo gpasswd -d "$u" sudo  2>/dev/null || true
-       sudo gpasswd -d "$u" wheel 2>/dev/null || true
-       sudo gpasswd -d "$u" admin 2>/dev/null || true
-   done
-   ```
-
-2. **Проверить, что в sudoers нет broad-правил** для инженеров.
-   Любое `NOPASSWD: ALL` или `(ALL) ALL` для группы `atm_engineers`
-   (или конкретного инженерского UID) недопустимо:
-
-   ```bash
-   sudo grep -rE 'NOPASSWD:\s*ALL|\(ALL\)\s*ALL' /etc/sudoers /etc/sudoers.d/
-   ```
-
-   Ожидание: либо пусто, либо только строки, не относящиеся к
-   `atm_engineers` (например, recovery-аккаунт, см. ниже).
-
-3. **Оставить единственное узкое правило** `pam-certauth execute`
-   в `/etc/sudoers.d/pam-certauth-execute` (поставляется пакетом,
-   см. [execute.md](execute.md) §sudoers):
-
-   ```text
-   %atm_engineers ALL=(root) NOPASSWD: /usr/bin/pam-certauth execute *
-   ```
-
-4. **Проверка для конкретного пользователя** — должна показывать
-   **только** разрешение на `pam-certauth execute`:
-
-   ```bash
-   sudo -l -U <engineer_user>
-   ```
-
-   Ожидаемая строка вида:
-   `(root) NOPASSWD: /usr/bin/pam-certauth execute *` и ничего больше.
-
-5. **Аварийный доступ (out-of-band).** Для break-glass-сценариев
-   используются отдельные пути, **не доступные** из обычной
-   инженерской сессии:
-
-   - Ansible push с bastion-хоста под отдельной service-identity
-     (см. runbook оператора, вне scope этого документа);
-   - оффлайн-сейф с root-паролем (вскрытие — оператор + аудит-журнал);
-   - recovery USB с подписанным initramfs (физический доступ).
-
-   Эти пути документируются и проверяются отдельно; в день-to-day
-   эксплуатации инженер с ATM не имеет к ним доступа.
-
-Периодический аудит этих инвариантов описан в
-[operations.md §1.6](operations.md).
+Ожидание: версия `0.3.0` (или `0.1.1` для legacy), обе строки `OK`.
 
 ## 3. Создание тестового CA (ГОСТ)
 

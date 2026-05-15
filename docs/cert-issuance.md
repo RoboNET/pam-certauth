@@ -26,29 +26,6 @@ mandatory-extension policy).
 |---|---|---|
 | `pam_cert_host_binding` | `2.25.183976554325829274683049824615098` | `extnValue ::= SEQUENCE OF UTF8String` |
 | `pam_cert_user_binding` | `2.25.215438916728501023845629178354627` | `extnValue ::= SEQUENCE OF UTF8String` |
-| `pam_cert_scopes` (0.2.0) | `2.25.148783702439522084104654664555598657967` | `extnValue ::= SEQUENCE OF UTF8String` |
-| EKU `approver_eku` (0.2.0) | `2.25.164448633110302675590304402232871779284` | KeyPurposeId внутри `extendedKeyUsage` |
-
-Полный справочник по всем расширениям, включая выпуск approver-сертификатов
-для CMS work order, — в [docs/x509-extensions.md](x509-extensions.md).
-
-### Approver-сертификаты (0.2.0)
-
-В дополнение к инженерским сертификатам для логина, для `pam-certauth
-execute` нужны **approver-сертификаты** — отдельные leaf'ы (обычно
-short-lived, 24–72 ч), которыми подписываются CMS work order'ы.
-Они содержат:
-
-- `pam_cert_scopes` со списком scope, которые этот подписант вправе
-  одобрять;
-- EKU `approver_eku` (если в `[policy]` включён
-  `require_approver_eku = true`);
-- **не содержат** `pam_cert_user_binding` (они не для PAM-логина).
-
-Approver-CA может быть отдельным от инженерского, или поддеревом
-существующего PKI. Anchor добавляется в секцию `[approver_trust]`
-(см. [configuration.md](configuration.md)). Полный workflow выпуска
-+ CMS-подписание — в [docs/work-order.md](work-order.md).
 
 OID размещены в нерегистрируемой ветке `2.25.<UUID>` (RFC 4530), что
 гарантирует уникальность без обращения к внешнему реестру. Эти значения

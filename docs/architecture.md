@@ -23,30 +23,6 @@
 - Корректно обрабатывает suspend/resume.
 - Делегирует ГОСТ-криптографию сертифицированному `gost-engine`.
 
-### 1.1.1 Архитектурная цель: на ATM нет интерактивного root
-
-Развёртывание `pam_certauth` спроектировано так, чтобы на банкоматной
-машине **отсутствовал** интерактивно-доступный root-аккаунт. Инженеры
-заходят как обычные пользователи (нет членства в `sudo` / `wheel` /
-`admin`), а все привилегированные операции проходят через
-`pam-certauth execute`, который открывает повышение только после
-успешной валидации CMS-подписи M-of-N одобряющих против
-`policy.toml`. Sudoers содержит **единственное** узкое правило для
-инженеров:
-
-```text
-# /etc/sudoers.d/pam-certauth-execute
-%atm_engineers ALL=(root) NOPASSWD: /usr/bin/pam-certauth execute *
-```
-
-В отличие от классической модели «админ + `NOPASSWD: ALL`», здесь
-sudoers сам по себе **не даёт** ни одной осмысленной команды от root —
-любое действие требует подписанного work order. Каждый
-привилегированный вызов атрибутируется минимум трём людям (инженер +
-≥`M` одобряющих), что делает аудит и подотчётность встроенными
-свойствами архитектуры. Подробнее — в
-[threat-model.md §1.2](threat-model.md), sequence — в §9.1 ниже.
-
 ### 1.2 Что pam_certauth НЕ делает
 
 - Не реализует свою криптографию (всё через OpenSSL и `gost-engine`).
@@ -132,31 +108,6 @@ PAM service module. Содержит:
 `/usr/bin/pam-certauth` и поставляется юнитом
 [`pam-certauth.service`](../dist/systemd/pam-certauth.service).
 
-### 2.4.1 `pam_certauth_policy` (rlib, 0.2.0)
-
-Парсер `policy.toml` + резолвер правил scope. Без зависимостей от
-`pam_certauth_core` и `pam_certauth_proto` — чисто данные. См.
-[crates/pam_certauth_policy](../crates/pam_certauth_policy/src/lib.rs)
-и [docs/policy.md](policy.md).
-
-### 2.4.2 Subcommands `pam-certauth` (0.2.0)
-
-Бинарь `pam-certauth` теперь мульти-команда:
-
-- `pam-certauth daemon` — старый monitord (по умолчанию для systemd).
-- `pam-certauth execute --scope=… --work-order=… -- cmd args` —
-  запуск привилегированной операции под защитой CMS work order.
-  См. [docs/execute.md](execute.md).
-- `pam-certauth policy validate --path=…` — синтаксис + правила
-  `policy.toml`.
-- `pam-certauth policy explain --scope=…` — какое правило применится
-  для конкретного scope.
-- `pam-certauth gc --retention-days=90` — сборка CMS-артефактов в
-  `/var/lib/pam_certauth/work_orders/`. Триггер — systemd-timer.
-
-Модуль `crates/pam_certauth_core/src/cms.rs` — CMS work order
-verifier, используемый из `execute`.
-
 ### 2.5 Внешние зависимости
 
 | Компонент             | Источник                              | Доверие                                       |
@@ -179,8 +130,6 @@ flowchart TD
     cdylib --> proto[pam_certauth_proto]
     monitord[pam-certauth] --> proto
     monitord --> core
-    monitord --> policy[pam_certauth_policy]
-    core --> cms[cms.rs<br/>CMS verifier]
     cdylib -. "AF_UNIX SOCK_STREAM NDJSON" .-> monitord
     core --> openssl[libssl3 + gost-engine]
     core --> pkcs11[PKCS#11 module]
@@ -392,43 +341,6 @@ sequenceDiagram
 по таймауту; при `"permissive"` — переживает кратковременную
 недоступность.
 
-## 9.1 Sequence diagram — `pam-certauth execute` (0.2.0)
-
-```mermaid
-sequenceDiagram
-    participant O as Оператор (sudo)
-    participant E as pam-certauth execute
-    participant M as monitord
-    participant FS as filesystem
-    participant Cmd as Child process
-
-    O->>E: argv: --scope=X --work-order=wo.cms -- cmd
-    E->>E: 1. clap parse
-    E->>FS: 2. read config.toml + policy.toml
-    E->>E: 2.1 sha256(policy.toml) → audit field
-    E->>M: 3. Hello + GetActiveSessionByUid(uid)
-    M-->>E: ActiveSession{engineer_ski, scopes, ...}
-    E->>FS: 4. open(wo.cms, O_NOFOLLOW); read; hash-before
-    E->>FS: 4.1 read again; hash-after; assert equal (TOCTOU)
-    E->>E: 5. CMS verify via approver_trust
-    E->>E: 6. argv canonicalize (reject NUL, control, --)
-    E->>E: 7. (опц.) read .pattern + regex match
-    E->>E: 8. pre_hooks
-    E->>E: 9. audit: pam_certauth.execute.start
-    E->>Cmd: 10. fork + setpgid + exec
-    par signals
-        O-->>E: SIGINT/TERM/HUP/...
-        E->>Cmd: kill(-pgrp, signal)
-    and watchdog
-        E->>Cmd: (timeout) SIGTERM → 5s → SIGKILL → exit 124
-    end
-    Cmd-->>E: 11. waitpid → exit code
-    E->>E: 12. audit: pam_certauth.execute.done
-    E->>E: 13. post_hooks (audit_critical → escalate)
-    E->>FS: 14. retain wo.cms at /var/lib/pam_certauth/work_orders/<sha>.cms
-    E-->>O: exit code (child / 124 / 2 / 126)
-```
-
 ## 10. IPC wire protocol
 
 ### 10.1 Транспорт
@@ -460,17 +372,13 @@ Newline-delimited JSON (NDJSON):
 
 ### 10.3 Версионирование
 
-- `PROTOCOL_VERSION: u32 = 2` (0.2.0; 0.1.x использовал `1`) (см.
+- `PROTOCOL_VERSION: u32 = 1` (см.
   [`crates/pam_certauth_proto/src/version.rs`](../crates/pam_certauth_proto/src/version.rs)).
 - Первый кадр на любом соединении — `Hello { protocol_version }`.
 - Если `protocol_version` не равен серверному, monitord отвечает
   `Error { code: 1000 (PROTOCOL_MISMATCH) }` и закрывает соединение.
 - Семантика версий: MAJOR-mismatch → разрыв; MINOR (если появятся) —
   best-effort backward compatibility.
-
-> Полный список сообщений v2 (`GetActiveSessionByUid`,
-> `ActiveSession`, новые поля `SessionOpen`) — в
-> [docs/ipc.md](ipc.md).
 
 ### 10.4 Сообщения
 
