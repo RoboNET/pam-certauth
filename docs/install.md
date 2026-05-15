@@ -751,7 +751,51 @@ SysV-скрипт не требуется — авторитативный ис�
    `MAX_INTEGRITY` (OID `2.25.273824307386008814506455310913083078403`).
    См. `docs/cert-issuance.md`.
 
-5. Перезапустите демон: `systemctl restart pam-certauth.service`.
+5. **Runtime-предпосылки для применения МКЦ-меток** (verified e2e на
+   Astra Linux SE 1.8.4, 2026-05-15). Без этих шагов сертификатное
+   расширение успешно парсится, но метка не накладывается:
+
+   - **Strict-mode ядра.** Должен быть включён `parsec.strict_mode=1`
+     в kernel cmdline:
+
+     ```bash
+     cat /sys/module/parsec/parameters/strict_mode    # ожидается: Y
+     ```
+
+   - **PARSEC_CAP_CHMAC у пользователя демона.** Демон systemd запущен
+     от `User=pamcertauth` и не наследует caps от sshd/login. Cap нужно
+     явно выдать в parsec capdb:
+
+     ```bash
+     sudo /sbin/usercaps -m "+3" pamcertauth
+     ```
+
+     Результат — строка в `/etc/parsec/capdb/<uid>` вида
+     `pamcertauth:<linux_caps_hex>:<parsec_caps_hex>`, где в parsec-маске
+     взведён бит 3.
+
+   - **`execaps`-обёртка в systemd unit.** Чтобы PARSEC cap из capdb
+     попал в effective set процесса демона, `ExecStart=` должен быть
+     обёрнут в `/usr/sbin/execaps -c 0x8 -- ...` (где `0x8 = 1<<3 =
+     PARSEC_CAP_CHMAC`). Поставляемый юнит на 0.3.0 этот шаг **не
+     делает** — задеплоить МКЦ значит либо пропатчить юнит локально, либо
+     перейти на запуск демона через PAM-стек с `pam_parsec`.
+
+   - **Linux `CAP_MAC_ADMIN`.** Юнит уже содержит
+     `AmbientCapabilities=CAP_MAC_ADMIN`. Без него ядро вернёт EPERM
+     при записи `security.PDP` xattr.
+
+   - **ilevel пользователя.** Резолвится из FreeIPA/mic-db через
+     `getmicnam(3)`. Задаётся админом командой:
+
+     ```bash
+     sudo /sbin/pdpl-user --ilevel 63 <user>
+     ```
+
+     Если у пользователя ilevel ниже, чем `MAX_INTEGRITY` сертификата,
+     демон применит минимум (см. `docs/configuration.md` §«MAC integrity»).
+
+6. Перезапустите демон: `systemctl restart pam-certauth.service`.
    Юнит уже содержит `RuntimeDirectory=pam_certauth` /
    `RuntimeDirectoryMode=0750`.
 
@@ -763,3 +807,18 @@ journalctl -u pam-certauth.service | grep mac_runtime_detected
 
 Должна быть запись `F_runtime="libpdp"`. Если `F_runtime="stub"` —
 strict-mode не включён или libpdp не найден.
+
+После открытия сессии метка применяется к `sessions.json` через
+fd-based API. Проверка:
+
+```bash
+sudo pdpl-file /var/lib/pam_certauth/sessions.json
+# verified output (Astra 1.8.4 strict-mode):
+# Уровень_0:Сетевые_сервисы:Нет:0x0!
+```
+
+В формате метки `pdpl-file` поля идут как
+`Уровень_<level>:<categories>:<flags>:<ilevel_hex>!` (4 сегмента,
+flags=`Нет` для fd-labeled файлов — `irelax` нельзя передать через
+`pdp_set_fd`, ядро возвращает EINVAL; relax-наследование делается
+через `iinh` на parent dir).

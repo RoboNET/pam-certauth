@@ -370,6 +370,66 @@ probe-вызов `pdp_set_pid_safe(0, l)` без CHMAC cap (через
 monitord не управляет НКЦ сессий, ему МКЦ-API не нужно. Единственная точка где
 он трогает parsec — пометка собственного listening socket (раздел 5).
 
+### 4.5 Runtime-предпосылки на Astra SE 1.8.4 (verified 2026-05-15)
+
+Чтобы МКЦ-метка действительно применилась к `sessions.json` через
+`pdp_set_fd`, на хосте должно быть выполнено всё нижеперечисленное.
+Проверено e2e в strict-mode VM (Astra Linux SE 1.8.4):
+
+1. **Strict-mode ядра.** `parsec.strict_mode=1` в kernel cmdline,
+   проверяется через
+   `cat /sys/module/parsec/parameters/strict_mode` → должно вернуть `Y`.
+   Без strict-mode ядро принимает `pdp_set_fd`, но не пишет xattr на
+   inode, и `pdpl-file` показывает default.
+
+2. **PARSEC_CAP_CHMAC у daemon-процесса.** Демон не наследует caps от
+   sshd/login (он long-running, запускается systemd как
+   `User=pamcertauth`). Capability нужно явно выдать пользователю
+   `pamcertauth` в parsec capdb:
+
+   ```sh
+   sudo /sbin/usercaps -m "+3" pamcertauth
+   # = строка в /etc/parsec/capdb/<uid>:
+   # pamcertauth:<linux_caps_hex>:<parsec_caps_hex_with_bit3>
+   ```
+
+   `+3` соответствует `PARSEC_CAP_CHMAC` (bit 3).
+
+3. **Linux `CAP_MAC_ADMIN` у daemon-процесса.** systemd unit задаёт
+   через `AmbientCapabilities=CAP_MAC_ADMIN` (и `CapabilityBoundingSet=`,
+   включающий тот же cap). Без CAP_MAC_ADMIN ядро вернёт EPERM на
+   попытке записать security.PDP xattr.
+
+4. **`execaps`-обёртка для активации PARSEC caps в процессе демона.**
+   Чтобы parsec capability из capdb фактически появилась в effective
+   set процесса, `ExecStart=` юнита должен быть обёрнут в:
+
+   ```
+   ExecStart=/usr/sbin/execaps -c 0x8 -- /usr/sbin/pam-certauth-monitord ...
+   ```
+
+   `0x8 == (1<<3) == PARSEC_CAP_CHMAC`. Альтернатива — запускать демон
+   через PAM-стек, в котором есть `pam_parsec` (это применяется к login
+   sessions; для системных юнитов unsuitable). **Currently** production
+   юнит запускает демон напрямую без execaps; чтобы развернуть МКЦ в
+   проде, юнит нужно либо перевести на execaps-wrap, либо поднимать
+   демон через parsec-aware login. Без этого `parsec_capget(0, &caps)`
+   вернёт `cap_effective` без бита 3, self-check выдаст
+   `mac_caps_missing` и весь fd-labeling провалится в fail-closed.
+
+Пользовательская сторона:
+
+5. **User ilevel ≥ требуемого `cert_max_integrity`.** Резолвится через
+   `getmicnam(3)` из `libparsec-mic.so.3`. Назначается админом:
+
+   ```sh
+   sudo /sbin/pdpl-user --ilevel 63 <user>
+   ```
+
+   Если у пользователя ilevel ниже, чем уровень из сертификата,
+   orchestrator делает `min()`-intersect и применяет именно МНКЦ
+   пользователя (см. §6.4).
+
 ## 5. Файловая система
 
 ### 5.1 Карта меток
@@ -498,7 +558,11 @@ int pdp_set_fd(int fd, const PDPL_T *l);
 // Pseudocode для monitord.state::write_sessions_atomic():
 let tmp = NamedTempFile::new_in("/var/lib/pam_certauth")?;  // O_CREAT|O_EXCL
 let fd = tmp.as_raw_fd();
-mac::set_fd_label(fd, IntegrityLabel { level: 0, categories: 0 }, irelax: true)?;
+// NB: irelax=false на fd-based API. Ядро Astra 1.8.4 strict-mode
+// возвращает EINVAL, если `irelax` передан через `pdp_set_fd` — флаг
+// поддерживается только path-based API (`pdp_set_path`). Атрибут
+// irelax наследуется через `iinh` на parent dir.
+mac::set_fd_label(fd, IntegrityLabel { level: 0, categories: 0 }, /*irelax=*/false)?;
 tmp.write_all(&serialized)?;
 tmp.persist("/var/lib/pam_certauth/sessions.json")?;  // atomic rename
 ```
@@ -509,8 +573,10 @@ tmp.persist("/var/lib/pam_certauth/sessions.json")?;  // atomic rename
 имеет `iinh`, что гарантирует defaults для случайно созданных файлов.
 
 **`pdp_set_fd` подтверждён в pdp.h** (см. Appendix C), → fd-based путь
-реализуем напрямую через text-API: `pdpl_get_from_text("0:0:0:irelax")` →
-`pdp_set_fd(fd, label)` → `pdpl_put`.
+реализуем напрямую через text-API: `pdpl_get_from_text("0:1:0")` →
+`pdp_set_fd(fd, label)` → `pdpl_put`. Verified e2e на Astra Linux SE
+1.8.4 strict-mode (2026-05-15): `pdpl-file` после persist печатает
+`Уровень_0:Сетевые_сервисы:Нет:0x0!` (level=0, ilevel=1, без flags).
 
 Compensating control при невозможности fd-labeling (если в каком-то
 будущем рантайме функция вернёт `ENOSYS`): использовать
@@ -1170,27 +1236,36 @@ int pdpl_file_get(char *path) {
 - подтверждает RAII-протокол: `pdpl_get_from_text` ↔ `pdpl_put`;
 - даёт reference на text-формат label (передаётся как C-строка).
 
-**Text format string `pdpl_get_from_text`:**
+**Text format string `pdpl_get_from_text`** (verified on Astra SE 1.8.4,
+2026-05-15 — формат, который ранее в этом дизайн-доке указывался как
+пятисегментный `conf:integ:cat:flags:linear`, был неверен; ядро
+strict-mode принимает четырёхсегментную грамматику):
 
 ```
-[conf_lev]:[integ_lev]:[cat_hex]:[flags]:[linear_ilev]
+[level]:[ilevel]:[cat_hex][:flags]
 ```
 
-- `conf_lev` — конфиденциальность (МРД); мы передаём `0`.
-- `integ_lev` — иерархический уровень целостности; мы передаём `0`
-  (мы оперируем только линейным уровнем).
-- `cat_hex` — категории, шестнадцатеричный (`0` если пусто, до 16 hex
-  цифр для `u64`).
-- `flags` — `iinh,irelax,silev,ssi,ccnr,ehole,whole` через запятую (мы
-  используем `irelax` для socket / sessions.json, `iinh` для каталогов).
-- `linear_ilev` — линейный уровень целостности (`int8`, `-128..127`).
-  Это поле прямо отображается на наш `IntegrityLabel.level`.
+- `level` — МАК-уровень (МРД-confidentiality); мы передаём `0`.
+- `ilevel` — иерархический уровень целостности (он же «линейный»
+  ilevel у pdpl-file). Это поле прямо отображается на наш
+  `IntegrityLabel.level` (`i8`, `0..127` в нашем диапазоне).
+- `cat_hex` — категории целостности, шестнадцатеричный (`0` если
+  пусто, до 16 hex цифр для `u64`).
+- `flags` — необязательное поле: `iinh,irelax,silev,ssi,ccnr,ehole,whole`
+  через запятую. Мы используем `iinh` для каталогов через `pdp_set_path`;
+  на fd-based API (`pdp_set_fd`) flags не передаются — ядро возвращает
+  EINVAL при попытке передать `irelax` через fd. irelax-наследование
+  для `sessions.json` обеспечивается `iinh`-атрибутом на parent dir
+  (`/var/lib/pam_certauth/`).
 
-Примеры:
-- `"0:0:0:"` — default, всё пусто.
-- `"0:0:0:irelax"` — irelax flag, default integrity.
-- `"0:0:01:irelax:-128"` — categories=0x01, irelax, linear level −128.
-- `"0:0:ffffffffffffffff::2"` — все 64 категории целостности, без flags, linear=2.
+Примеры (verified Astra 1.8.4):
+- `"0:0:0"` — default, всё пусто.
+- `"0:0:0:iinh"` — iinh flag для каталога (используется в postinst через
+  `pdpl-file`/`pdp_set_path`).
+- `"0:1:0"` — ilevel=1, без категорий, без flags — формат метки, которая
+  применяется к `sessions.json` через `pdp_set_fd`. `pdpl-file` после
+  этого отображает `Уровень_0:Сетевые_сервисы:Нет:0x0!`.
+- `"0:127:ffffffffffffffff"` — максимальный ilevel + все 64 категории.
 
 #### C.11 Verified function signatures (mic_db.h)
 
@@ -1296,20 +1371,30 @@ impl Drop for Pdpl {
 
 ```rust
 fn encode_label_text(l: &IntegrityLabel, flags: &str) -> String {
-    // conf_lev:integ_lev:cat_hex:flags:linear_ilev
-    // cat — до 16 hex цифр (u64).
-    format!("0:0:{:x}:{}:{}", l.categories, flags, l.level)
+    // libpdp text grammar: level:ilevel:cat_hex[:flags]
+    //   level  — МАК-уровень, всегда 0 (МРД out of scope).
+    //   ilevel — линейный уровень целостности (0..127); мапится напрямую
+    //            на IntegrityLabel.level.
+    //   cat    — до 16 hex цифр (u64).
+    //   flags  — опционально; пустой суффикс не добавляем, иначе ядро
+    //            может вернуть EINVAL на pdp_set_fd.
+    if flags.is_empty() {
+        format!("0:{}:{:x}", l.level, l.categories)
+    } else {
+        format!("0:{}:{:x}:{}", l.level, l.categories, flags)
+    }
 }
 
 fn decode_label_text(s: &str) -> Result<IntegrityLabel, MacError> {
-    let parts: Vec<&str> = s.splitn(5, ':').collect();
-    let categories = u64::from_str_radix(parts.get(2).unwrap_or(&"0"), 16)
-        .map_err(|_| MacError::Parsec { rc: -1, op: "decode cat" })?;
-    let level = parts.get(4)
+    // level:ilevel:cat_hex[:flags]
+    let parts: Vec<&str> = s.splitn(4, ':').collect();
+    let level = parts.get(1)
         .map(|s| s.parse::<i8>())
         .transpose()
         .map_err(|_| MacError::Parsec { rc: -1, op: "decode level" })?
         .unwrap_or(0);
+    let categories = u64::from_str_radix(parts.get(2).unwrap_or(&"0"), 16)
+        .map_err(|_| MacError::Parsec { rc: -1, op: "decode cat" })?;
     Ok(IntegrityLabel { level, categories })
 }
 ```
