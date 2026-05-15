@@ -34,6 +34,12 @@ jobs:
         with:
           fetch-depth: 0   # full history for SOURCE_DATE_EPOCH
 
+      - name: Trust workspace as git repository
+        # Container-uid mismatch + GHA workspace mount makes git refuse to
+        # discover the repo inside the Astra container. Mark it safe so
+        # build-deb.sh's `git describe`/`git log` calls succeed.
+        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
+
       - name: Probe Astra environment
         run: |
           set -euxo pipefail
