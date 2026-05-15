@@ -405,26 +405,28 @@ monitord не управляет НКЦ сессий, ему МКЦ-API не н�
    CAP_MAC_ADMIN ядро вернёт EPERM на попытке записать `security.PDP`
    xattr (см. `docs/install.md` §«МКЦ — опциональная активация»).
 
-4. **`execaps`-обёртка для активации PARSEC caps в процессе демона.**
-   Чтобы parsec capability из capdb фактически появилась в effective
-   set процесса, `ExecStart=` юнита должен быть обёрнут в:
+4. **`PAMName=`-активация parsec caps + ilevel в процессе демона.**
+   Чтобы parsec capability из capdb и ilevel из micdb фактически
+   попали в процесс демона, шипованный drop-in
+   `/usr/share/pam-certauth/systemd/mac-integrity.conf.example`
+   объявляет `PAMName=pam-certauth`. systemd при старте юнита открывает
+   PAM-сессию против `/etc/pam.d/pam-certauth` (шипуется как
+   `/usr/share/pam-certauth/pam.d/pam-certauth.example`); её session-фаза
+   состоит из `pam_parsec_cap.so` (читает capdb по uid пользователя
+   `pamcertauth`, выставляет parsec caps на процесс) и
+   `pam_parsec_mac.so` (читает micdb по тому же uid, поднимает ilevel).
+   К моменту `ExecStart` демон уже находится на ilevel=63 с
+   `PARSEC_CAP_CHMAC` в effective set; `parsec_capget(0, &caps)` возвращает
+   `cap_effective` с битом 3, self-check проходит, fd-labeling работает.
 
-   ```
-   ExecStart=/usr/sbin/execaps -c 0x8 -- /usr/sbin/pam-certauth-monitord ...
-   ```
-
-   `0x8 == (1<<3) == PARSEC_CAP_CHMAC`. Альтернатива — запускать демон
-   через PAM-стек, в котором есть `pam_parsec` (это применяется к login
-   sessions; для системных юнитов unsuitable). Production-юнит запускает
-   демон напрямую без execaps; для активации МКЦ оператор устанавливает
-   шипованный drop-in
-   `/usr/share/pam-certauth/systemd/mac-integrity.conf.example` →
-   `/etc/systemd/system/pam-certauth.service.d/mac-integrity.conf`,
-   который через `ExecStart=` (сброс) + новый `ExecStart=` оборачивает
-   запуск в `execaps -c 0x8 -- ...`. Без этой обёртки
-   `parsec_capget(0, &caps)` вернёт `cap_effective` без бита 3,
-   self-check выдаст `mac_caps_missing` и весь fd-labeling провалится в
-   fail-closed.
+   **Abandoned alternative.** Раньше эта же активация делалась через
+   `ExecStart=/usr/sbin/execaps -c 0x8 -- /usr/bin/pam-certauth daemon ...`.
+   Подход не работает под `User=pamcertauth`: `execaps` сам вызывает
+   `parsec_capset` на дочерний процесс, что требует `PARSEC_CAP_CAP` у
+   *запускающего* процесса. `pamcertauth` этой capability не имеет — execaps
+   падает с EPERM ещё до exec бинаря демона. PAMName-подход обходит
+   проблему, потому что caps ставятся изнутри уже-форкнутого процесса
+   через PAM-модуль, а не снаружи через wrapper.
 
 Пользовательская сторона:
 
@@ -1296,7 +1298,13 @@ void             freemicent_r(struct mic_user *res);
   '#include <parsec/mic_db.h>...' | gcc ...` + sizeof check на VM).
 - `getmicnam(NULL_returned)` → user отсутствует в mic-db / FreeIPA;
   caller решает по policy (§4.1.1).
-- `freemicent_r` обязан вызываться на не-NULL результат (`Drop`).
+- **`getmicnam` возвращает library-private static memory** (per
+  `man getmicnam` на Astra 1.8.4). Указатель НЕ освобождается; вызов
+  `freemicent_r` на этот результат — UB и в e2e ронял
+  `pam_sm_open_session` через `free(): invalid pointer` → SIGABRT.
+  Сигнатура `freemicent_r` оставлена в FFI только потому, что
+  пригодится, если в будущем переключимся на `getmicent_r`
+  (re-entrant, выделяет heap).
 
 #### C.12 Rust FFI surface (план реализации)
 

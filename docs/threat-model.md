@@ -407,9 +407,13 @@ graph TD
   битый/нестандартный DER в расширение, рассчитывая на сбой парсера
   и fallback-поведение «accept-by-default».
 - **9.1.4 sessions.json TOCTOU.** Файл состояния перезаписывается
-  атомарно, но irelax-лейбл на новом inode восстанавливается
+  атомарно. Ранее irelax-лейбл на новом inode восстанавливался
   отдельной сисколлой → окно гонки, в котором демон с MAC=0 не может
-  прочитать только что записанный файл.
+  прочитать только что записанный файл. В 0.3.0 устранено: файл
+  лежит на tmpfs `/run/pam_certauth/` (`RuntimeDirectory=`), родительский
+  каталог получает `iinh`, лейбл накладывается на fd до публикации
+  имени через `pdp_set_fd` (см. §9.2.4); reboot снимает состояние
+  полностью.
 - **9.1.5 host_id rebind.** Подменив `host_id`, атакующий
   перепривязывает сертификат к другому хосту.
 
@@ -454,9 +458,11 @@ level. Угроза признана in-scope и явно out-of-mitigation дл
   отсутствие trailing bytes, BIT STRING `unused-bits ≤ 7`. Битый DER
   → отказ + аудит-событие `mac_parse_failed`.
 - **9.2.4** Запись `sessions.json` идёт через `openat(O_TMPFILE)` →
-  `fchmod` → `fsetxattr(irelax)` → `linkat`/`rename` атомарно, лейбл
-  накладывается **на fd до публикации имени**. См.
-  `366dde5 fix(mac): unify socket bind path with fd-based label`.
+  `fchmod` → `pdp_set_fd(label)` → `linkat`/`rename` атомарно, лейбл
+  накладывается **на fd до публикации имени**. `irelax` через
+  fd-based API ядро не принимает (EINVAL) — relax-семантика для
+  `sessions.json` обеспечивается `iinh`-наследованием от parent dir
+  `/run/pam_certauth/` (tmpfs).
 - **9.2.5** postinst накладывает `chattr +i` на `host_id` после
   первой записи, сам файл лежит в дир. `/var/lib/pam_certauth/`
   (0750 root:pamcertauth).

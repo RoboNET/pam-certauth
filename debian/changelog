@@ -12,12 +12,25 @@ pam-certauth (0.3.0-1) unstable; urgency=medium
     USB+X.509 PAM auth plus MAC integrity labelling.
   * FFI fixes: libpdp text grammar corrected to "level:ilevel:cat[:flags]",
     dropped `irelax` flag on `pdp_set_fd` (kernel rejects it through the
-    fd-based API), link against `libparsec-mic` for `getmicnam`.
+    fd-based API), link against `libparsec-mic` for `getmicnam`,
+    `getmicnam` no longer free'd via `freemicent_r` — per man page the
+    returned pointer is library-private static memory; the bogus free
+    previously caused `free(): invalid pointer` SIGABRT in
+    `pam_sm_open_session`.
   * Daemon: session registry moved from /var/lib/pam_certauth/sessions.json
     to /run/pam_certauth/sessions.json (tmpfs, volatile across reboot).
     Removes stale-state-after-reboot foot-gun and MAC-labelling churn.
     postinst removes the stale /var/lib file on upgrade; daemon.lock and
     caches stay in /var/lib.
+  * postinst: raises ilevel=63 on /etc/pam_certauth/config.toml, ca/,
+    crl/, host_acl.toml[.sig] when Astra strict mode is enabled (no-op
+    on non-Astra / non-strict). Prints opt-in МКЦ activation notice.
+  * МКЦ activation: shipped drop-in (mac-integrity.conf.example) now
+    uses `PAMName=pam-certauth` with a paired session PAM stack
+    (`pam-certauth.example` shipped to /usr/share/pam-certauth/pam.d/)
+    that loads pam_parsec_cap.so + pam_parsec_mac.so. Replaces the
+    earlier execaps-wrapper approach which failed under
+    User=pamcertauth (no PARSEC_CAP_CAP → EPERM in execaps).
 
  -- Mikhail Korolev <mikhail@robonet.me>  Fri, 15 May 2026 14:43:40 +0300
 

@@ -75,7 +75,7 @@ Detailed architecture: [docs/architecture.md](docs/architecture.md)
 ## Install
 
 ```bash
-sudo apt install ./pam-certauth_0.1.1-1_amd64.deb
+sudo apt install ./pam-certauth_0.3.0-1_amd64.deb
 ```
 
 Dependencies (`gost-engine`, `pcsc-lite`, `libssl3`, `lsb-base` for the

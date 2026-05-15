@@ -61,6 +61,24 @@
   `set_fd_label(.., irelax=false)`. Path-based `pdp_set_path`
   irelax по-прежнему принимает (используется postinst через
   `pdpl-file`).
+- **`getmicnam` возвращает library-private static memory** (per
+  `man getmicnam` на Astra 1.8.4), а не heap-аллоцированную структуру.
+  Прежний код звал `freemicent_r` на результат и падал в
+  `pam_sm_open_session` с `free(): invalid pointer` → SIGABRT.
+  Указатель больше не освобождается.
+- **Daemon под `User=pamcertauth` (не root)** при опциональной
+  активации МКЦ. Шипованный drop-in `mac-integrity.conf.example`
+  использует `PAMName=pam-certauth` + парный PAM-стек
+  `dist/pam.d/pam-certauth.example` (`pam_parsec_cap.so` +
+  `pam_parsec_mac.so`) для подъёма ilevel=63 и `PARSEC_CAP_CHMAC` на
+  процессе демона. Ранее обсуждавшийся `execaps -c 0x8 -- ...`-обход
+  не используется — `execaps` сам требует `PARSEC_CAP_CAP` у
+  запускающего процесса, которой у `pamcertauth` нет.
+- **Sessions registry на tmpfs.** Переехал из
+  `/var/lib/pam_certauth/sessions.json` (persistent) в
+  `/run/pam_certauth/sessions.json` (volatile, `RuntimeDirectory=`).
+  Снимает stale-state-after-reboot foot-gun и MAC-labelling churn на
+  каталоге. `daemon.lock` и кэши остаются в `/var/lib/`.
 
 ### Removed
 

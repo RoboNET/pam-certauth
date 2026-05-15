@@ -504,10 +504,20 @@ sudo journalctl -t pam_certauth | grep -E 'pam_user[=:]"alice"'
 `CAP_MAC_ADMIN`/`PARSEC_CAP_CHMAC`, пока оператор не установит
 шипованный drop-in
 `/usr/share/pam-certauth/systemd/mac-integrity.conf.example` в
-`/etc/systemd/system/pam-certauth.service.d/` и не выдаст
-`PARSEC_CAP_CHMAC` через `usercaps -m "+3" pamcertauth`. Полная
-процедура активации, проверки и отката описана в
+`/etc/systemd/system/pam-certauth.service.d/`, парный PAM-стек
+`/usr/share/pam-certauth/pam.d/pam-certauth.example` в
+`/etc/pam.d/pam-certauth` (использует `pam_parsec_cap.so` +
+`pam_parsec_mac.so`) и не выдаст `PARSEC_CAP_CHMAC` через
+`usercaps -m "+3" pamcertauth` плюс `pdpl-user --ilevel 63 pamcertauth`.
+Полная процедура активации, проверки и отката описана в
 [docs/install.md §«МКЦ (MAC integrity) — опциональная активация»](install.md#мкц-mac-integrity--опциональная-активация).
+
+**Состояние сессий.** Реестр `sessions.json` лежит на tmpfs
+(`/run/pam_certauth/sessions.json`, `RuntimeDirectory=`). Volatile
+across reboot — это by design: sshd/login/sudo-процессы, держащие
+эти сессии, всё равно умирают на reboot. `daemon.lock` и
+OCSP/CRL-кэши остаются в `/var/lib/pam_certauth/` и
+`/var/cache/pam_certauth/` соответственно.
 
 ## 8. Emergency contact
 

@@ -1,5 +1,16 @@
 # MAC Integrity (Astra МКЦ) Implementation Plan
 
+> **Status (2026-05-15): DONE end-to-end on Astra Linux SE 1.8.4 strict-mode**, released as 0.3.0.
+>
+> Phases 0–11 (libpdp FFI, IntegrityLabel codec, orchestrator, daemon socket + sessions.json fd-labeling, packaging, fixtures, e2e tests, docs) all landed. Outstanding follow-ups vs this plan:
+>
+> - The `execaps -c 0x8 -- ...` wrapper described in the original plan for activating PARSEC_CAP_CHMAC on the daemon was abandoned. Production approach: `PAMName=pam-certauth` in the systemd drop-in + a shipped session PAM stack with `pam_parsec_cap.so` + `pam_parsec_mac.so`. Reason: daemon under `User=pamcertauth` lacks `PARSEC_CAP_CAP`, which execaps needs to call `parsec_capset` on its child. See `docs/install.md` §«МКЦ» and design spec §4.5.
+> - `pdp_set_fd(.., irelax=true)` — kernel returns EINVAL through fd-based API. Daemon uses `irelax=false` and relies on `iinh` on parent `/run/pam_certauth/` for relax-inheritance. Codified in design spec §C.13 and threat-model §9.2.4.
+> - `getmicnam` returns library-private static memory per `man getmicnam`; result is NOT free'd. Earlier `freemicent_r` call caused SIGABRT in `pam_sm_open_session`. Fixed in commit 66d7c96.
+> - Sessions registry moved from `/var/lib/pam_certauth/sessions.json` (persistent) to `/run/pam_certauth/sessions.json` (tmpfs, `RuntimeDirectory=`). Removes stale-state-after-reboot and MAC-labelling churn.
+>
+> Below is the original task-by-task plan, retained as historical record.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Связать максимальный уровень целостности Astra-сессии с расширением X.509 сертификата engineer-токена через libparsec FFI.

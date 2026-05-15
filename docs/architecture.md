@@ -224,7 +224,8 @@ flowchart LR
     run["/run/pam_certauth/"] --> sock[monitord.sock]
     run --> sessions["sessions/sid/"]
     run --> health[health]
-    var["/var/lib/pam_certauth/"] --> state[sessions.json]
+    run --> state[sessions.json]
+    var["/var/lib/pam_certauth/"] --> lock["daemon.lock + host_id"]
     cache["/var/cache/pam_certauth/"] --> ocsp["ocsp/*.der"]
 ```
 

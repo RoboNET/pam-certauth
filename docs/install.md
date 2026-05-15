@@ -750,14 +750,36 @@ postinst на Astra-хостах печатает напоминание о то
    sudo reboot
    ```
 
-2. **Выдайте PARSEC_CAP_CHMAC демону:**
+2. **Выдайте PARSEC_CAP_CHMAC демону и поднимите ему МНКЦ=63:**
 
    ```bash
    sudo /sbin/usercaps -m "+3" pamcertauth
    sudo /sbin/usercaps pamcertauth          # должен содержать parsec_cap_chmac
+   sudo /sbin/pdpl-user --ilevel 63 pamcertauth
    ```
 
-3. **Установите шипованный drop-in:**
+   Первая команда добавляет запись в `/etc/parsec/capdb/<uid>` с битом
+   3 (`PARSEC_CAP_CHMAC`). Вторая ставит МНКЦ пользователя
+   `pamcertauth` в 63 в `/etc/parsec/micdb/<uid>` — это потолок, до
+   которого `pam_parsec_mac.so` поднимет ilevel самого процесса демона
+   при старте.
+
+3. **Установите шипованный PAM-стек для демона:**
+
+   ```bash
+   sudo install -m 0644 \
+     /usr/share/pam-certauth/pam.d/pam-certauth.example \
+     /etc/pam.d/pam-certauth
+   ```
+
+   Стек содержит `session required pam_parsec_cap.so` и `session
+   required pam_parsec_mac.so` — две session-фазы, которые перенесут
+   parsec capabilities из capdb и поставят ilevel из micdb на сам
+   процесс демона в момент `fork+exec`. `auth`/`account` короткозамкнуты
+   на `pam_permit.so` — они не используются (демон — service account, а
+   не интерактивная сессия).
+
+4. **Установите шипованный drop-in:**
 
    ```bash
    sudo install -m 0644 \
@@ -768,28 +790,42 @@ postinst на Astra-хостах печатает напоминание о то
    ```
 
    Drop-in задаёт `AmbientCapabilities=CAP_MAC_ADMIN CAP_MAC_OVERRIDE`
-   и оборачивает `ExecStart=` в `/usr/sbin/execaps -c 0x8 -- ...` — это
-   стандартный systemd-идиом (`ExecStart=` со сбросом значения + новое
-   присваивание).
+   и `PAMName=pam-certauth`. Последняя директива говорит systemd
+   открыть PAM-сессию против `/etc/pam.d/pam-certauth` при запуске
+   юнита, благодаря чему `pam_parsec_cap.so`/`pam_parsec_mac.so`
+   успевают применить parsec caps и ilevel к процессу демона до того,
+   как стартует `ExecStart=`.
 
-4. **Убедитесь, что capabilities активированы в процессе:**
+   **Историческая заметка.** Ранее эта же активация делалась через
+   обёртку `/usr/sbin/execaps -c 0x8 -- ...`. От подхода отказались:
+   `execaps` сам зовёт `parsec_capset` на дочерний процесс и требует
+   для этого `PARSEC_CAP_CAP` у *запускающего* процесса. Демон под
+   `User=pamcertauth` этой capability не имеет — `execaps` падает с
+   EPERM ещё до `exec` бинаря. `PAMName=`-подход обходит проблему,
+   потому что capability ставится изнутри уже-форкнутого процесса
+   через PAM-модуль, а не снаружи через wrapper.
+
+5. **Убедитесь, что capabilities и ilevel активированы в процессе:**
 
    ```bash
    DPID=$(systemctl show -p MainPID pam-certauth.service | cut -d= -f2)
    sudo cat /proc/$DPID/status | grep ^CapEff
-   # должен быть выставлен бит CAP_MAC_ADMIN (~0x200000000)
+   # должен быть выставлен бит CAP_MAC_ADMIN (33, маска ~0x200000000)
+   sudo pdpl-ps $DPID
+   # должен показывать ilevel=63 (Уровень_0:...:Нет:0x3f!)
    sudo journalctl -u pam-certauth.service --since="1 min ago" | grep -i mac_caps
    # НЕ должно быть строки "mac_caps_missing"
    ```
 
-5. **Назначьте per-user максимальный integrity (`MNKC`)** — иначе
-   intersect с `MAX_INTEGRITY` сертификата всегда выдаст 0:
+6. **Назначьте per-user максимальный integrity (`MNKC`)** для
+   end-users, открывающих сессии через pam_certauth — иначе intersect
+   с `MAX_INTEGRITY` сертификата всегда выдаст 0:
 
    ```bash
    sudo /sbin/pdpl-user --ilevel 63 <pam_user>
    ```
 
-6. **Включите политику в `config.toml`:**
+7. **Включите политику в `config.toml`:**
 
    ```toml
    [mac]
@@ -805,10 +841,9 @@ postinst на Astra-хостах печатает напоминание о то
 Активация МКЦ не требует выдачи sudo-прав пользователю `pamcertauth`.
 Демон никогда не делает privilege-escalation: linux-capabilities приходят
 из `AmbientCapabilities=` юнита (выставляется systemd на этапе fork),
-а PARSEC capability — из parsec capdb-записи, созданной `usercaps(8)`,
-которая активируется обёрткой `execaps`. Оператор, предпочитающий
-выдать cap через setuid-wrapper или отдельный startup-hook, может
-адаптировать drop-in — но дефолтный путь — `AmbientCapabilities` + capdb.
+а PARSEC capability и ilevel — из parsec capdb/micdb-записей, созданных
+`usercaps(8)` и `pdpl-user(8)`, активируемых через `PAMName=pam-certauth`
++ `pam_parsec_cap.so` / `pam_parsec_mac.so` в шипованном PAM-стеке.
 
 ### Откат
 
@@ -816,6 +851,7 @@ postinst на Astra-хостах печатает напоминание о то
 
 ```bash
 sudo rm /etc/systemd/system/pam-certauth.service.d/mac-integrity.conf
+sudo rm /etc/pam.d/pam-certauth
 sudo systemctl daemon-reload
 sudo systemctl restart pam-certauth.service
 ```
@@ -857,10 +893,12 @@ Postinst автоматически адаптирует МКЦ-настройк
 | Astra без strict mode (`astra-strictmode-control is-enabled` = НЕАКТИВНО) | MAC-блок пропускается; кernel не enforce'нет метки, postinst не тратит впустую |
 | Astra со strict mode | Ставит `iinh` на конфиг/state-директории, поднимает ilevel=63 на конфиг-файлах, печатает напоминание про opt-in drop-in для daemon'а |
 
-Файл `/usr/share/pam-certauth/systemd/mac-integrity.conf.example`
-устанавливается всегда (≈500 байт), но активируется только когда
-оператор сам копирует его в `/etc/systemd/system/pam-certauth.service.d/`
-и granted `usercaps -m "+3" pamcertauth`.
+Файл `/usr/share/pam-certauth/systemd/mac-integrity.conf.example` и
+парный к нему `/usr/share/pam-certauth/pam.d/pam-certauth.example`
+устанавливаются всегда (вместе ≈2 КБ), но активируются только когда
+оператор сам копирует их в `/etc/systemd/system/pam-certauth.service.d/`
+и `/etc/pam.d/pam-certauth` соответственно, выдаёт
+`usercaps -m "+3" pamcertauth` и `pdpl-user --ilevel 63 pamcertauth`.
 
 ### Защита конфига через МКЦ
 
@@ -881,19 +919,19 @@ host_acl):
 # 1. Поднять max ilevel пользователя-администратора:
 sudo /sbin/pdpl-user --ilevel 63 <admin_user>
 
-# 2. Войти под ним и поднять текущий ilevel сессии:
+# 2. Войти под ним. Astra-стандартный fly-dm/login PAM-стек уже включает
+#    pam_parsec_mac.so, который поднимет ilevel сессии до МНКЦ пользователя.
 ssh <admin_user>@host
-sudo /usr/sbin/execaps -p 0x4 -- /bin/bash    # PARSEC_CAP_SETMAC bit
-sudo pdp_set_pid 0 "0:63::"  # set process ilevel to 63
 
 # 3. Теперь можно редактировать:
 sudo vim /etc/pam_certauth/config.toml
 ```
 
-Альтернативно через короткоживущий wrapper:
+Альтернативно для одиночной правки без интерактивной high-ilevel сессии
+используйте `execaps`/`runpdp` от root:
 
 ```bash
-sudo /usr/sbin/execaps -i 63 -c 0x4 -- vim /etc/pam_certauth/config.toml
+sudo /usr/sbin/runpdp "0:63::" -- vim /etc/pam_certauth/config.toml
 ```
 
 Это design choice: **только владелец maximum integrity** может

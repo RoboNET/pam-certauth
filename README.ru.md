@@ -81,7 +81,7 @@ flowchart LR
 Установка из `.deb` на Astra Linux SE:
 
 ```bash
-sudo apt install ./pam-certauth_0.1.1-1_amd64.deb
+sudo apt install ./pam-certauth_0.3.0-1_amd64.deb
 ```
 
 Зависимости (`gost-engine`, `pcsc-lite`, `libssl3`, `lsb-base` —
@@ -145,7 +145,7 @@ PAM-cdylib `pam_certauth.so` пишет события `tracing` в syslog
 1. Установить пакет:
 
    ```bash
-   sudo apt install ./pam-certauth_0.1.1-1_amd64.deb
+   sudo apt install ./pam-certauth_0.3.0-1_amd64.deb
    ```
 
 2. Сгенерировать тестовый CA (пример под ГОСТ; полные RSA/ECDSA-варианты —
