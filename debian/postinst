@@ -77,11 +77,37 @@ case "$1" in
             pdpl-file -R ":::iinh" "$CONFIG_DIR/ca" || true
             pdpl-file -R ":::iinh" "$CONFIG_DIR/crl" || true
 
+            # Raise ilevel to 63 (Высокий) on configuration files: any
+            # subject at ilevel<63 (including ordinary root without
+            # CAP_MAC_ADMIN/PARSEC_CAP_SETMAC) cannot WRITE these files
+            # (no write-up in Biba). Read-down is allowed, so the daemon
+            # at default ilevel=0 still reads them fine. Editing the
+            # config requires a high-integrity admin session — see
+            # docs/install.md §«Защита конфига через МКЦ».
+            #
+            # Format: level:ilevel:cat:flags = 0:63::iinh
+            # The iinh flag on directories ensures newly-created children
+            # inherit the level.
+            if [ -f "$CONFIG_DIR/config.toml" ]; then
+                pdpl-file -v "0:63::iinh" "$CONFIG_DIR/config.toml" || true
+            fi
+            pdpl-file -R -v "0:63::iinh" "$CONFIG_DIR/ca" || true
+            pdpl-file -R -v "0:63::iinh" "$CONFIG_DIR/crl" || true
+            if [ -f "$CONFIG_DIR/host_acl.toml" ]; then
+                pdpl-file -v "0:63::iinh" "$CONFIG_DIR/host_acl.toml" || true
+            fi
+            if [ -f "$CONFIG_DIR/host_acl.toml.sig" ]; then
+                pdpl-file -v "0:63::iinh" "$CONFIG_DIR/host_acl.toml.sig" || true
+            fi
+            echo "  - integrity ilevel raised to 63 on config files (write requires CAP_MAC_ADMIN)" >&2
+
             # State dir (host_id, caches) must be MAC-readable by
             # the pamcertauth daemon at any clearance the active user holds.
             # NOTE: sessions.json now lives in /run/pam_certauth/ (tmpfs);
             # the RuntimeDirectory= unit setting creates the parent at boot
             # with `iinh` inherited via systemd's runtime-dir handling.
+            # daemon.lock in $STATE_DIR is the daemon's write target — keep
+            # its ilevel at default (0), only the dir gets `iinh`.
             pdpl-file ":::iinh" "$STATE_DIR" || true
             pdpl-file ":::iinh" "$CACHE_DIR" || true
 
