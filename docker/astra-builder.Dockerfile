@@ -24,9 +24,10 @@ RUN apt-get update && (apt-get install -y libpdp-dev \
         || echo "no pdp dev headers package available") \
     && rm -rf /var/lib/apt/lists/* || true
 
-# Create unversioned symlinks for -lpdp / -lparsec-base linker resolution.
+# Create unversioned symlinks for -lpdp / -lparsec-base / -lparsec-mic
+# linker resolution (libparsec-mic.so.3 hosts getmicnam/freemicent_r).
 RUN set -eux; \
-    for L in pdp parsec-base; do \
+    for L in pdp parsec-base parsec-mic; do \
         for D in /usr/lib /usr/lib/x86_64-linux-gnu /lib /lib/x86_64-linux-gnu; do \
             [ -e "$D/lib${L}.so" ] && break; \
             SRC="$(ls "$D/lib${L}.so."* 2>/dev/null | sort -V | tail -n1 || true)"; \
