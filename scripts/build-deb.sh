@@ -116,8 +116,19 @@ echo "info: cargo: $(cargo --version)"
 echo "info: rustc: $(rustc --version)"
 
 # --- Build -------------------------------------------------------------------
+# Optional extra cargo flags (e.g. --features astra-mac) propagated to the
+# in-tree cargo invocation here AND through dpkg-buildpackage to the
+# debian/rules override_dh_auto_build via DEB_CARGO_EXTRA_OPTIONS. The env
+# var is preserved so dpkg-buildpackage's restricted child env still sees it.
+DEB_CARGO_EXTRA_OPTIONS="${DEB_CARGO_EXTRA_OPTIONS:-}"
+export DEB_CARGO_EXTRA_OPTIONS
+if [[ -n "$DEB_CARGO_EXTRA_OPTIONS" ]]; then
+    echo "info: DEB_CARGO_EXTRA_OPTIONS=$DEB_CARGO_EXTRA_OPTIONS"
+fi
+
 cargo clean
-cargo build --workspace --release
+# shellcheck disable=SC2086  # word-split is intentional for extra flags
+cargo build --workspace --release $DEB_CARGO_EXTRA_OPTIONS
 
 # --- Package -----------------------------------------------------------------
 dpkg-buildpackage -us -uc -b --no-sign

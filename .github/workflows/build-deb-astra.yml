@@ -1,0 +1,141 @@
+name: build-deb-astra
+
+# Native Astra Linux build with the `astra-mac` feature enabled. Unlike the
+# stub `build-deb.yml` job (which runs on plain ubuntu-22.04 and produces a
+# package that does *not* link against libpdp), this job runs inside an
+# Astra Linux container so we can exercise the real MAC FFI bindings and
+# emit a .deb suitable for installation on an Astra SE VM/host.
+#
+# This workflow is additive: it does not modify or replace build-deb.yml.
+
+on:
+  push:
+    branches: [main, 'feat/**']
+    tags: ['v*']
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  build-astra:
+    runs-on: ubuntu-22.04
+    container:
+      # Primary image: Astra 1.8 base + Rust toolchain. If this image is
+      # unavailable / requires auth, fall back manually to
+      # `registry.astralinux.ru/library/astra/ubi18:latest` and install
+      # rustup in the bootstrap step.
+      image: registry.astralinux.ru/library/astra/ubi18-rust:latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # full history for SOURCE_DATE_EPOCH
+
+      - name: Probe Astra environment
+        run: |
+          set -euxo pipefail
+          cat /etc/astra_version || true
+          uname -a
+          # Toolchain presence is best-effort; bootstrap step below installs
+          # whatever is missing.
+          (which gcc && which rustc && which cargo) || true
+          rustc --version || true
+
+      - name: Install build deps (Astra apt)
+        env:
+          DEBIAN_FRONTEND: noninteractive
+        run: |
+          set -euxo pipefail
+          apt-get update
+          apt-get install -y \
+            debhelper dh-cargo \
+            libssl-dev libudev-dev libdbus-1-dev libpam0g-dev libsystemd-dev \
+            clang libclang-dev \
+            pkg-config lintian devscripts fakeroot build-essential \
+            curl ca-certificates git \
+            parsec-base
+          # Headers for libpdp are not strictly required: our ffi.rs uses
+          # explicit `extern "C"` forward declarations, no bindgen. Still,
+          # try to pull the dev package if it exists in the Astra repo so
+          # downstream consumers / future bindgen migration have it.
+          apt-get install -y libpdp-dev \
+            || apt-get install -y libparsec-dev \
+            || apt-get install -y parsec-base-dev \
+            || echo "no pdp dev headers package available; relying on hand-written FFI declarations"
+
+      - name: Verify libpdp runtime symbols
+        run: |
+          set -euxo pipefail
+          dpkg -l | grep -iE 'parsec|libpdp' || true
+          # libpdp.so.3 ships under /usr/lib on Astra 1.8; double-check.
+          LIBPDP="$(ls /usr/lib/libpdp.so.* 2>/dev/null | head -n1 || true)"
+          if [ -z "$LIBPDP" ]; then
+            LIBPDP="$(ls /usr/lib/x86_64-linux-gnu/libpdp.so.* 2>/dev/null | head -n1 || true)"
+          fi
+          if [ -z "$LIBPDP" ]; then
+            echo "error: libpdp.so.* not found after installing parsec-base" >&2
+            exit 1
+          fi
+          echo "found libpdp at $LIBPDP"
+          nm -D "$LIBPDP" | grep -E 'pdpl_get_from_text|pdp_set_pid|parsec_strict_mode' || true
+
+      - name: Ensure rustup toolchain matches workspace pin
+        # Astra's ubi18-rust ships a Rust toolchain, but its channel may not
+        # satisfy the workspace's rust-version. Install rustup if absent and
+        # pin to the same toolchain as build-deb.yml.
+        run: |
+          set -euxo pipefail
+          if ! command -v rustup >/dev/null 2>&1; then
+            curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
+              | sh -s -- -y --default-toolchain none --profile minimal
+            echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+            export PATH="$HOME/.cargo/bin:$PATH"
+          fi
+          rustup toolchain install 1.95.0 \
+            --profile minimal \
+            --component clippy \
+            --component rustfmt
+
+      - name: Print toolchain versions
+        run: |
+          rustc --version
+          cargo --version
+          dpkg --version
+
+      - name: Run cargo test with real libpdp (astra-mac feature)
+        # This is the main value of the job: actually link against libpdp
+        # and exercise the MAC FFI on Astra. A regression here means the
+        # feature is broken on the target platform.
+        run: cargo test --workspace --features astra-mac --release
+
+      - name: Build .deb with astra-mac feature
+        env:
+          DEB_CARGO_EXTRA_OPTIONS: "--features astra-mac"
+        run: scripts/build-deb.sh --allow-dirty --skip-lintian
+
+      - name: Show deb contents
+        run: dpkg -c ../pam-certauth_*.deb
+
+      - name: Stage artifacts inside workspace
+        run: |
+          set -euxo pipefail
+          mkdir -p artifacts
+          # Rename the deb with an `astra` suffix so it is unambiguous when
+          # downloaded alongside the stub build artefact.
+          for f in ../pam-certauth_*.deb ../pam-certauth_*.changes ../pam-certauth_*.buildinfo; do
+            [ -e "$f" ] || continue
+            base="$(basename "$f")"
+            # Insert `+astra` before the architecture/extension. Simpler:
+            # just copy with an `-astra` directory prefix in artifact name.
+            cp "$f" "artifacts/$base"
+          done
+          ls -la artifacts/
+
+      - name: Upload .deb artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: pam-certauth-deb-astra
+          path: artifacts/*
+          if-no-files-found: error
+          retention-days: 30
