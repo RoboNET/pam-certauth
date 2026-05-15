@@ -395,10 +395,15 @@ monitord не управляет НКЦ сессий, ему МКЦ-API не н�
 
    `+3` соответствует `PARSEC_CAP_CHMAC` (bit 3).
 
-3. **Linux `CAP_MAC_ADMIN` у daemon-процесса.** systemd unit задаёт
-   через `AmbientCapabilities=CAP_MAC_ADMIN` (и `CapabilityBoundingSet=`,
-   включающий тот же cap). Без CAP_MAC_ADMIN ядро вернёт EPERM на
-   попытке записать security.PDP xattr.
+3. **Linux `CAP_MAC_ADMIN` у daemon-процесса.** Production-юнит
+   запускает демон как `User=pamcertauth` с минимальным
+   `CapabilityBoundingSet=CAP_DAC_READ_SEARCH` и без CAP_MAC_ADMIN —
+   опциональная активация МКЦ выполняется оператором через шипованный
+   drop-in `/usr/share/pam-certauth/systemd/mac-integrity.conf.example`,
+   который выставляет `AmbientCapabilities=CAP_MAC_ADMIN
+   CAP_MAC_OVERRIDE` и расширяет `CapabilityBoundingSet=`. Без
+   CAP_MAC_ADMIN ядро вернёт EPERM на попытке записать `security.PDP`
+   xattr (см. `docs/install.md` §«МКЦ — опциональная активация»).
 
 4. **`execaps`-обёртка для активации PARSEC caps в процессе демона.**
    Чтобы parsec capability из capdb фактически появилась в effective
@@ -410,12 +415,16 @@ monitord не управляет НКЦ сессий, ему МКЦ-API не н�
 
    `0x8 == (1<<3) == PARSEC_CAP_CHMAC`. Альтернатива — запускать демон
    через PAM-стек, в котором есть `pam_parsec` (это применяется к login
-   sessions; для системных юнитов unsuitable). **Currently** production
-   юнит запускает демон напрямую без execaps; чтобы развернуть МКЦ в
-   проде, юнит нужно либо перевести на execaps-wrap, либо поднимать
-   демон через parsec-aware login. Без этого `parsec_capget(0, &caps)`
-   вернёт `cap_effective` без бита 3, self-check выдаст
-   `mac_caps_missing` и весь fd-labeling провалится в fail-closed.
+   sessions; для системных юнитов unsuitable). Production-юнит запускает
+   демон напрямую без execaps; для активации МКЦ оператор устанавливает
+   шипованный drop-in
+   `/usr/share/pam-certauth/systemd/mac-integrity.conf.example` →
+   `/etc/systemd/system/pam-certauth.service.d/mac-integrity.conf`,
+   который через `ExecStart=` (сброс) + новый `ExecStart=` оборачивает
+   запуск в `execaps -c 0x8 -- ...`. Без этой обёртки
+   `parsec_capget(0, &caps)` вернёт `cap_effective` без бита 3,
+   self-check выдаст `mac_caps_missing` и весь fd-labeling провалится в
+   fail-closed.
 
 Пользовательская сторона:
 

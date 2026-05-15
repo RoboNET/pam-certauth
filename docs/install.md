@@ -719,93 +719,135 @@ SysV-скрипт не требуется — авторитативный ис�
 - [docs/threat-model.md](threat-model.md) — модель угроз и какие
   атаки модуль защищает.
 
-## Интеграция с МКЦ (Astra strict-mode, 0.3.0+)
+## МКЦ (MAC integrity) — опциональная активация
 
-На хостах Astra SE с включённым strict-mode `pam-certauth` поддерживает
-мандатный контроль целостности (МКЦ) — назначает сессии метку
-`(level, categories)` согласно расширению `MAX_INTEGRITY` сертификата
+На хостах Astra SE с включённым strict-mode `pam-certauth` опционально
+поддерживает мандатный контроль целостности (МКЦ) — назначает сессии
+метку `(level, categories)` согласно расширению `MAX_INTEGRITY` сертификата
 пользователя.
 
-Шаги установки:
+**По умолчанию МКЦ-fd-labelling не активируется.** Демон запускается как
+`User=pamcertauth` с минимальным capability-set (только
+`CAP_DAC_READ_SEARCH`) и без `PARSEC_CAP_CHMAC`. При `[mac]
+cert_integrity = "ignore"` (значение по умолчанию) ни один шаг ниже не
+требуется — **эта конфигурация production-готова без активации МКЦ.**
+postinst на Astra-хостах печатает напоминание о том, как активировать
+МКЦ, если оператору это нужно.
 
-1. Установите runtime-пакет `libpdp3 (>= 3.11+ci97~)`. `apt install pam-certauth`
-   притянет его автоматически (см. `debian/control`).
-2. После `dpkg -i pam-certauth_*.deb` postinst автоматически:
-   - выставит лейблы `pdpl-file :::iinh` на `/etc/pam_certauth/`,
-     `/var/lib/pam_certauth/`, `/var/cache/pam_certauth/` (если
-     `astra-strictmode-control is-enabled`);
-   - выставит `chattr +i` на `/var/lib/pam_certauth/host_id` если файл
-     уже существует.
+### Активация МКЦ
 
-   `sessions.json` лежит в `/run/pam_certauth/` (tmpfs) и
-   предсоздавать его не нужно: systemd создаёт каталог через
-   `RuntimeDirectory=pam_certauth` на каждом boot, демон пишет
-   файл по требованию с правильным fd-based МКЦ-лейблом. Файл
-   intentionally volatile: переживает перезапуск демона в пределах
-   одного boot, но не reboot — все sshd/login/sudo-процессы,
-   держащие эти сессии, всё равно умирают на reboot.
-3. Добавьте секцию `[mac]` в `/etc/pam_certauth/config.toml`:
+1. **Проверьте strict-mode ядра:**
+
+   ```bash
+   sudo /sbin/astra-strictmode-control status
+   # ожидается: АКТИВНО
+   ```
+
+   Если не активно — включите и перезагрузитесь:
+
+   ```bash
+   sudo /sbin/astra-strictmode-control enable
+   sudo reboot
+   ```
+
+2. **Выдайте PARSEC_CAP_CHMAC демону:**
+
+   ```bash
+   sudo /sbin/usercaps -m "+3" pamcertauth
+   sudo /sbin/usercaps pamcertauth          # должен содержать parsec_cap_chmac
+   ```
+
+3. **Установите шипованный drop-in:**
+
+   ```bash
+   sudo install -m 0644 \
+     /usr/share/pam-certauth/systemd/mac-integrity.conf.example \
+     /etc/systemd/system/pam-certauth.service.d/mac-integrity.conf
+   sudo systemctl daemon-reload
+   sudo systemctl restart pam-certauth.service
+   ```
+
+   Drop-in задаёт `AmbientCapabilities=CAP_MAC_ADMIN CAP_MAC_OVERRIDE`
+   и оборачивает `ExecStart=` в `/usr/sbin/execaps -c 0x8 -- ...` — это
+   стандартный systemd-идиом (`ExecStart=` со сбросом значения + новое
+   присваивание).
+
+4. **Убедитесь, что capabilities активированы в процессе:**
+
+   ```bash
+   DPID=$(systemctl show -p MainPID pam-certauth.service | cut -d= -f2)
+   sudo cat /proc/$DPID/status | grep ^CapEff
+   # должен быть выставлен бит CAP_MAC_ADMIN (~0x200000000)
+   sudo journalctl -u pam-certauth.service --since="1 min ago" | grep -i mac_caps
+   # НЕ должно быть строки "mac_caps_missing"
+   ```
+
+5. **Назначьте per-user максимальный integrity (`MNKC`)** — иначе
+   intersect с `MAX_INTEGRITY` сертификата всегда выдаст 0:
+
+   ```bash
+   sudo /sbin/pdpl-user --ilevel 63 <pam_user>
+   ```
+
+6. **Включите политику в `config.toml`:**
 
    ```toml
    [mac]
-   cert_integrity = "optional"   # required | optional | ignore
+   cert_integrity = "required"   # или "optional"
    ```
 
-   Подробности — `docs/configuration.md` секция «MAC integrity».
+   ```bash
+   sudo systemctl restart pam-certauth.service
+   ```
 
-4. Перевыпустите сертификаты пользователей с расширением
-   `MAX_INTEGRITY` (OID `2.25.273824307386008814506455310913083078403`).
-   См. `docs/cert-issuance.md`.
+### sudo не требуется
 
-5. **Runtime-предпосылки для применения МКЦ-меток** (verified e2e на
-   Astra Linux SE 1.8.4, 2026-05-15). Без этих шагов сертификатное
-   расширение успешно парсится, но метка не накладывается:
+Активация МКЦ не требует выдачи sudo-прав пользователю `pamcertauth`.
+Демон никогда не делает privilege-escalation: linux-capabilities приходят
+из `AmbientCapabilities=` юнита (выставляется systemd на этапе fork),
+а PARSEC capability — из parsec capdb-записи, созданной `usercaps(8)`,
+которая активируется обёрткой `execaps`. Оператор, предпочитающий
+выдать cap через setuid-wrapper или отдельный startup-hook, может
+адаптировать drop-in — но дефолтный путь — `AmbientCapabilities` + capdb.
 
-   - **Strict-mode ядра.** Должен быть включён `parsec.strict_mode=1`
-     в kernel cmdline:
+### Откат
 
-     ```bash
-     cat /sys/module/parsec/parameters/strict_mode    # ожидается: Y
-     ```
+Возврат к не-МКЦ-дефолту:
 
-   - **PARSEC_CAP_CHMAC у пользователя демона.** Демон systemd запущен
-     от `User=pamcertauth` и не наследует caps от sshd/login. Cap нужно
-     явно выдать в parsec capdb:
+```bash
+sudo rm /etc/systemd/system/pam-certauth.service.d/mac-integrity.conf
+sudo systemctl daemon-reload
+sudo systemctl restart pam-certauth.service
+```
 
-     ```bash
-     sudo /sbin/usercaps -m "+3" pamcertauth
-     ```
+Также установите `cert_integrity = "ignore"` в `config.toml`, если
+секция `[mac]` была добавлена.
 
-     Результат — строка в `/etc/parsec/capdb/<uid>` вида
-     `pamcertauth:<linux_caps_hex>:<parsec_caps_hex>`, где в parsec-маске
-     взведён бит 3.
+### Технический контекст активации
 
-   - **`execaps`-обёртка в systemd unit.** Чтобы PARSEC cap из capdb
-     попал в effective set процесса демона, `ExecStart=` должен быть
-     обёрнут в `/usr/sbin/execaps -c 0x8 -- ...` (где `0x8 = 1<<3 =
-     PARSEC_CAP_CHMAC`). Поставляемый юнит на 0.3.0 этот шаг **не
-     делает** — задеплоить МКЦ значит либо пропатчить юнит локально, либо
-     перейти на запуск демона через PAM-стек с `pam_parsec`.
+- Runtime-пакет `libpdp3 (>= 3.11+ci97~)` подтягивается автоматически
+  при `apt install pam-certauth` (см. `debian/control`).
+- postinst на Astra-хостах (`/etc/astra_version`) при включённом
+  strict-mode выставляет MAC-лейблы `pdpl-file :::iinh` на
+  `/etc/pam_certauth/`, `/var/lib/pam_certauth/`,
+  `/var/cache/pam_certauth/` и ставит `chattr +i` на
+  `/var/lib/pam_certauth/host_id`. Эти шаги выполняются всегда — они
+  безопасны и не зависят от того, активирован МКЦ в `config.toml` или
+  нет.
+- `sessions.json` лежит в `/run/pam_certauth/` (tmpfs); systemd создаёт
+  каталог через `RuntimeDirectory=pam_certauth` на каждом boot. Файл
+  intentionally volatile: переживает перезапуск демона в пределах
+  одного boot, но не reboot — все sshd/login/sudo-процессы, держащие
+  эти сессии, всё равно умирают на reboot.
+- Перевыпустите сертификаты пользователей с расширением
+  `MAX_INTEGRITY` (OID `2.25.273824307386008814506455310913083078403`).
+  См. `docs/cert-issuance.md`. Без этого расширения значение
+  применённой метки — нулевой integrity.
+- Дополнительные параметры (`required` vs `optional`, обработка
+  intersect с MNKC пользователя) описаны в `docs/configuration.md`
+  §«MAC integrity».
 
-   - **Linux `CAP_MAC_ADMIN`.** Юнит уже содержит
-     `AmbientCapabilities=CAP_MAC_ADMIN`. Без него ядро вернёт EPERM
-     при записи `security.PDP` xattr.
-
-   - **ilevel пользователя.** Резолвится из FreeIPA/mic-db через
-     `getmicnam(3)`. Задаётся админом командой:
-
-     ```bash
-     sudo /sbin/pdpl-user --ilevel 63 <user>
-     ```
-
-     Если у пользователя ilevel ниже, чем `MAX_INTEGRITY` сертификата,
-     демон применит минимум (см. `docs/configuration.md` §«MAC integrity»).
-
-6. Перезапустите демон: `systemctl restart pam-certauth.service`.
-   Юнит уже содержит `RuntimeDirectory=pam_certauth` /
-   `RuntimeDirectoryMode=0750`.
-
-Проверка:
+### Проверка применения метки
 
 ```bash
 journalctl -u pam-certauth.service | grep mac_runtime_detected
@@ -815,7 +857,7 @@ journalctl -u pam-certauth.service | grep mac_runtime_detected
 strict-mode не включён или libpdp не найден.
 
 После открытия сессии метка применяется к `sessions.json` через
-fd-based API. Проверка:
+fd-based API:
 
 ```bash
 sudo pdpl-file /run/pam_certauth/sessions.json

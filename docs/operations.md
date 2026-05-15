@@ -496,7 +496,20 @@ sudo journalctl -t pam_certauth | grep -E 'pam_user[=:]"alice"'
   `pam_cert_user_binding` — на уровне `info` логируется только
   совпавшая запись; полный список — на уровне `debug`.
 
-## 7. Emergency contact
+## 7. МКЦ (MAC integrity)
+
+Активация мандатного контроля целостности — опциональный шаг,
+выполняется оператором вручную после установки пакета. Демон
+`pam-certauth.service` работает как `pamcertauth` без
+`CAP_MAC_ADMIN`/`PARSEC_CAP_CHMAC`, пока оператор не установит
+шипованный drop-in
+`/usr/share/pam-certauth/systemd/mac-integrity.conf.example` в
+`/etc/systemd/system/pam-certauth.service.d/` и не выдаст
+`PARSEC_CAP_CHMAC` через `usercaps -m "+3" pamcertauth`. Полная
+процедура активации, проверки и отката описана в
+[docs/install.md §«МКЦ (MAC integrity) — опциональная активация»](install.md#мкц-mac-integrity--опциональная-активация).
+
+## 8. Emergency contact
 
 Для конфиденциальных сообщений о безопасности — см. контакты в
 [README.md](../README.md#безопасность-и-сообщения-об-уязвимостях).
