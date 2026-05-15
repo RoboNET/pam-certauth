@@ -112,10 +112,17 @@ pub fn bind_with_label<B: MacBackend>(
         level: 0,
         categories: 0,
     };
-    backend
-        .set_fd_label(listener.as_raw_fd(), label, true)
-        .map_err(|e| io::Error::other(format!("set_fd_label: {e}")))?;
-    mac_audit::emit_socket_label(&tmp_path.to_string_lossy());
+    // Best-effort labeling: on hosts without an active МКЦ kernel (containers,
+    // dev boxes, non-Astra), `pdp_set_fd` returns rc=-1. We log a warning
+    // and continue — DAC `0660` + parent-dir `iinh` carry the security
+    // properties on those hosts; on real Astra strict mode the label sticks.
+    match backend.set_fd_label(listener.as_raw_fd(), label, true) {
+        Ok(()) => mac_audit::emit_socket_label(&tmp_path.to_string_lossy()),
+        Err(e) => mac_audit::emit_sessions_file_warn(
+            &tmp_path.to_string_lossy(),
+            Some(&format!("set_fd_label on monitord.sock: {e}")),
+        ),
+    }
     // Atomic publish: from this instant on, peers connecting at
     // `final_path` see a socket that is already 0660 and labeled.
     std::fs::rename(&tmp_path, final_path)?;
