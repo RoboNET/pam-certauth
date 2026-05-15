@@ -58,7 +58,6 @@ unsafe extern "C" {
     fn parsec_strict_mode() -> c_int;
 
     fn getmicnam(name: *const c_char) -> *mut MicUser;
-    fn freemicent_r(ent: *mut MicUser);
 }
 
 // `parsec_capget` is exported by libparsec-base.so on Astra 1.8.4 —
@@ -239,24 +238,32 @@ pub fn check_chmac_capability() -> bool {
 /// `mic.db`).  Categories are reported as zero — mic-cat is not modelled in
 /// v1.
 ///
+/// No free — see Astra `man getmicnam`: the `getmicXXX` family returns a
+/// pointer into libparsec-mic's library-private static buffer which the
+/// caller MUST NOT free.
+///
 /// # Errors
 /// [`MacError::UserUnknown`] if `getmicnam` returns NULL.
 pub fn get_user_mnkc(user: &str) -> Result<IntegrityLabel, MacError> {
     let c = CString::new(user)
         .map_err(|e| MacError::TextFormat(format!("interior NUL in user: {e}")))?;
-    // SAFETY: `c.as_ptr()` is a valid NUL-terminated C string for the call;
-    // libpdp returns either NULL or a heap pointer we must free with
-    // `freemicent_r`.
+    // SAFETY: `c.as_ptr()` is a valid NUL-terminated C string for the call.
+    // `getmicnam` returns either NULL or a pointer into libparsec-mic's
+    // library-private static buffer (per `man getmicnam` on Astra 1.8.4:
+    // "указатель на статическую для библиотеки PARSEC структуру"). The
+    // returned pointer MUST NOT be freed; the library owns it and may
+    // overwrite it on subsequent `getmicXXX` calls (thread-unsafe but
+    // acceptable in our synchronous PAM context).
     let ent = unsafe { getmicnam(c.as_ptr()) };
     if ent.is_null() {
         return Err(MacError::UserUnknown {
             user: user.to_owned(),
         });
     }
-    // SAFETY: `ent` is non-NULL libpdp-allocated `mic_user`.
+    // SAFETY: `ent` is non-NULL; we copy the integrity field out before
+    // returning.  The static buffer may be reused on the next libparsec-mic
+    // call so we must NOT retain `ent` past this point.
     let il = unsafe { (*ent).il };
-    // SAFETY: matched against the libpdp allocation; freed exactly once.
-    unsafe { freemicent_r(ent) };
     // Saturate to i8::MAX — `mic_t` width on Astra may exceed our wrapper's
     // representation.  v1 does not model mic-cat → categories = 0.
     let level = i8::try_from(il).unwrap_or(i8::MAX);
