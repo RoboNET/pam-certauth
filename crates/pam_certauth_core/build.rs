@@ -17,5 +17,11 @@ fn main() {
         // NB: `pdp_set_current` — inline-обёртка в pdp.h над `pdp_set_pid(0, l)`,
         // символа в .so нет — вызываем `pdp_set_pid` напрямую (spec §4.1).
         println!("cargo:rustc-link-lib=pdp");
+        // `parsec_capget` лежит в libparsec-base.so, НЕ в libpdp.so —
+        // verified Astra CI 2026-05-15 (ubi18:latest container,
+        // run 25903325006: linker error `undefined symbol: parsec_capget`
+        // при линковке только с `-lpdp`; `nm -D /usr/lib/libparsec-base.so*`
+        // показывает экспортируемый `parsec_capget`). См. spec §C.5.
+        println!("cargo:rustc-link-lib=parsec-base");
     }
 }

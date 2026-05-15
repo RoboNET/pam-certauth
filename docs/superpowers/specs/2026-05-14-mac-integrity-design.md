@@ -668,8 +668,9 @@ parsec-headers на CI.
   Debug-event при `cfg(feature = "mac-debug-peer-label")`).
 - `getmicnam`, `freemicent_r` (user МНКЦ lookup, §4.1.1).
 - `parsec_strict_mode`, `parsec_capget` (probe + self-check capabilities,
-  §4.3 / §7.2). NB: `parsec_capget` живёт в libparsec-base / libparsec-cap;
-  если в `libpdp.so` его нет — добавить `-lparsec-base` к `cargo:rustc-link-lib`.
+  §4.3 / §7.2). `parsec_capget` живёт в `libparsec-base.so` (verified
+  Astra CI 2026-05-15, run 25903325006); `build.rs` линкует обе библиотеки
+  (`-lpdp -lparsec-base`).
 
 ### 7.5 CI
 
@@ -1021,6 +1022,15 @@ int parsec_capget(pid_t pid, parsec_caps_t *data);
 int parsec_capset(pid_t pid, const parsec_caps_t *data);
 ```
 
+**Link location (verified):** `parsec_capget` / `parsec_capset` экспортируются
+из `libparsec-base.so` (НЕ из `libpdp.so`). Подтверждено на Astra CI
+2026-05-15 (ubi18:latest container, run 25903325006): сборка с одним
+`-lpdp` падает с `undefined symbol: parsec_capget`; `nm -D
+/usr/lib/libparsec-base.so*` резолвит символ. Поэтому `build.rs` emits
+обе директивы (`pdp` + `parsec-base`), а `ffi.rs` использует
+`#[link(name = "parsec-base")]` для блока с `parsec_capget`. См.
+закрытый TODO в §C.8.
+
 Релевантные cap-биты (значения = номер бита):
 
 ```
@@ -1085,9 +1095,9 @@ pdp_get_current_ilev
 `pdp_set_current`, `pdp_get_current`, `pdp_get_sys_max`,
 `pdp_set_EQU_path`, `pdp_set_EQU_fd`.
 
-`parsec_capget` / `parsec_capset` — Phase 4 Task 4.0 проверяет, лежат ли
-они в `libpdp.so.3` или их нужно добирать отдельным `-lparsec-base` /
-`-lparsec-cap` (см. C.8).
+`parsec_capget` / `parsec_capset` — **resolved**: лежат в
+`libparsec-base.so` (НЕ в `libpdp.so.3`). Verified on Astra CI
+2026-05-15 (run 25903325006). См. §C.5 и закрытую строку в C.8.
 
 #### C.8 Open TODOs (закрываются в Phase 4 Task 4.0 на VM)
 
@@ -1095,7 +1105,7 @@ pdp_get_current_ilev
 |------|------------|-------------------|
 | `PDPL_FMT_*` numeric values | требуется `libpdp-dev` на VM; либо: `echo '#include <parsec/pdp_common.h>' \| gcc -E -dM -xc - 2>/dev/null \| grep PDPL_FMT` | в `pdpl_get_text(l, 0)` передаём `0` (как в demo §C.10) — works in practice |
 | Точный тип `mic_t` | `echo '#include <parsec/mic_db.h>\nint main(){return sizeof(mic_t);}' \| gcc -xc - -lpdp -o /tmp/mt && /tmp/mt; echo $?` | если ≠ 4 байт — расширить `MicUser.il` тип и saturate в `i8` |
-| Локация `parsec_capget` / `parsec_capset` | `nm -D /usr/lib/libpdp.so* \| grep parsec_capget; nm -D /usr/lib/libparsec-base.so* \| grep parsec_capget` | если только в `libparsec-base` — додать `cargo:rustc-link-lib=parsec-base` в build.rs |
+| ~~Локация `parsec_capget` / `parsec_capset`~~ | **CLOSED 2026-05-15** (Astra CI run 25903325006): символ в `libparsec-base.so`. `build.rs` emits `cargo:rustc-link-lib=parsec-base`; `ffi.rs` использует `#[link(name = "parsec-base")]`. См. §C.5. | n/a |
 | Точный тип `parsec_cap_t` | `echo '#include <parsec/parsec_cap.h>\nint main(){return sizeof(parsec_cap_t);}' \| gcc -xc - -o /tmp/pc && /tmp/pc; echo $?` | вероятно `uint64_t`; от типа зависит маска `1u64 << 3` |
 
 Errno: docs возвращают только `int` rc для `pdp_*` API. `errno` after call
@@ -1248,9 +1258,9 @@ extern "C" {
     fn freemicent_r(res: *mut MicUser);
 }
 
-// parsec_capget — Phase 4 Task 4.0 проверяет линковку.
-// Может потребоваться отдельный `-lparsec-base` в build.rs.
-#[link(name = "pdp")]   // fallback: "parsec-base"
+// parsec_capget — лежит в libparsec-base.so (Astra CI 2026-05-15,
+// run 25903325006). build.rs emits `cargo:rustc-link-lib=parsec-base`.
+#[link(name = "parsec-base")]
 extern "C" {
     fn parsec_capget(pid: libc::pid_t, data: *mut ParsecCaps) -> c_int;
 }

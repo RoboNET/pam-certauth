@@ -31,12 +31,14 @@
 
 ### Build
 
-- `debian/control`: добавлен `Depends: libpdp3 (>= 3.11+ci97~)`.
-  `libparsec-base3` пока остался в TODO build.rs/threat-model: на
-  Astra SE 1.8.4 символ `parsec_capget` экспортируется из libpdp.so.3,
-  но если downstream-сборка не сможет его разрешить — добавьте
-  `libparsec-base3` в Depends и `cargo:rustc-link-lib=parsec-base`
-  в `build.rs`.
+- `debian/control`: добавлен `Recommends: libpdp3 (>= 3.11+ci97~)` и
+  `libparsec-base3 (>= 3.11+ci97~)` (оба runtime-dep при сборке с
+  `astra-mac`).
+- **Linker fix:** `parsec_capget` оказался экспортируемым из
+  `libparsec-base.so`, а не `libpdp.so` — Astra CI build падал с
+  `undefined symbol: parsec_capget` (verified run 25903325006,
+  2026-05-15). `build.rs` теперь emits и `-lpdp`, и `-lparsec-base`;
+  extern-блок с `parsec_capget` помечен `#[link(name = "parsec-base")]`.
 
 ### Removed
 

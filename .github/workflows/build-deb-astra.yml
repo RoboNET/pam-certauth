@@ -79,6 +79,11 @@ jobs:
           fi
           echo "found libpdp at $LIBPDP"
           nm -D "$LIBPDP" | grep -E 'pdpl_get_from_text|pdp_set_pid|parsec_strict_mode' || true
+          # `parsec_capget` lives in libparsec-base.so, NOT libpdp — verified
+          # on Astra CI 2026-05-15 (run 25903325006). Probe both candidate
+          # locations so a future repackaging of parsec is caught early.
+          nm -D /lib/libparsec-base.so* /usr/lib/libparsec-base.so* /usr/lib/x86_64-linux-gnu/libparsec-base.so* 2>/dev/null \
+            | grep -E 'parsec_capget|parsec_capset' | head || true
 
       - name: Install rustup + pinned toolchain
         # Base ubi18 image has no Rust toolchain. Install rustup

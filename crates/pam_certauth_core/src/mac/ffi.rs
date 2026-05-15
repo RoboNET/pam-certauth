@@ -14,10 +14,11 @@
 //! `pdp.h` — there is no `pdp_set_current` symbol in the `.so`.  We always
 //! call `pdp_set_pid(0, ...)` directly.
 //!
-//! `parsec_capget` exact link location is TBD-runtime-verified: if the first
-//! Astra deb build fails to resolve it, switch the extern block link name to
-//! `parsec-base` AND emit `cargo:rustc-link-lib=parsec-base` from
-//! `build.rs`.
+//! `parsec_capget` is exported by `libparsec-base.so` (NOT `libpdp.so`),
+//! verified on Astra CI 2026-05-15 (ubi18:latest container, run
+//! 25903325006). The second extern block below uses `#[link(name =
+//! "parsec-base")]`; `build.rs` emits the matching
+//! `cargo:rustc-link-lib=parsec-base`.
 //!
 //! Real semantics are exercised on the Astra VM via `test-mac.sh` (Phase 10
 //! E2E).  Dev-host CI only `cargo check`s this module under `astra-mac`.
@@ -60,11 +61,11 @@ unsafe extern "C" {
     fn freemicent_r(ent: *mut MicUser);
 }
 
-// `parsec_capget` lives in libpdp on Astra 1.8.4 according to current
-// best-guess.  If linking on the deb build fails, move this block to
-// `#[link(name = "parsec-base")]` and add the matching directive in
-// `build.rs`.
-#[link(name = "pdp")]
+// `parsec_capget` is exported by libparsec-base.so on Astra 1.8.4 —
+// verified Astra CI 2026-05-15 (run 25903325006). Linking against `pdp`
+// alone produced `undefined symbol: parsec_capget` at deb build time;
+// `nm -D /usr/lib/libparsec-base.so*` resolves the symbol there.
+#[link(name = "parsec-base")]
 unsafe extern "C" {
     fn parsec_capget(pid: libc::pid_t, caps: *mut ParsecCaps) -> c_int;
 }
