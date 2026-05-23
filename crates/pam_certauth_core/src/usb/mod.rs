@@ -13,11 +13,13 @@
 //! of [`UsbEnumerator`] into [`wait_for_usb_with`].
 
 pub mod error;
+pub mod partition;
 
 #[cfg(target_os = "linux")]
 mod linux_impl;
 
 pub use error::UsbError;
+pub use partition::{select_partition, PartitionCandidate};
 
 use std::path::PathBuf;
 use std::time::Duration;

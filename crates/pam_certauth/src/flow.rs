@@ -1116,6 +1116,10 @@ impl FlowIo for InMemoryFlowIo {
                 UsbError::MissingProperty(s) => UsbError::MissingProperty(s.clone()),
                 UsbError::NoMatchingDevice => UsbError::NoMatchingDevice,
                 UsbError::Io(io) => UsbError::Udev(format!("io: {io}")),
+                UsbError::AmbiguousPartition { devnode, count } => UsbError::AmbiguousPartition {
+                    devnode: devnode.clone(),
+                    count: *count,
+                },
             });
         }
         Ok(self.device.clone())
