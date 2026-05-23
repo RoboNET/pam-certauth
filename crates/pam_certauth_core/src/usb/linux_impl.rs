@@ -5,6 +5,7 @@
 //! `mod.rs` readable on non-Linux hosts (such as the maintainers' macOS dev
 //! boxes) and avoids leaking udev types into the public surface.
 
+use super::partition::{select_partition, PartitionCandidate};
 use super::{UsbDevice, UsbError};
 use std::ffi::OsStr;
 use std::os::fd::AsFd;
@@ -119,7 +120,59 @@ fn device_from(
 
     let fs_type = d
         .property_value("ID_FS_TYPE")
-        .map(|s| s.to_string_lossy().into_owned());
+        .map(|s| s.to_string_lossy().into_owned())
+        .filter(|s| !s.is_empty());
+
+    // Partition-table fallback: whole-device has no FS but is a
+    // `DEVTYPE=disk` node — scan child partitions for the PAMCERT label.
+    let (devnode, fs_type) = if fs_type.is_none() && is_whole_disk(d) {
+        tracing::info!(
+            target: "pam_certauth.usb",
+            parent_devnode = %devnode.display(),
+            "whole-device has no FS, scanning partitions for label=PAMCERT",
+        );
+        match collect_partition_candidates(d) {
+            Ok(candidates) => match select_partition(None, &devnode, &candidates) {
+                Ok(Some(picked)) => {
+                    let part_fs = picked.fs_type.clone();
+                    tracing::info!(
+                        target: "pam_certauth.usb",
+                        partition_devnode = %picked.devnode.display(),
+                        fs_type = part_fs.as_deref().unwrap_or("(unknown)"),
+                        "found PAMCERT partition",
+                    );
+                    (picked.devnode.clone(), part_fs)
+                }
+                Ok(None) => (devnode, None),
+                Err(e) => {
+                    if let UsbError::AmbiguousPartition {
+                        devnode: ref dn,
+                        count,
+                    } = e
+                    {
+                        tracing::warn!(
+                            target: "pam_certauth.usb",
+                            parent_devnode = %dn.display(),
+                            count,
+                            "multiple PAMCERT partitions found; refusing to guess",
+                        );
+                    }
+                    return Err(e);
+                }
+            },
+            Err(e) => {
+                tracing::warn!(
+                    target: "pam_certauth.usb",
+                    parent_devnode = %devnode.display(),
+                    error = %e,
+                    "failed to enumerate child partitions",
+                );
+                (devnode, None)
+            }
+        }
+    } else {
+        (devnode, fs_type)
+    };
 
     Ok(Some(UsbDevice {
         devnode,
@@ -128,6 +181,56 @@ fn device_from(
         pid,
         fs_type,
     }))
+}
+
+/// `true` when the udev device is a whole-disk node (`DEVTYPE=disk`),
+/// suitable for the partition-table fallback.
+fn is_whole_disk(d: &udev::Device) -> bool {
+    d.property_value("DEVTYPE")
+        .is_some_and(|v| v == OsStr::new("disk"))
+}
+
+/// Enumerate child partition nodes of `parent` and convert them to pure
+/// [`PartitionCandidate`] records suitable for [`select_partition`].
+fn collect_partition_candidates(
+    parent: &udev::Device,
+) -> Result<Vec<PartitionCandidate>, UsbError> {
+    let mut e = udev::Enumerator::new().map_err(|e| UsbError::Udev(e.to_string()))?;
+    e.match_subsystem("block")
+        .map_err(|e| UsbError::Udev(e.to_string()))?;
+    e.match_parent(parent)
+        .map_err(|e| UsbError::Udev(e.to_string()))?;
+
+    let mut out = Vec::new();
+    for child in e
+        .scan_devices()
+        .map_err(|e| UsbError::Udev(e.to_string()))?
+    {
+        // Skip the parent itself; we only want partitions.
+        let is_partition = child
+            .property_value("DEVTYPE")
+            .is_some_and(|v| v == OsStr::new("partition"));
+        if !is_partition {
+            continue;
+        }
+        let Some(devnode) = child.devnode() else {
+            continue;
+        };
+        let fs_type = child
+            .property_value("ID_FS_TYPE")
+            .map(|s| s.to_string_lossy().into_owned())
+            .filter(|s| !s.is_empty());
+        let fs_label = child
+            .property_value("ID_FS_LABEL")
+            .map(|s| s.to_string_lossy().into_owned())
+            .filter(|s| !s.is_empty());
+        out.push(PartitionCandidate {
+            devnode: devnode.to_path_buf(),
+            fs_type,
+            fs_label,
+        });
+    }
+    Ok(out)
 }
 
 fn parse_hex16(v: Option<&OsStr>) -> Result<u16, UsbError> {

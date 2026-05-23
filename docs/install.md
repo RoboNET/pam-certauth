@@ -293,11 +293,31 @@ openssl pkcs12 -in alice.p12 -nokeys -passin pass:test \
 
 ### 5.1 Форматирование
 
+`pam_certauth` поддерживает **два варианта** разметки USB-носителя:
+
+**Вариант A — FS на разделе (рекомендуется для флешек с partition table).**
+Большинство магазинных флешек поставляются уже с MBR/GPT и одним разделом.
+Имя метки **должно** быть ровно `PAMCERT` (с учётом регистра).
+Если на whole-device нет ФС, `pam_certauth` ищет среди разделов ровно один
+с меткой `PAMCERT` и FS из allowlist (`vfat`, `exfat`, `ext4`, `ntfs`).
+Если подходящих разделов несколько — отказ (fail-closed).
+
 ```bash
 # ВНИМАНИЕ: команда УНИЧТОЖАЕТ данные на устройстве /dev/sdX1.
 # Замените sdX1 на реальный путь к разделу USB-носителя
 # (lsblk | grep -i usb).
 sudo mkfs.ext4 -L PAMCERT /dev/sdX1
+```
+
+**Вариант B — FS прямо на whole-device (без partition table).**
+Совместимый сценарий, использовавшийся в более ранних версиях. Метка не
+требуется (но не мешает). `pam_certauth` сразу читает `ID_FS_TYPE` у
+udev-устройства и монтирует его.
+
+```bash
+# ВНИМАНИЕ: УНИЧТОЖАЕТ partition table и данные.
+sudo wipefs -a /dev/sdX
+sudo mkfs.ext4 -L PAMCERT /dev/sdX
 ```
 
 ### 5.2 Layout
