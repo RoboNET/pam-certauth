@@ -7,6 +7,7 @@ use std::process::ExitCode;
 
 use clap::{Parser, Subcommand};
 
+use pam_certauth_cli::check::{self, CheckArgs};
 use pam_certauth_cli::daemon::{self, DaemonArgs};
 
 #[derive(Debug, Parser)]
@@ -20,11 +21,17 @@ struct Cli {
 enum Cmd {
     /// Run the monitor daemon (USB / logind enforcement, IPC server).
     Daemon(DaemonArgs),
+    /// Run the startup validation checks against `config.toml` without
+    /// starting the daemon. Exits 0 when every check is INFO/WARN, exits
+    /// 1 when at least one check reports ERROR. Intended as a preflight
+    /// before `systemctl restart pam-certauth`.
+    Check(CheckArgs),
 }
 
 fn main() -> ExitCode {
     let cli = Cli::parse();
     match cli.cmd {
         Cmd::Daemon(args) => daemon::run(args),
+        Cmd::Check(args) => check::run(args),
     }
 }

@@ -19,6 +19,7 @@
 )]
 
 pub mod actions;
+pub mod check;
 pub mod daemon;
 pub mod logging;
 pub mod logind;
