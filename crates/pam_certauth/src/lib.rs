@@ -10,6 +10,7 @@ pub mod logging;
 pub mod pam_args;
 pub mod panic_guard;
 pub mod session;
+pub mod xdg_capture;
 
 #[cfg(target_os = "linux")]
 pub mod data_handle;

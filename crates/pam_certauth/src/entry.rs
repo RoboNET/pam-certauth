@@ -357,6 +357,45 @@ pub unsafe extern "C" fn pam_sm_open_session(
             Err(rc) => return rc,
         }
 
+        // Capture XDG_SESSION_ID (set by pam_systemd.so in the session
+        // phase) and push it to monitord so the action handler can call
+        // terminate_session / lock with a real logind id on USB removal.
+        //
+        // Called twice per login (see integrate-pam.sh): the first
+        // invocation usually sees XDG = NULL because pam_systemd has
+        // not yet run, the second invocation (after @include
+        // common-session) sees it set. Both are best-effort: an IPC
+        // failure logs WARN but never breaks PAM auth.
+        {
+            let xdg = match unsafe {
+                crate::pam_helpers::pam_get_env_string(pamh, "XDG_SESSION_ID")
+            } {
+                Ok(v) => v,
+                Err(err) => {
+                    tracing::warn!(
+                        target: "pam_certauth.session",
+                        session_id = %ctx.session_id,
+                        error = %err,
+                        "pam_getenv(XDG_SESSION_ID) failed",
+                    );
+                    None
+                }
+            };
+            let session_uuid =
+                crate::xdg_capture::session_uuid_from_string(&ctx.session_id);
+            let socket_path = cfg.monitor.socket_path.clone();
+            let timeout = cfg.monitor.timeout;
+            let _ = crate::xdg_capture::capture_xdg(
+                session_uuid,
+                xdg.as_deref(),
+                |target| {
+                    let mut client =
+                        pam_certauth_core::ipc::MonitordClient::connect(&socket_path, timeout)?;
+                    client.send_update_session_target(session_uuid, target)
+                },
+            );
+        }
+
         let vars = pam_certauth_core::hooks::HookVars::for_session_open(&pam_user, ctx);
         let executor = pam_certauth_core::hooks::ForkExecExecutor::new();
 
