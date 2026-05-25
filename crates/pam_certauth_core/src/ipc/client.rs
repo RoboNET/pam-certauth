@@ -169,6 +169,27 @@ impl MonitordClient {
         }
     }
 
+    /// Send `UpdateSessionTarget`: pushes a fresh `SessionTarget` (typically
+    /// `LogindSession { id }` derived from `XDG_SESSION_ID` in
+    /// `pam_sm_open_session`) onto an already-registered session entry.
+    /// Older daemons that don't know the variant return `BAD_REQUEST` —
+    /// callers MUST treat that as best-effort and not fail PAM auth.
+    pub fn send_update_session_target(
+        &mut self,
+        session_id: Uuid,
+        new_target: pam_certauth_proto::SessionTarget,
+    ) -> Result<(), IpcError> {
+        self.send(&ClientMessage::UpdateSessionTarget {
+            session_id,
+            new_target,
+        })?;
+        match self.recv()? {
+            ServerMessage::SessionTargetUpdated { session_id: _ } | ServerMessage::Ack => Ok(()),
+            ServerMessage::Error { code, message } => Err(map_server_error(code, message)),
+            other => Err(IpcError::UnexpectedReply(format!("{other:?}"))),
+        }
+    }
+
     fn send(&mut self, msg: &ClientMessage) -> Result<(), IpcError> {
         let bytes = encode_message(msg)?;
         self.stream.write_all(&bytes)?;
