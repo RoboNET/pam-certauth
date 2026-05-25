@@ -41,6 +41,7 @@ sha2 = { workspace = true }
 hex = { workspace = true }
 rand = { workspace = true }
 nix = { workspace = true }
+uuid = { workspace = true }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 pam-sys = { workspace = true }
