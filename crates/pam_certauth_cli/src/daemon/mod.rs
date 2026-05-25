@@ -117,6 +117,23 @@ async fn run_async(args: DaemonArgs) -> anyhow::Result<()> {
                 args.config.display()
             )
         })?;
+
+    // Run the startup-validation sweep once per boot. Log every record at
+    // its severity level; if any check reported `Error`, refuse to start
+    // so misconfigurations surface loudly in `systemctl status` instead of
+    // silently degrading every subsequent auth.
+    let startup_opts = crate::startup_check::StartupCheckOptions::default();
+    let report = crate::startup_check::run_startup_checks(&validated, &startup_opts);
+    report.log();
+    if report.has_errors() {
+        anyhow::bail!(
+            "startup validation reported {n} error(s); refusing to start. Re-run \
+             'pam-certauth check --config {cfg}' for the same summary without restarting.",
+            n = report.count(crate::startup_check::StartupCheckSeverity::Error),
+            cfg = args.config.display(),
+        );
+    }
+
     let monitor_cfg = &validated.monitor;
 
     let socket_path = args

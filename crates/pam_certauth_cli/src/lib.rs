@@ -19,6 +19,7 @@
 )]
 
 pub mod actions;
+pub mod check;
 pub mod daemon;
 pub mod logging;
 pub mod logind;
@@ -27,6 +28,7 @@ pub mod peercred;
 pub mod registry;
 pub mod server;
 pub mod shutdown;
+pub mod startup_check;
 pub mod state;
 pub mod testing;
 pub mod udev_monitor;
