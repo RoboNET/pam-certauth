@@ -377,7 +377,7 @@ impl TryFrom<&RawConfig> for ValidatedConfig {
             },
             pkcs11_pin_prompt: raw.pkcs11_pin_prompt.clone(),
             pkcs11_slot_wait: Duration::from_secs(u64::from(raw.pkcs11_slot_wait_seconds)),
-            pkcs12_path_pattern: raw.pkcs12_path_pattern.clone(),
+            pkcs12_path_pattern: validate_pkcs12_path_pattern(raw.pkcs12_path_pattern.as_deref())?,
             pkcs12_pin_prompt: raw.pkcs12_pin_prompt.clone(),
             gost_engine_path,
             usb_wait: Duration::from_secs(raw.usb_wait_seconds),
@@ -490,6 +490,43 @@ fn validate_max_usb_partitions(raw: Option<u32>) -> Result<u32, Error> {
         });
     }
     Ok(v)
+}
+
+/// Validate the (optional) `pkcs12_path_pattern` field.
+///
+/// Semantics: a relative path under the USB mountpoint where the
+/// PKCS#12 file lives. Must not be empty, must not start with `/`,
+/// and must not contain `..` or `.` segments (path-traversal guard).
+/// `${user}` is the only placeholder honoured at discovery time and
+/// is treated opaquely here (it does not introduce `/` segments by
+/// itself; user names that contain `/` are rejected upstream by the
+/// PAM user regex).
+fn validate_pkcs12_path_pattern(raw: Option<&str>) -> Result<Option<String>, Error> {
+    let Some(value) = raw else {
+        return Ok(None);
+    };
+    if value.is_empty() {
+        return Err(Error::ConfigInvalid {
+            reason: "pkcs12_path_pattern must be non-empty when set".to_owned(),
+        });
+    }
+    if value.starts_with('/') {
+        return Err(Error::ConfigInvalid {
+            reason: format!(
+                "pkcs12_path_pattern must be a relative path under the USB mountpoint (got {value:?})"
+            ),
+        });
+    }
+    for segment in value.split('/') {
+        if segment == ".." || segment == "." {
+            return Err(Error::ConfigInvalid {
+                reason: format!(
+                    "pkcs12_path_pattern must not contain '..' or '.' segments (got {value:?})"
+                ),
+            });
+        }
+    }
+    Ok(Some(value.to_owned()))
 }
 
 fn validate_trust(raw: &RawTrust) -> Result<TrustSection, Error> {
@@ -961,4 +998,67 @@ fn validate_gost_engine_path(
         });
     }
     Ok(Some(path.clone()))
+}
+
+#[cfg(test)]
+#[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn pkcs12_pattern_accepts_relative_paths() {
+        assert_eq!(
+            validate_pkcs12_path_pattern(Some("certs/user.p12")).unwrap(),
+            Some("certs/user.p12".to_owned())
+        );
+        assert_eq!(
+            validate_pkcs12_path_pattern(Some("bfs_service.p12")).unwrap(),
+            Some("bfs_service.p12".to_owned())
+        );
+        assert_eq!(
+            validate_pkcs12_path_pattern(Some("${user}.p12")).unwrap(),
+            Some("${user}.p12".to_owned())
+        );
+    }
+
+    #[test]
+    fn pkcs12_pattern_unset_is_none() {
+        assert_eq!(validate_pkcs12_path_pattern(None).unwrap(), None);
+    }
+
+    #[test]
+    fn pkcs12_pattern_rejects_empty() {
+        let err = validate_pkcs12_path_pattern(Some("")).unwrap_err();
+        match err {
+            Error::ConfigInvalid { reason } => assert!(reason.contains("non-empty")),
+            other => panic!("unexpected: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn pkcs12_pattern_rejects_absolute_path() {
+        let err = validate_pkcs12_path_pattern(Some("/run/cert.p12")).unwrap_err();
+        match err {
+            Error::ConfigInvalid { reason } => assert!(reason.contains("relative")),
+            other => panic!("unexpected: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn pkcs12_pattern_rejects_parent_segment() {
+        let err = validate_pkcs12_path_pattern(Some("certs/../etc/cert.p12")).unwrap_err();
+        match err {
+            Error::ConfigInvalid { reason } => assert!(reason.contains("'..'")),
+            other => panic!("unexpected: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn pkcs12_pattern_rejects_dot_segment() {
+        let err = validate_pkcs12_path_pattern(Some("./cert.p12")).unwrap_err();
+        match err {
+            Error::ConfigInvalid { reason } => assert!(reason.contains("'..'")),
+            other => panic!("unexpected: {other:?}"),
+        }
+    }
 }

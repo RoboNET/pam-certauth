@@ -263,13 +263,22 @@ pub trait FlowIo {
 
     /// Discover credentials under the mountpoint.
     ///
+    /// `pattern` is the validated `pkcs12_path_pattern` (relative path,
+    /// possibly with `${user}`); the caller resolves `pam_user` from
+    /// the PAM context.
+    ///
     /// Default impl delegates to [`discover_credentials`]; tests may override.
     ///
     /// # Errors
     ///
     /// Propagates [`DiscoveryError`].
-    fn discover(&self, mountpoint: &Path) -> Result<DiscoveredCreds, DiscoveryError> {
-        discover_credentials(mountpoint)
+    fn discover(
+        &self,
+        mountpoint: &Path,
+        pattern: &str,
+        pam_user: &str,
+    ) -> Result<DiscoveredCreds, DiscoveryError> {
+        discover_credentials(mountpoint, pattern, pam_user)
     }
 }
 
@@ -435,6 +444,11 @@ where
     );
 
     // Step 3+4 — mount each candidate and look for `.p12` until one matches.
+    let pkcs12_pattern = deps
+        .cfg
+        .pkcs12_path_pattern
+        .as_deref()
+        .unwrap_or(pam_certauth_core::discovery::DEFAULT_PKCS12_PATH_PATTERN);
     let mut last_discovery_err: Option<DiscoveryError> = None;
     let mut bound: Option<BoundUsb<I::Ops>> = None;
     for candidate in usb_devices {
@@ -450,26 +464,31 @@ where
             mountpoint,
             guard: mount,
         } = io.mount(&candidate)?;
-        match io.discover(&mountpoint) {
+        match io.discover(&mountpoint, pkcs12_pattern, pam_user) {
             Ok(creds) => {
                 bound = Some((candidate, mountpoint, mount, creds));
                 break;
             }
-            Err(DiscoveryError::P12NotFound) => {
+            Err(DiscoveryError::P12NotFound { path }) => {
                 tracing::info!(
                     target: "pam_certauth.flow",
                     mountpoint = %mountpoint.display(),
+                    missing = %path.display(),
                     "no .p12 on this partition, trying next",
                 );
                 // `mount` guard drops here → umount + rmdir.
                 drop(mount);
-                last_discovery_err = Some(DiscoveryError::P12NotFound);
+                last_discovery_err = Some(DiscoveryError::P12NotFound { path });
             }
             Err(other) => return Err(FlowError::Discovery(other)),
         }
     }
     let (dev, _mountpoint, mount, creds) = bound.ok_or_else(|| {
-        FlowError::Discovery(last_discovery_err.unwrap_or(DiscoveryError::P12NotFound))
+        FlowError::Discovery(
+            last_discovery_err.unwrap_or_else(|| DiscoveryError::P12NotFound {
+                path: PathBuf::from(pkcs12_pattern),
+            }),
+        )
     })?;
 
     // Step 5 — PIN-retry loop.
@@ -1297,7 +1316,7 @@ mod tests {
         let raw_toml = r#"
 crypto_backend = "openssl"
 mode = "pkcs12"
-pkcs12_path_pattern = "/run/cert.p12"
+pkcs12_path_pattern = "certs/user.p12"
 pkcs12_pin_prompt = "PIN: "
 usb_wait_seconds = 5
 on_usb_removed = "lock"
@@ -1467,7 +1486,7 @@ journald_priority = false
         .unwrap_err();
         assert!(matches!(
             err,
-            FlowError::Discovery(DiscoveryError::P12NotFound)
+            FlowError::Discovery(DiscoveryError::P12NotFound { .. })
         ));
         assert_eq!(err.pam_code(), 9); // PAM_AUTHINFO_UNAVAIL
     }

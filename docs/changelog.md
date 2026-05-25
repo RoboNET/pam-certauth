@@ -2,6 +2,16 @@
 
 ## [0.3.3] — unreleased
 
+### Fixed
+
+- `pkcs12_path_pattern` теперь реально применяется при discovery
+  credentials с USB-носителя. До этого параметр декларировался в
+  конфиге, но игнорировался — discovery всегда искал
+  `<mountpoint>/certs/user.p12`. Default остался прежним
+  (`certs/user.p12`) для backwards compat. Поддержан плейсхолдер
+  `${user}`, добавлена защита от path-traversal в валидаторе
+  (отклоняются абсолютные пути, пустая строка, сегменты `..` и `.`).
+
 ### Changed
 
 - Снято требование `LABEL=PAMCERT` на партиции USB-носителя.
