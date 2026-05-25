@@ -52,6 +52,8 @@ pub fn check(pam_d_root: &Path, report: &mut StartupCheckReport) {
 pub fn evaluate_service(path: &Path, text: &str, report: &mut StartupCheckReport) {
     let mut include_line: Option<usize> = None;
     let mut parsec_line: Option<usize> = None;
+    let mut session_certauth_line: Option<usize> = None;
+    let mut systemd_anchor_line: Option<usize> = None;
 
     for (idx, raw) in text.lines().enumerate() {
         let line = raw.trim_start();
@@ -63,8 +65,19 @@ pub fn evaluate_service(path: &Path, text: &str, report: &mut StartupCheckReport
         } else if is_auth_parsec_mac(line) {
             parsec_line.get_or_insert(idx);
         }
+        if is_session_pam_certauth(line) {
+            session_certauth_line.get_or_insert(idx);
+        }
+        // Anchor for the session-ordering check: either the direct module
+        // line or the @include common-session aggregator (Debian/Astra
+        // ships pam_systemd via common-session). We don't recursively
+        // follow includes — direct line OR @include is good enough.
+        if is_session_pam_systemd(line) || is_common_session_include(line) {
+            systemd_anchor_line.get_or_insert(idx);
+        }
     }
 
+    // Auth/account misorder check (pre-0.3.12 invariant).
     match (include_line, parsec_line) {
         (Some(inc), Some(par)) if inc < par => {
             report.push(StartupCheckRecord::error(
@@ -96,6 +109,60 @@ pub fn evaluate_service(path: &Path, text: &str, report: &mut StartupCheckReport
         // missing (host without МКЦ). Both are common; no log noise.
         _ => {}
     }
+
+    // Session-ordering check (0.3.12 invariant): `session required
+    // pam_certauth.so` MUST come AFTER `pam_systemd.so` / @include
+    // common-session, otherwise XDG_SESSION_ID is not yet in PAM env when
+    // pam_sm_open_session runs → UpdateSessionTarget never sent → monitord
+    // can't drive logind Logout/Lock on USB removal.
+    match (session_certauth_line, systemd_anchor_line) {
+        (Some(ses), Some(sys)) if ses < sys => {
+            report.push(StartupCheckRecord::error(
+                "pam_stack_session_misorder",
+                format!(
+                    "PAM session-phase misorder in {path}: 'session required pam_certauth.so' \
+                     (line {ses}) appears BEFORE pam_systemd.so / @include common-session \
+                     (line {sys}). XDG_SESSION_ID is not available during pam_sm_open_session \
+                     and UpdateSessionTarget is not sent → USB-removal Lock/Logout actions \
+                     will not work. Run: \
+                     sudo /usr/share/pam-certauth/integrate-pam.sh --unintegrate {path} && \
+                     sudo /usr/share/pam-certauth/integrate-pam.sh --mode=<your-mode> {path}",
+                    path = path.display(),
+                    ses = ses + 1,
+                    sys = sys + 1,
+                ),
+            ));
+        }
+        (Some(_), Some(_)) => {
+            report.push(StartupCheckRecord::info(
+                "pam_stack_session_ok",
+                format!(
+                    "PAM stack {path}: 'session required pam_certauth.so' correctly placed \
+                     after pam_systemd.so / @include common-session",
+                    path = path.display()
+                ),
+            ));
+        }
+        // session pam_certauth present but no systemd anchor: host has no
+        // systemd (sysvinit/OpenRC) or pam_systemd never wired in. The
+        // USB-removal logout via logind won't work in this layout anyway —
+        // surface as INFO so the operator at least sees the state.
+        (Some(_), None) => {
+            report.push(StartupCheckRecord::info(
+                "pam_stack_session_no_systemd",
+                format!(
+                    "PAM stack {path}: 'session required pam_certauth.so' present but no \
+                     pam_systemd.so / @include common-session detected — XDG_SESSION_ID \
+                     pathway unavailable, USB-removal Logout via logind will fall back to \
+                     placeholder targets",
+                    path = path.display()
+                ),
+            ));
+        }
+        // No session pam_certauth line at all → service not integrated for
+        // session phase. Stay silent (auth-only integrations exist).
+        _ => {}
+    }
 }
 
 fn is_certauth_include(line: &str) -> bool {
@@ -124,4 +191,45 @@ fn is_auth_parsec_mac(line: &str) -> bool {
         return false;
     }
     line.contains("pam_parsec_mac.so")
+}
+
+fn is_session_pam_certauth(line: &str) -> bool {
+    // Matches `session <control> pam_certauth.so [args...]` regardless of
+    // control field. Used by the 0.3.12 session-ordering check.
+    let mut it = line.split_whitespace();
+    let Some(phase) = it.next() else { return false };
+    if phase != "session" {
+        return false;
+    }
+    line.contains("pam_certauth.so")
+}
+
+fn is_session_pam_systemd(line: &str) -> bool {
+    // Direct `session <control> pam_systemd.so` line — Debian usually
+    // delivers this via @include common-session, but Astra SE custom
+    // stacks sometimes inline it; both shapes need to anchor our check.
+    let mut it = line.split_whitespace();
+    let Some(phase) = it.next() else { return false };
+    if phase != "session" {
+        return false;
+    }
+    line.contains("pam_systemd.so")
+}
+
+fn is_common_session_include(line: &str) -> bool {
+    // `@include common-session` or `@include common-session-noninteractive`.
+    // We do NOT recursively follow the include — on a healthy Debian/Astra
+    // host common-session contains pam_systemd, so its presence is a good
+    // proxy. Operators with custom common-session content will see
+    // pam_stack_session_no_systemd if they also omit the direct line.
+    let mut it = line.split_whitespace();
+    let Some(first) = it.next() else { return false };
+    if first != "@include" {
+        return false;
+    }
+    let Some(name) = it.next() else { return false };
+    if it.next().is_some() {
+        return false;
+    }
+    name == "common-session" || name == "common-session-noninteractive"
 }
