@@ -434,6 +434,7 @@ async fn send_error(stream: &mut UnixStream, code: u32, msg: &str) -> io::Result
     stream.write_all(&bytes).await
 }
 
+#[allow(clippy::too_many_lines)]
 async fn dispatch(msg: ClientMessage, event_tx: &mpsc::UnboundedSender<Event>) -> ServerMessage {
     match msg {
         ClientMessage::Hello { .. } => ServerMessage::Error {
@@ -515,6 +516,23 @@ async fn dispatch(msg: ClientMessage, event_tx: &mpsc::UnboundedSender<Event>) -
                 .send(Event::Ipc(IpcRequest::SessionClose {
                     session_id,
                     closed_at,
+                    reply: tx,
+                }))
+                .is_err()
+            {
+                return internal_error();
+            }
+            await_reply(rx).await
+        }
+        ClientMessage::UpdateSessionTarget {
+            session_id,
+            new_target,
+        } => {
+            let (tx, rx) = oneshot::channel();
+            if event_tx
+                .send(Event::Ipc(IpcRequest::UpdateSessionTarget {
+                    session_id,
+                    new_target,
                     reply: tx,
                 }))
                 .is_err()

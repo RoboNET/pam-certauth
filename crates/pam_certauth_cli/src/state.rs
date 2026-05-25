@@ -20,7 +20,7 @@ use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
-use pam_certauth_proto::ServerMessage;
+use pam_certauth_proto::{ServerMessage, SessionTarget};
 
 use crate::logind::LogindSignal;
 use crate::registry::{ActiveSession, RegistryStore, SessionRegistry};
@@ -130,6 +130,20 @@ pub enum IpcRequest {
     GetActiveSessionByUid {
         /// Unix uid to look up.
         uid: u32,
+        /// Reply channel.
+        reply: oneshot::Sender<ServerMessage>,
+    },
+    /// Update the [`SessionTarget`] of an already-open registry entry.
+    ///
+    /// Emitted on receipt of a
+    /// [`pam_certauth_proto::ClientMessage::UpdateSessionTarget`] frame
+    /// (PAM session phase pushing the logind id it discovered via
+    /// `XDG_SESSION_ID`).
+    UpdateSessionTarget {
+        /// Session id to update.
+        session_id: Uuid,
+        /// New target.
+        new_target: SessionTarget,
         /// Reply channel.
         reply: oneshot::Sender<ServerMessage>,
     },
@@ -278,6 +292,37 @@ async fn handle_ipc(
             }
             persist_async(&cfg.registry_store, registry.snapshot()).await;
             let _ = reply.send(ServerMessage::Ack);
+        }
+        IpcRequest::UpdateSessionTarget {
+            session_id,
+            new_target,
+            reply,
+        } => {
+            // Persist on success so the new target survives a daemon
+            // restart — without persistence the next monitord boot would
+            // resurrect the pre-update Tty/Display/Unknown target and the
+            // Lock/Logout dispatch would break in exactly the same way as
+            // the bug this whole pathway fixes (0.3.10 production:
+            // "Logout requested but session has no logind id").
+            let msg = match registry.update_target(session_id, new_target.clone()) {
+                Ok(()) => {
+                    persist_async(&cfg.registry_store, registry.snapshot()).await;
+                    tracing::info!(
+                        target: "pam_certauth.monitord",
+                        session_id = %session_id,
+                        ?new_target,
+                        "session target updated"
+                    );
+                    ServerMessage::SessionTargetUpdated {
+                        session_id: session_id.to_string(),
+                    }
+                }
+                Err(err) => ServerMessage::Error {
+                    code: pam_certauth_proto::error_codes::BAD_REQUEST,
+                    message: format!("update_session_target {session_id}: {err}"),
+                },
+            };
+            let _ = reply.send(msg);
         }
     }
 }
