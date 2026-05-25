@@ -9,12 +9,15 @@
 #![allow(clippy::unwrap_used)]
 #![allow(clippy::expect_used)]
 #![allow(clippy::doc_markdown)]
+#![allow(clippy::panic)]
+#![allow(clippy::items_after_statements)]
 
 #[cfg(feature = "astra-mac")]
 use pam_certauth_core::config::validated::CertIntegrityMode;
+use pam_certauth_core::config::validated::MacRuntimeMode;
 use pam_certauth_core::config::RawConfig;
-#[cfg(feature = "astra-mac")]
 use pam_certauth_core::config::ValidatedConfig;
+use pam_certauth_core::Error;
 
 /// Base TOML fixture; uses `/bin/sh` as a trivially-existing path so the
 /// trust-section PEM sniff is intentionally bypassed for these
@@ -123,6 +126,111 @@ fn rejects_legacy_field_cert_mac_level() {
         msg.contains("cert_mac_level") || msg.contains("unknown field"),
         "unexpected error: {msg}"
     );
+}
+
+#[test]
+fn runtime_default_is_auto() {
+    let raw: RawConfig = toml::from_str(base_config()).expect("parse base");
+    assert!(raw.mac.runtime.is_none(), "default raw is None");
+    // Validate via a temp PEM anchor so the full validator runs.
+    const FAKE_PEM_CERT: &str = "-----BEGIN CERTIFICATE-----\n\
+        MIIBfTCCAS6gAwIBAgIUcheCkYc5VvuuVlZ8KqfA8R6Bvs8wCgYIKoZIzj0EAwIw\n\
+        -----END CERTIFICATE-----\n";
+    let tmp = tempfile::tempdir().expect("tmpdir");
+    let anchor = tmp.path().join("anchor.pem");
+    std::fs::write(&anchor, FAKE_PEM_CERT).expect("write anchor");
+    let toml = base_config().replace(
+        "anchors = [\"/bin/sh\"]",
+        &format!("anchors = [{:?}]", anchor.to_string_lossy()),
+    );
+    let raw: RawConfig = toml::from_str(&toml).expect("parse");
+    let validated = ValidatedConfig::try_from(&raw).expect("validate");
+    assert_eq!(validated.mac.runtime, MacRuntimeMode::Auto);
+}
+
+#[test]
+fn runtime_disabled_with_cert_integrity_required_rejected() {
+    // Even on `astra-mac` builds, disabled + required is logically inconsistent.
+    const FAKE_PEM_CERT: &str = "-----BEGIN CERTIFICATE-----\n\
+        MIIBfTCCAS6gAwIBAgIUcheCkYc5VvuuVlZ8KqfA8R6Bvs8wCgYIKoZIzj0EAwIw\n\
+        -----END CERTIFICATE-----\n";
+    let tmp = tempfile::tempdir().expect("tmpdir");
+    let anchor = tmp.path().join("anchor.pem");
+    std::fs::write(&anchor, FAKE_PEM_CERT).expect("write anchor");
+    let base = base_config().replace(
+        "anchors = [\"/bin/sh\"]",
+        &format!("anchors = [{:?}]", anchor.to_string_lossy()),
+    );
+    let toml = format!(
+        "{base}\n\
+         [mac]\n\
+         cert_integrity = \"required\"\n\
+         runtime = \"disabled\"\n",
+    );
+    let raw: RawConfig = toml::from_str(&toml).expect("parse");
+    let err = ValidatedConfig::try_from(&raw).expect_err("must reject");
+    match err {
+        Error::ConfigInvalid { reason } => {
+            assert!(
+                reason.contains("disabled") && reason.contains("required"),
+                "unexpected reason: {reason}"
+            );
+        }
+        other => panic!("unexpected error variant: {other:?}"),
+    }
+}
+
+#[cfg(not(feature = "astra-mac"))]
+#[test]
+fn runtime_required_without_astra_mac_feature_rejected() {
+    const FAKE_PEM_CERT: &str = "-----BEGIN CERTIFICATE-----\n\
+        MIIBfTCCAS6gAwIBAgIUcheCkYc5VvuuVlZ8KqfA8R6Bvs8wCgYIKoZIzj0EAwIw\n\
+        -----END CERTIFICATE-----\n";
+    let tmp = tempfile::tempdir().expect("tmpdir");
+    let anchor = tmp.path().join("anchor.pem");
+    std::fs::write(&anchor, FAKE_PEM_CERT).expect("write anchor");
+    let base = base_config().replace(
+        "anchors = [\"/bin/sh\"]",
+        &format!("anchors = [{:?}]", anchor.to_string_lossy()),
+    );
+    let toml = format!(
+        "{base}\n\
+         [mac]\n\
+         runtime = \"required\"\n",
+    );
+    let raw: RawConfig = toml::from_str(&toml).expect("parse");
+    let err = ValidatedConfig::try_from(&raw).expect_err("must reject");
+    match err {
+        Error::ConfigInvalid { reason } => {
+            assert!(
+                reason.contains("runtime") && reason.contains("astra-mac"),
+                "unexpected reason: {reason}"
+            );
+        }
+        other => panic!("unexpected error variant: {other:?}"),
+    }
+}
+
+#[test]
+fn runtime_disabled_parses_with_optional_integrity() {
+    const FAKE_PEM_CERT: &str = "-----BEGIN CERTIFICATE-----\n\
+        MIIBfTCCAS6gAwIBAgIUcheCkYc5VvuuVlZ8KqfA8R6Bvs8wCgYIKoZIzj0EAwIw\n\
+        -----END CERTIFICATE-----\n";
+    let tmp = tempfile::tempdir().expect("tmpdir");
+    let anchor = tmp.path().join("anchor.pem");
+    std::fs::write(&anchor, FAKE_PEM_CERT).expect("write anchor");
+    let base = base_config().replace(
+        "anchors = [\"/bin/sh\"]",
+        &format!("anchors = [{:?}]", anchor.to_string_lossy()),
+    );
+    let toml = format!(
+        "{base}\n\
+         [mac]\n\
+         runtime = \"disabled\"\n",
+    );
+    let raw: RawConfig = toml::from_str(&toml).expect("parse");
+    let validated = ValidatedConfig::try_from(&raw).expect("validate");
+    assert_eq!(validated.mac.runtime, MacRuntimeMode::Disabled);
 }
 
 #[test]

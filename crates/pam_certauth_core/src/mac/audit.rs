@@ -55,6 +55,14 @@ pub const EVENT_MAC_SOCKET_LABEL: &str = "mac_socket_label_set";
 /// `mac_sessions_file_label_warning` — fd-based irelax labeling of the
 /// `sessions.json` tempfile failed; write continued best-effort.
 pub const EVENT_MAC_SESSIONS_FILE_WARN: &str = "mac_sessions_file_label_warning";
+/// `mac_runtime_fallback` — `[mac].runtime = "auto"` and the kernel
+/// МКЦ subsystem is not available, so the daemon fell back to the
+/// no-op `StubBackend`.
+pub const EVENT_MAC_RUNTIME_FALLBACK: &str = "mac_runtime_fallback";
+/// `mac_runtime_disabled` — `[mac].runtime = "disabled"` and the
+/// binary was built with `astra-mac`; the stub backend is used
+/// intentionally.
+pub const EVENT_MAC_RUNTIME_DISABLED: &str = "mac_runtime_disabled";
 
 /// Emit `mac_skipped`.
 pub fn emit_mac_skipped(reason: &str) {
@@ -266,6 +274,26 @@ pub fn emit_cert_ext_parse_failed(pam_user: &str, ident: &CertIdent, err: &str) 
         F_cert_fingerprint = ident.fingerprint.as_str(),
         F_error = err,
         "MAX_INTEGRITY ext parse failed"
+    );
+}
+
+/// Emit `mac_runtime_fallback` — `[mac].runtime = "auto"` resolved to
+/// the stub backend because the kernel МКЦ subsystem is unavailable.
+pub fn emit_runtime_fallback(reason: &str) {
+    tracing::warn!(
+        target: "mac.audit",
+        F_event = EVENT_MAC_RUNTIME_FALLBACK,
+        F_reason = reason,
+    );
+}
+
+/// Emit `mac_runtime_disabled` — operator explicitly disabled the MAC
+/// backend via `[mac].runtime = "disabled"` even though the binary was
+/// built with `astra-mac`.
+pub fn emit_runtime_disabled() {
+    tracing::info!(
+        target: "mac.audit",
+        F_event = EVENT_MAC_RUNTIME_DISABLED,
     );
 }
 
