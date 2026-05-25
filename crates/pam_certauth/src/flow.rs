@@ -386,6 +386,18 @@ where
     P: FnMut(&str) -> Result<SecretString, PamConvError>,
 {
     use pam_certauth_core::config::validated::{CryptoBackend, Mode};
+    // Show a one-line greeter banner identifying THIS ATM before any
+    // prompt. fly-dm forwards `PAM_TEXT_INFO` to the greeter UI when
+    // `greeter-show-messages` is enabled, so the operator and the
+    // engineer at the ATM see the same prefix that the cert is bound to.
+    // Best-effort: if the conv layer drops it, auth continues unchanged.
+    let prefix_len = deps.host_id_hash.len().min(8);
+    let prefix = &deps.host_id_hash[..prefix_len];
+    io.show_info(&format!(
+        "Этот банкомат: host_id={prefix} (source={source:?})",
+        prefix = prefix,
+        source = deps.host_id_source,
+    ));
     match deps.cfg.mode {
         Mode::Pkcs12 => {
             authenticate_pkcs12(deps, io, pam_user, pam_service, session_id, prompt_pin)
