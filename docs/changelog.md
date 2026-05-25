@@ -1,5 +1,35 @@
 # Changelog
 
+## [0.3.5] — 2026-05-25
+
+### Fixed
+
+- USB partition iteration теперь делает fallback на следующий раздел
+  при ASN.1-ошибке парсинга PKCS#12 (т.е. «файл по нашему пути есть,
+  но это не P12»). Раньше такая коллизия имён — типичная для
+  USB-устройств с несколькими разделами и Apple-форматированных
+  носителей — мгновенно роняла auth с
+  `asn1_check_tlen: wrong tag, Type=PKCS12`, не пробуя оставшиеся
+  партиции.
+
+### Security
+
+- Fallback срабатывает ТОЛЬКО на ASN.1-fail (pre-parse БЕЗ пароля).
+  Ошибки MAC verify / decrypt / chain validation (всё, что требует
+  пароля или валидации сертификата) остаются fail-closed без
+  перебора — не создаёт PIN-oracle и не позволяет chain-probing по
+  разделам.
+
+### Added
+
+- `pam_certauth_core::pkcs12::validate_p12_envelope(&[u8])` —
+  pure-функция, проверяющая ASN.1-конверт PKCS#12 без обращения к
+  паролю. Используется в `flow.rs::authenticate_pkcs12` как граница
+  между «файл на USB не P12 → пробуем следующий раздел» и «файл —
+  валидный P12, но не расшифровывается → fail-closed».
+- `FlowError::P12Envelope` (мапится на `PAM_AUTHINFO_UNAVAIL` (9))
+  для случая «ни одна партиция не дала валидного P12-конверта».
+
 ## [0.3.3] — unreleased
 
 ### Fixed
