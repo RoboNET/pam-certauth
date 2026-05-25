@@ -64,7 +64,38 @@ mod host_identity {
             }
         }
         let chain = HostIdentityResolver::from_validated(&cfg.host_identity, PathBuf::from("/"));
+        // Probe every configured source first and emit one INFO line per
+        // source so the syslog has the full picture of which sources
+        // answered and which failed. This is what admins eyeball on the
+        // ATM to register a fresh box into the registry, instead of
+        // running `sha256sum /etc/machine-id` by hand. `probe_all` does
+        // NOT influence selection — `resolve()` still keeps its
+        // first-working-wins policy.
+        for probe in chain.probe_all() {
+            match &probe.outcome {
+                Ok(r) => tracing::info!(
+                    target: "pam_certauth.host_identity",
+                    source = ?probe.source,
+                    raw = %r.raw,
+                    host_id_hash_prefix = %r.hash_prefix(),
+                    host_id_hash = %r.hash_hex,
+                    "host_identity: probe ok"
+                ),
+                Err(reason) => tracing::info!(
+                    target: "pam_certauth.host_identity",
+                    source = ?probe.source,
+                    error = %reason,
+                    "host_identity: probe error"
+                ),
+            }
+        }
         let id = chain.resolve()?;
+        tracing::info!(
+            target: "pam_certauth.host_identity",
+            source = ?id.source_kind,
+            host_id_hash_prefix = %id.hash_prefix(),
+            "host_identity: probe selected (first successful)"
+        );
         Ok((id.source_kind, id.raw, id.hash_hex))
     }
 

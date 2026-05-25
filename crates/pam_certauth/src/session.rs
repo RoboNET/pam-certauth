@@ -5,15 +5,19 @@
 //! by tests under `--features mac-tests` without dragging in the cdylib
 //! PAM symbols.
 
+use pam_certauth_core::config::validated::MacRuntimeMode;
 use pam_certauth_core::config::ValidatedConfig;
 use pam_certauth_core::ipc::{
     ConnectPerCall, FailModeWrapper, MonitorClient, MonitorClientFactory,
 };
-use pam_certauth_core::mac::backend::MacBackend;
 #[cfg(feature = "astra-mac")]
-use pam_certauth_core::mac::backend::ParsecBackend;
-#[cfg(not(feature = "astra-mac"))]
+use pam_certauth_core::mac::audit::{
+    emit_mac_runtime_required, emit_runtime_disabled, emit_runtime_fallback,
+};
+use pam_certauth_core::mac::backend::MacBackend;
 use pam_certauth_core::mac::backend::StubBackend;
+#[cfg(feature = "astra-mac")]
+use pam_certauth_core::mac::backend::{MacRuntime, ParsecBackend};
 use pam_certauth_core::mac::orchestrator::{
     apply_session_policy, OrchestratorError, SessionContext,
 };
@@ -25,17 +29,58 @@ const PAM_AUTH_ERR: i32 = 7;
 /// `PAM_SESSION_ERR` — keep in lock-step with `entry.rs`.
 const PAM_SESSION_ERR: i32 = 14;
 
-/// Build the active backend.  On Astra hosts (`astra-mac` feature) this
-/// is the `ParsecBackend`; everywhere else the `StubBackend` is used
-/// and the orchestrator's runtime probe will return `Unavailable`.
-fn build_backend() -> Box<dyn MacBackend> {
+/// Build the active backend, honouring `[mac].runtime` at runtime
+/// (independent of the compile-time `astra-mac` feature).
+///
+/// Selection matrix (a — compile-time astra-mac feature, k — kernel МКЦ
+/// active per `parsec_strict_mode`):
+///
+/// | runtime    | a=no             | a=yes, k=no                       | a=yes, k=yes |
+/// |------------|------------------|-----------------------------------|--------------|
+/// | required   | rejected at cfg  | `Err(PAM_AUTH_ERR)` (fail-closed) | Parsec       |
+/// | auto       | Stub             | Stub + `mac_runtime_fallback`     | Parsec       |
+/// | disabled   | Stub             | Stub + `mac_runtime_disabled`     | Stub + log   |
+///
+/// Returns `Err(PAM_AUTH_ERR)` only in the `required` + kernel-missing
+/// combination; everything else degrades to a working backend.
+#[cfg_attr(not(feature = "astra-mac"), allow(clippy::unnecessary_wraps))]
+fn build_backend(mac_runtime: MacRuntimeMode) -> Result<Box<dyn MacBackend>, i32> {
     #[cfg(feature = "astra-mac")]
     {
-        Box::new(ParsecBackend::new())
+        match mac_runtime {
+            MacRuntimeMode::Disabled => {
+                emit_runtime_disabled();
+                Ok(Box::new(StubBackend::new()))
+            }
+            MacRuntimeMode::Required => {
+                let backend = ParsecBackend::new();
+                if matches!(backend.probe(), MacRuntime::Active) {
+                    Ok(Box::new(backend))
+                } else {
+                    emit_mac_runtime_required("kernel parsec subsystem not active");
+                    Err(PAM_AUTH_ERR)
+                }
+            }
+            MacRuntimeMode::Auto => {
+                let backend = ParsecBackend::new();
+                if matches!(backend.probe(), MacRuntime::Active) {
+                    Ok(Box::new(backend))
+                } else {
+                    emit_runtime_fallback(
+                        "kernel parsec subsystem not active (parsec_strict_mode != 1)",
+                    );
+                    Ok(Box::new(StubBackend::new()))
+                }
+            }
+        }
     }
     #[cfg(not(feature = "astra-mac"))]
     {
-        Box::new(StubBackend::new())
+        // Stub-only builds always use the stub backend. `runtime = "required"`
+        // is rejected by validate_mac() in this configuration, so we should
+        // only see `Auto` or `Disabled` here.
+        let _ = mac_runtime;
+        Ok(Box::new(StubBackend::new()))
     }
 }
 
@@ -55,7 +100,7 @@ pub fn run_open_session_pipeline(
     ctx: &AuthContext,
     pam_user: &str,
 ) -> Result<(), i32> {
-    let backend = build_backend();
+    let backend = build_backend(cfg.mac.runtime)?;
     // Build a production monitor client matching `di::wire`'s policy so we
     // can pair the `open_session` registered during `pam_sm_authenticate`
     // with a `close_session` on MAC denial. Without this, a session whose

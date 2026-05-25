@@ -36,7 +36,8 @@ use pam_certauth_core::mount_guard::{MountGuard, MountOps};
 use pam_certauth_core::pam_conv::PamConvError;
 use pam_certauth_core::pam_data::AuthContext;
 use pam_certauth_core::pkcs12::{
-    acquire_p12_material_with_prompter, AcquireError, LoadedKeyMaterial, Pkcs12Error,
+    acquire_p12_material_with_prompter, validate_p12_envelope, AcquireError, LoadedKeyMaterial,
+    P12EnvelopeError, Pkcs12Error,
 };
 use pam_certauth_core::trust::openssl_verifier::Stage2TrustVerifier;
 use pam_certauth_core::usb::{UsbDevice, UsbError};
@@ -68,6 +69,16 @@ pub enum FlowError {
     /// PAM conversation function failed (no conv item, non-utf8 PIN, ...).
     #[error("pam conversation: {0}")]
     Conv(#[from] PamConvError),
+
+    /// No USB partition produced a syntactically valid PKCS#12 envelope.
+    ///
+    /// Distinct from [`Self::Discovery`] (no file at the expected path)
+    /// and from [`Self::Pkcs12`] (file is a valid envelope but PIN /
+    /// chain rejected): this is the "found a file with the right name,
+    /// but it is not actually a PKCS#12 bundle" case, and we already
+    /// burned every USB partition trying to find one.
+    #[error("invalid PKCS#12 envelope on USB: {0}")]
+    P12Envelope(#[from] P12EnvelopeError),
 
     /// PIN-retry loop exhausted its attempts.
     #[error("max PIN tries")]
@@ -182,6 +193,7 @@ impl FlowError {
             Self::Usb(_)
             | Self::Mount(_)
             | Self::Discovery(_)
+            | Self::P12Envelope(_)
             | Self::Pkcs11OpensslEngineNotImplemented
             | Self::Pkcs11ModulePathMissingInConfig
             | Self::Pkcs11(
@@ -280,6 +292,15 @@ pub trait FlowIo {
     ) -> Result<DiscoveredCreds, DiscoveryError> {
         discover_credentials(mountpoint, pattern, pam_user)
     }
+
+    /// Surface an admin-actionable diagnostic message to the user via
+    /// `PAM_TEXT_INFO` (lock screen / terminal). Best-effort: if the PAM
+    /// conv item is unavailable or the application rejects the message,
+    /// the flow MUST continue — this never changes the auth verdict.
+    ///
+    /// Default impl is a no-op so test fakes don't need updating unless
+    /// they want to capture the messages.
+    fn show_info(&self, _msg: &str) {}
 }
 
 /// All runtime collaborators required by [`authenticate`].
@@ -365,6 +386,18 @@ where
     P: FnMut(&str) -> Result<SecretString, PamConvError>,
 {
     use pam_certauth_core::config::validated::{CryptoBackend, Mode};
+    // Show a one-line greeter banner identifying THIS ATM before any
+    // prompt. fly-dm forwards `PAM_TEXT_INFO` to the greeter UI when
+    // `greeter-show-messages` is enabled, so the operator and the
+    // engineer at the ATM see the same prefix that the cert is bound to.
+    // Best-effort: if the conv layer drops it, auth continues unchanged.
+    let prefix_len = deps.host_id_hash.len().min(8);
+    let prefix = &deps.host_id_hash[..prefix_len];
+    io.show_info(&format!(
+        "Этот банкомат: host_id={prefix} (source={source:?})",
+        prefix = prefix,
+        source = deps.host_id_source,
+    ));
     match deps.cfg.mode {
         Mode::Pkcs12 => {
             authenticate_pkcs12(deps, io, pam_user, pam_service, session_id, prompt_pin)
@@ -450,8 +483,11 @@ where
         .as_deref()
         .unwrap_or(pam_certauth_core::discovery::DEFAULT_PKCS12_PATH_PATTERN);
     let mut last_discovery_err: Option<DiscoveryError> = None;
+    let mut last_envelope_err: Option<P12EnvelopeError> = None;
     let mut bound: Option<BoundUsb<I::Ops>> = None;
+    let mut candidates_tried: usize = 0;
     for candidate in usb_devices {
+        candidates_tried += 1;
         tracing::info!(
             target: "pam_certauth.flow",
             devnode = ?candidate.devnode,
@@ -464,10 +500,54 @@ where
             mountpoint,
             guard: mount,
         } = io.mount(&candidate)?;
+        tracing::info!(
+            target: "pam_certauth.flow",
+            devnode = ?candidate.devnode,
+            mountpoint = %mountpoint.display(),
+            "candidate mounted"
+        );
         match io.discover(&mountpoint, pkcs12_pattern, pam_user) {
             Ok(creds) => {
-                bound = Some((candidate, mountpoint, mount, creds));
-                break;
+                tracing::info!(
+                    target: "pam_certauth.flow",
+                    devnode = ?candidate.devnode,
+                    p12_path = %creds.p12_path.display(),
+                    p12_bytes = creds.p12_bytes.len(),
+                    "p12 found"
+                );
+                // Pre-parse the outer ASN.1 envelope WITHOUT the PIN.
+                // A file at the expected path that is not actually a
+                // PKCS#12 bundle (typical for multi-partition Apple-
+                // formatted USB media where filenames coincidentally
+                // collide) is a safe fallback signal: no password was
+                // touched, no MAC was verified, no chain was probed —
+                // so trying the next partition cannot create a PIN-
+                // oracle.  Failures that DO require the password
+                // (wrong PIN / MAC verify / decrypt / chain validation)
+                // happen later in `acquire_p12_material_with_prompter`
+                // and remain fail-closed without partition iteration.
+                match validate_p12_envelope(&creds.p12_bytes) {
+                    Ok(()) => {
+                        tracing::info!(
+                            target: "pam_certauth.flow",
+                            devnode = ?candidate.devnode,
+                            "p12 envelope parsed (pre-PIN ASN.1 check ok)"
+                        );
+                        bound = Some((candidate, mountpoint, mount, creds));
+                        break;
+                    }
+                    Err(env_err) => {
+                        tracing::warn!(
+                            target: "pam_certauth.flow",
+                            mountpoint = %mountpoint.display(),
+                            error = %env_err,
+                            ".p12 found but ASN.1 envelope is invalid, trying next partition",
+                        );
+                        // `mount` guard drops here → umount + rmdir.
+                        drop(mount);
+                        last_envelope_err = Some(env_err);
+                    }
+                }
             }
             Err(DiscoveryError::P12NotFound { path }) => {
                 tracing::info!(
@@ -483,17 +563,37 @@ where
             Err(other) => return Err(FlowError::Discovery(other)),
         }
     }
-    let (dev, _mountpoint, mount, creds) = bound.ok_or_else(|| {
-        FlowError::Discovery(
-            last_discovery_err.unwrap_or_else(|| DiscoveryError::P12NotFound {
+    let Some((dev, _mountpoint, mount, creds)) = bound else {
+        // Prefer the more informative envelope error when present —
+        // it tells the operator "we DID see a .p12 but it was junk",
+        // which is a different fix than "no .p12 anywhere".
+        if let Some(env_err) = last_envelope_err {
+            return Err(FlowError::P12Envelope(env_err));
+        }
+        return Err(FlowError::Discovery(last_discovery_err.unwrap_or_else(
+            || DiscoveryError::P12NotFound {
                 path: PathBuf::from(pkcs12_pattern),
-            }),
-        )
-    })?;
+            },
+        )));
+    };
 
     // Step 5 — PIN-retry loop.
     let loaded: LoadedKeyMaterial =
-        acquire_p12_material_with_prompter(&creds.p12_bytes, 3, &mut prompt_pin)?;
+        match acquire_p12_material_with_prompter(&creds.p12_bytes, 3, &mut prompt_pin) {
+            Ok(m) => m,
+            Err(AcquireError::MaxTries) => {
+                // Try to read the cert plaintext from the .p12 (newer issuance
+                // tooling embeds the leaf cert outside the encrypted SafeContents
+                // so it can be inspected without the PIN). When that works, we
+                // can surface the host/user binding the cert is bound to so the
+                // engineer can match it against the deployment registry. If the
+                // .p12 predates that change and the cert is still encrypted,
+                // parsing fails gracefully and we fall back to a generic message.
+                io.show_info(&p12_wrong_pin_diagnostic(&creds.p12_bytes));
+                return Err(FlowError::MaxTries);
+            }
+            Err(e) => return Err(FlowError::from(e)),
+        };
 
     // Step 6 — challenge-response (proves we hold the private key).
     let priv_key = loaded.private_key()?;
@@ -512,6 +612,13 @@ where
 
     // Step 8 — trust verification (path build, signatures, CRLs, pinning).
     let verified = deps.trust.verify(&loaded.end_entity, &presented)?;
+    tracing::info!(
+        target: "pam_certauth.flow",
+        devnode = ?dev.devnode,
+        cert_subject = ?loaded.end_entity.subject_cn().ok(),
+        cert_serial = %loaded.end_entity.serial_hex().to_lowercase(),
+        "cert chain validated"
+    );
 
     // Step 9 — cert scope (cert authorises this host).
     //
@@ -521,7 +628,33 @@ where
     // back to `[[user_mapping]]`. Runs BEFORE Step 10 so that cert-
     // extension errors (e.g. missing `pam_cert_host_binding`) surface
     // as the real cause instead of being masked by a stale mapping.
-    verify_host_binding(loaded.end_entity.x509(), deps.host_id_hash)?;
+    if let Err(e) = verify_host_binding(loaded.end_entity.x509(), deps.host_id_hash) {
+        // Surface an admin-actionable diagnostic on the lock screen /
+        // terminal: the host_id_hash of this machine + the source kind
+        // is what the cert MUST encode. Logged at warn so syslog has a
+        // record even when the conv layer drops the message.
+        tracing::warn!(
+            target: "pam_certauth.flow",
+            error = %e,
+            host_id_hash = %deps.host_id_hash,
+            host_id_source = ?deps.host_id_source,
+            pam_user = %pam_user,
+            "host_binding rejected; surfacing diagnostic to user"
+        );
+        // Show the short prefix on-screen (8 hex chars are eyeballable
+        // on a small terminal); the full hash already lives in syslog
+        // via the warn! above.
+        let prefix_len = deps.host_id_hash.len().min(8);
+        let prefix = &deps.host_id_hash[..prefix_len];
+        io.show_info(&format!(
+            "Сертификат выпущен для другого банкомата.\n\
+             host_id этой машины: {prefix} (source={source:?})\n\
+             Передайте администратору для перевыпуска.",
+            prefix = prefix,
+            source = deps.host_id_source,
+        ));
+        return Err(FlowError::CertScope(e));
+    }
 
     // Step 10 — user authorisation. Cert-driven path (user_binding
     // extension present) wins over the legacy `[[user_mapping]]`. Only
@@ -613,6 +746,14 @@ where
             "monitor open_session failed (non-fatal)"
         );
     }
+
+    tracing::info!(
+        target: "pam_certauth.flow",
+        pam_user = %pam_user,
+        candidates_tried,
+        cert_serial = %loaded.end_entity.serial_hex().to_lowercase(),
+        "auth result: success (pkcs12)"
+    );
 
     Ok(FlowOutcome {
         auth_ctx,
@@ -1082,11 +1223,20 @@ pub struct RealFlowIo {
     /// when the flow tries multiple partitions for the same session id.
     /// `Cell` is fine — we run single-threaded inside `pam_sm_authenticate`.
     mount_seq: std::cell::Cell<u32>,
+    /// Optional live PAM handle (as `usize` to avoid raw-ptr Send/Sync
+    /// linting; we never share across threads). When `Some`, `show_info`
+    /// drives `PAM_TEXT_INFO` via the conv callback; when `None` it is a
+    /// silent no-op (tests / e2e on tmpfs).
+    pamh: Option<usize>,
 }
 
 #[cfg(target_os = "linux")]
 impl RealFlowIo {
     /// Build a [`RealFlowIo`] with the standard `mount_seq` starting at 0.
+    ///
+    /// `show_info` is a silent no-op for instances built this way; use
+    /// [`Self::with_pamh`] from `pam_sm_authenticate` to wire the live
+    /// PAM conversation handle for `PAM_TEXT_INFO` diagnostics.
     #[must_use]
     pub fn new(
         timeout: std::time::Duration,
@@ -1102,7 +1252,19 @@ impl RealFlowIo {
             mountpoint_base,
             session_id,
             mount_seq: std::cell::Cell::new(0),
+            pamh: None,
         }
+    }
+
+    /// Attach the live PAM handle so [`FlowIo::show_info`] can deliver
+    /// diagnostics via `PAM_TEXT_INFO`. The handle is stored as `usize`
+    /// to keep the struct `Send`-friendly; the caller MUST ensure the
+    /// `RealFlowIo` does not outlive the `pam_sm_*` stack frame that
+    /// owns `pamh`.
+    #[must_use]
+    pub fn with_pamh(mut self, pamh: *mut pam_sys::pam_handle_t) -> Self {
+        self.pamh = Some(pamh as usize);
+        self
     }
 }
 
@@ -1136,6 +1298,27 @@ impl FlowIo for RealFlowIo {
             mountpoint: target,
             guard,
         })
+    }
+
+    fn show_info(&self, msg: &str) {
+        // Best-effort: PAM_TEXT_INFO failures MUST NOT change the auth
+        // verdict. We log conv failures at warn so admins still see them
+        // even if the lock screen swallows the message.
+        let Some(pamh_addr) = self.pamh else {
+            return;
+        };
+        let pamh = pamh_addr as *mut pam_sys::pam_handle_t;
+        // SAFETY: `pamh` was attached via `with_pamh` from the cdylib
+        // entry, which guarantees the handle is live for the entire
+        // `pam_sm_authenticate` call (and thus the entire flow). The
+        // call is single-threaded.
+        if let Err(e) = unsafe { crate::pam_conv::show_info(pamh, msg) } {
+            tracing::warn!(
+                target: "pam_certauth.flow",
+                error = %e,
+                "PAM_TEXT_INFO conv failed; admin diagnostic not delivered to user"
+            );
+        }
     }
 }
 
@@ -1247,6 +1430,57 @@ impl FlowIo for InMemoryFlowIo {
             guard,
         })
     }
+}
+
+/// Build the user-facing diagnostic shown when the .p12 PIN-retry loop
+/// is exhausted (MAC verify failure).
+///
+/// Tries to read the leaf cert from the .p12 without a password — newer
+/// issuance tooling embeds the cert in an unencrypted `SafeBag` so this
+/// path succeeds and we can tell the engineer which host and which user
+/// the cert was issued for, which is the actionable information for a
+/// "wrong flash" mix-up. When the cert is also encrypted (legacy bundles)
+/// we degrade gracefully to a generic password-wrong message.
+fn p12_wrong_pin_diagnostic(p12_bytes: &[u8]) -> String {
+    let Some(cert) = pam_certauth_core::pkcs12::try_extract_cert_without_pin(p12_bytes) else {
+        return "Пароль .p12 неверный. Проверьте флешку и попробуйте ещё раз.".to_string();
+    };
+    let host = match pam_certauth_core::x509::host_binding_ext::parse(cert.x509()) {
+        Ok(entries) => entries
+            .iter()
+            .map(|e| match e {
+                pam_certauth_core::x509::host_binding_ext::HostDescriptor::Wildcard => {
+                    "*".to_string()
+                }
+                pam_certauth_core::x509::host_binding_ext::HostDescriptor::Sha256Hex(h) => {
+                    format!("sha256:{h}")
+                }
+                pam_certauth_core::x509::host_binding_ext::HostDescriptor::Raw(r) => r.clone(),
+            })
+            .collect::<Vec<_>>()
+            .join(", "),
+        Err(_) => "<не указан>".to_string(),
+    };
+    let user = match pam_certauth_core::x509::user_binding_ext::parse(cert.x509()) {
+        Ok(entries) => entries
+            .iter()
+            .map(|e| match e {
+                pam_certauth_core::x509::user_binding_ext::UserDescriptor::Wildcard => {
+                    "*".to_string()
+                }
+                pam_certauth_core::x509::user_binding_ext::UserDescriptor::Exact(u) => u.clone(),
+            })
+            .collect::<Vec<_>>()
+            .join(", "),
+        Err(_) => "<не указан>".to_string(),
+    };
+    format!(
+        "Пароль .p12 неверный.\n\
+         Этот сертификат выпущен для:\n\
+           host_id_hash: {host}\n\
+           пользователь: {user}\n\
+         Проверьте, что вставлена нужная флешка."
+    )
 }
 
 #[cfg(test)]
@@ -2070,5 +2304,332 @@ journald_priority = false
         )
         .unwrap_err();
         assert!(matches!(err, FlowError::PreAuthHook(_)), "got {err:?}");
+    }
+
+    // -----------------------------------------------------------------
+    // Multi-partition USB iteration with PKCS#12 ASN.1-envelope fallback
+    // (regression test for the 0.3.5 bugfix: Apple-formatted USB with a
+    // foreign file at the expected path was breaking auth instead of
+    // probing the next partition).
+    // -----------------------------------------------------------------
+
+    /// A test-only [`MountOps`] that counts umount/rmdir calls so the
+    /// multi-partition tests can verify the previous partition was
+    /// torn down before moving on.
+    #[derive(Debug, Default)]
+    struct CountingMountOps {
+        umount_calls: std::sync::atomic::AtomicUsize,
+        rmdir_calls: std::sync::atomic::AtomicUsize,
+    }
+
+    impl MountOps for CountingMountOps {
+        fn mount(
+            &self,
+            _source: &Path,
+            _target: &Path,
+            _fs_type: &str,
+            _flags: pam_certauth_core::mount_guard::MountFlags,
+            _data: Option<&str>,
+        ) -> Result<(), pam_certauth_core::error::MountGuardError> {
+            Ok(())
+        }
+        fn umount(&self, _target: &Path) -> Result<(), pam_certauth_core::error::MountGuardError> {
+            self.umount_calls
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Ok(())
+        }
+        fn mkdir_mode_0700(
+            &self,
+            _path: &Path,
+        ) -> Result<(), pam_certauth_core::error::MountGuardError> {
+            Ok(())
+        }
+        fn rmdir(&self, _path: &Path) -> Result<(), pam_certauth_core::error::MountGuardError> {
+            self.rmdir_calls
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Ok(())
+        }
+    }
+
+    /// `FlowIo` that returns a configurable list of `(UsbDevice, mountpoint)`
+    /// pairs.  Each partition has its own mountpoint already pre-staged
+    /// (the test populates `certs/user.p12` ahead of time).  Mounts go
+    /// through a shared [`CountingMountOps`] so the test can verify
+    /// failed partitions were unmounted before the next one was tried.
+    struct MultiPartFlowIo {
+        partitions: Vec<(UsbDevice, PathBuf)>,
+        ops: Arc<CountingMountOps>,
+        // Per-partition mount-call counter (used as index into `partitions`).
+        mount_idx: std::cell::Cell<usize>,
+    }
+
+    impl MultiPartFlowIo {
+        fn new(partitions: Vec<(UsbDevice, PathBuf)>) -> Self {
+            Self {
+                partitions,
+                ops: Arc::new(CountingMountOps::default()),
+                mount_idx: std::cell::Cell::new(0),
+            }
+        }
+    }
+
+    impl FlowIo for MultiPartFlowIo {
+        type Ops = CountingMountOps;
+
+        fn wait_for_usb(&self) -> Result<Vec<UsbDevice>, UsbError> {
+            Ok(self.partitions.iter().map(|(d, _)| d.clone()).collect())
+        }
+
+        fn mount(&self, _dev: &UsbDevice) -> Result<MountSession<Self::Ops>, MountError> {
+            let i = self.mount_idx.get();
+            self.mount_idx.set(i + 1);
+            let mp = self.partitions[i].1.clone();
+            let guard = MountGuard::adopt(self.ops.clone(), mp.clone());
+            Ok(MountSession {
+                mountpoint: mp,
+                guard,
+            })
+        }
+    }
+
+    fn synth_dev(devnode: &str) -> UsbDevice {
+        UsbDevice {
+            devnode: PathBuf::from(devnode),
+            serial: Some("MULTI".into()),
+            vid: 0x1234,
+            pid: 0x5678,
+            fs_type: Some("vfat".into()),
+        }
+    }
+
+    /// Stage a directory that contains a `certs/user.p12` whose bytes
+    /// are not a valid PKCS#12 envelope (the "Apple plist with a
+    /// colliding name" case from the bug report).
+    fn stage_junk_mount() -> tempfile::TempDir {
+        let tmp = tempfile::tempdir().unwrap();
+        let certs_dir = tmp.path().join("certs");
+        std::fs::create_dir(&certs_dir).unwrap();
+        // Bytes that look like an Apple binary plist — definitely not
+        // an ASN.1 SEQUENCE.
+        let mut blob = Vec::from(&b"bplist00\xDE\xAD\xBE\xEF"[..]);
+        blob.extend(std::iter::repeat_n(0xA5_u8, 256));
+        std::fs::write(certs_dir.join("user.p12"), &blob).unwrap();
+        tmp
+    }
+
+    #[test]
+    fn falls_back_to_next_partition_on_p12_asn1_envelope_failure() {
+        // Partition 0: junk file at the expected path (ASN.1 parse fails).
+        // Partition 1: real PKCS#12 bundle — must be picked up.
+        let junk_tmp = stage_junk_mount();
+        let good_tmp = stage_p12_mount("leaf_rsa.p12", false);
+
+        let partitions = vec![
+            (synth_dev("/dev/sdz1"), junk_tmp.path().to_path_buf()),
+            (synth_dev("/dev/sdz2"), good_tmp.path().to_path_buf()),
+        ];
+        let io = MultiPartFlowIo::new(partitions);
+        let ops = io.ops.clone();
+
+        let verifier = build_verifier();
+        let cfg = minimal_cfg();
+        let mappings = vec![cn_mapping("alice", "alice")];
+        let monitor = StubClient;
+        let exec = pam_certauth_core::hooks::NoopExecutor::new();
+        let deps = Deps {
+            cfg: &cfg,
+            trust: &verifier,
+            monitor: &monitor,
+            hook_executor: &exec,
+            host_id_hash: "host-T-hash",
+            host_id_source: HostIdSourceKind::Override,
+            user_mappings: &mappings,
+            pam_target: pam_certauth_proto::SessionTarget::Unknown,
+        };
+
+        let outcome = authenticate(deps, &io, "alice", "ssh", "sess-fb1".into(), |_| {
+            Ok(SecretString::from("correct-pin"))
+        })
+        .expect("must fall back to partition 2 and authenticate");
+
+        assert_eq!(outcome.auth_ctx.cert_cn.as_deref(), Some("alice"));
+
+        // Partition 1 (junk) must have been unmounted before we moved
+        // on.  Partition 2 (good) stays mounted in the FlowOutcome.
+        let umounts = ops.umount_calls.load(std::sync::atomic::Ordering::SeqCst);
+        assert_eq!(
+            umounts, 1,
+            "expected exactly one umount (the junk partition); got {umounts}"
+        );
+        // rmdir fires from the MountGuard drop, paired with umount —
+        // junk partition was torn down completely, not just unmounted.
+        let rmdirs = ops.rmdir_calls.load(std::sync::atomic::Ordering::SeqCst);
+        assert_eq!(
+            rmdirs, 1,
+            "expected exactly one rmdir (the junk partition); got {rmdirs}"
+        );
+    }
+
+    #[test]
+    fn returns_p12_envelope_error_when_all_partitions_are_junk() {
+        // Both partitions have a file at the expected path but neither
+        // is a real PKCS#12 — auth must surface FlowError::P12Envelope
+        // (not Discovery::P12NotFound, since the file *was* found).
+        let junk1 = stage_junk_mount();
+        let junk2 = stage_junk_mount();
+
+        let partitions = vec![
+            (synth_dev("/dev/sdz1"), junk1.path().to_path_buf()),
+            (synth_dev("/dev/sdz2"), junk2.path().to_path_buf()),
+        ];
+        let io = MultiPartFlowIo::new(partitions);
+        let ops = io.ops.clone();
+
+        let verifier = build_verifier();
+        let cfg = minimal_cfg();
+        let mappings = vec![cn_mapping("alice", "alice")];
+        let monitor = StubClient;
+        let exec = pam_certauth_core::hooks::NoopExecutor::new();
+        let deps = Deps {
+            cfg: &cfg,
+            trust: &verifier,
+            monitor: &monitor,
+            hook_executor: &exec,
+            host_id_hash: "host-T-hash",
+            host_id_source: HostIdSourceKind::Override,
+            user_mappings: &mappings,
+            pam_target: pam_certauth_proto::SessionTarget::Unknown,
+        };
+
+        let err = authenticate(deps, &io, "alice", "ssh", "sess-fb2".into(), |_| {
+            Ok(SecretString::from("correct-pin"))
+        })
+        .unwrap_err();
+        assert!(
+            matches!(err, FlowError::P12Envelope(_)),
+            "expected P12Envelope, got {err:?}"
+        );
+        // Maps to PAM_AUTHINFO_UNAVAIL (9) — same bucket as Discovery
+        // failures (no usable credentials on the bus).
+        assert_eq!(err.pam_code(), 9);
+
+        // Both junk partitions must have been unmounted on their way out.
+        let umounts = ops.umount_calls.load(std::sync::atomic::Ordering::SeqCst);
+        assert_eq!(umounts, 2, "expected both junk partitions to umount");
+        // rmdir fires from the MountGuard drop, paired with umount —
+        // both junk partitions were torn down completely (no leaked
+        // mountpoint dirs in tmpfs).
+        let rmdirs = ops.rmdir_calls.load(std::sync::atomic::Ordering::SeqCst);
+        assert_eq!(rmdirs, 2, "expected both junk partitions to rmdir");
+    }
+
+    /// `wait_for_usb` returning an empty list must NOT iterate / mount
+    /// anything — it bubbles up as `Discovery::P12NotFound` (no usable
+    /// credential on the bus). Lock-down test against a future regression
+    /// where someone tries to "try anyway" on an empty device list.
+    #[test]
+    fn empty_usb_device_list_returns_p12_not_found() {
+        struct EmptyUsbFlowIo {
+            ops: Arc<CountingMountOps>,
+        }
+        impl FlowIo for EmptyUsbFlowIo {
+            type Ops = CountingMountOps;
+            fn wait_for_usb(&self) -> Result<Vec<UsbDevice>, UsbError> {
+                Ok(Vec::new())
+            }
+            fn mount(&self, _dev: &UsbDevice) -> Result<MountSession<Self::Ops>, MountError> {
+                panic!("mount() must not be called when wait_for_usb returned empty");
+            }
+        }
+
+        let io = EmptyUsbFlowIo {
+            ops: Arc::new(CountingMountOps::default()),
+        };
+        let ops = io.ops.clone();
+
+        let verifier = build_verifier();
+        let cfg = minimal_cfg();
+        let mappings = vec![cn_mapping("alice", "alice")];
+        let monitor = StubClient;
+        let exec = pam_certauth_core::hooks::NoopExecutor::new();
+        let deps = Deps {
+            cfg: &cfg,
+            trust: &verifier,
+            monitor: &monitor,
+            hook_executor: &exec,
+            host_id_hash: "host-T-hash",
+            host_id_source: HostIdSourceKind::Override,
+            user_mappings: &mappings,
+            pam_target: pam_certauth_proto::SessionTarget::Unknown,
+        };
+
+        let err = authenticate(deps, &io, "alice", "ssh", "sess-empty".into(), |_| {
+            Ok(SecretString::from("any"))
+        })
+        .unwrap_err();
+        assert!(
+            matches!(err, FlowError::Discovery(_)),
+            "expected Discovery error on empty USB list, got {err:?}"
+        );
+        // Nothing was mounted, so nothing should have been umount/rmdir'd.
+        assert_eq!(
+            ops.umount_calls.load(std::sync::atomic::Ordering::SeqCst),
+            0
+        );
+        assert_eq!(ops.rmdir_calls.load(std::sync::atomic::Ordering::SeqCst), 0);
+    }
+
+    /// Fail-closed invariant: a wrong PIN exhausts the per-partition
+    /// retry loop and returns `FlowError::MaxTries` **without** falling
+    /// back to the next USB partition. Multi-partition fallback is
+    /// restricted to pre-password failures (ASN.1 envelope) so we never
+    /// create a PIN oracle nor enable chain-probing across removable
+    /// media. Locks the boundary against future regressions where
+    /// someone adds `if pin_fail { try_next_partition() }`.
+    #[test]
+    fn wrong_pin_does_not_fall_back_to_next_partition() {
+        // Two partitions, both with valid PKCS#12 bundles. We only
+        // ever mount the first — the second exists to prove we did
+        // NOT iterate to it on PIN failure.
+        let part0 = stage_p12_mount("leaf_rsa.p12", false);
+        let part1 = stage_p12_mount("leaf_rsa.p12", false);
+
+        let partitions = vec![
+            (synth_dev("/dev/sdz1"), part0.path().to_path_buf()),
+            (synth_dev("/dev/sdz2"), part1.path().to_path_buf()),
+        ];
+        let io = MultiPartFlowIo::new(partitions);
+
+        let verifier = build_verifier();
+        let cfg = minimal_cfg();
+        let mappings = vec![cn_mapping("alice", "alice")];
+        let monitor = StubClient;
+        let exec = pam_certauth_core::hooks::NoopExecutor::new();
+        let deps = Deps {
+            cfg: &cfg,
+            trust: &verifier,
+            monitor: &monitor,
+            hook_executor: &exec,
+            host_id_hash: "host-T-hash",
+            host_id_source: HostIdSourceKind::Override,
+            user_mappings: &mappings,
+            pam_target: pam_certauth_proto::SessionTarget::Unknown,
+        };
+
+        let err = authenticate(deps, &io, "alice", "ssh", "sess-wpin".into(), |_| {
+            Ok(SecretString::from("definitely-wrong-pin"))
+        })
+        .unwrap_err();
+        assert!(
+            matches!(err, FlowError::MaxTries),
+            "wrong PIN must yield MaxTries, not partition fallback; got {err:?}"
+        );
+        // Only partition 0 was touched. mount_idx is the next index that
+        // *would* be returned, i.e. the number of mount() calls so far.
+        assert_eq!(
+            io.mount_idx.get(),
+            1,
+            "PIN failure must NOT iterate to partition 1 (would be a PIN oracle)"
+        );
     }
 }

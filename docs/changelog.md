@@ -1,5 +1,176 @@
 # Changelog
 
+## [0.3.7] — 2026-05-25
+
+### Critical
+
+- **`[mac].runtime` runtime-переключатель Parsec backend.** Новое поле
+  `[mac].runtime` (`required` | `auto` | `disabled`, default `auto`)
+  разводит compile-time feature `astra-mac` от runtime-выбора backend'а.
+  Боевой кейс: один `.deb` (собранный с `astra-mac`) ставится на
+  банкоматы с МКЦ и без — поведение управляется через `config.toml`.
+  - `disabled` — гарантированный `StubBackend`, никаких `pdp_*`
+    вызовов даже на сборке с `astra-mac` (фиксирует событие
+    `mac_runtime_disabled` в syslog).
+  - `required` — fail-closed: если `parsec_strict_mode()` ядра вернул
+    не «активно», аутентификация отклоняется с событием
+    `mac_runtime_required` (вместо тихой деградации).
+  - `auto` *(default)* — probe ядра на старте сессии; настоящий
+    `ParsecBackend` при активном МКЦ, fallback на `StubBackend` с
+    одноразовым `mac_runtime_fallback` (WARN) иначе.
+  - Валидация: `disabled + cert_integrity=required` и `required` без
+    `astra-mac` отвергаются на старте.
+  - Снимает блокер на банкомате МКЦ: `pam_parsec_mac: Can't obtain
+    required data` теперь решается выставлением `runtime = "disabled"`
+    + удалением `pam_parsec_mac` из стека, а не пересборкой `.deb`.
+
+### Диагностика
+
+- `HostIdentityResolver::probe_all()` — публичный API, возвращающий
+  одно `ProbeResult` на каждый сконфигурированный источник
+  (`[host_identity].sources`) без влияния на политику выбора
+  (`resolve()` остаётся first-working-wins). cdylib теперь на старте
+  каждой auth-сессии логирует по строке INFO на источник в
+  `pam_certauth.host_identity` (`probe ok` / `probe error` +
+  `probe selected`). Источник истины для регистрации банкомата в
+  реестре — этот лог; `sha256sum /etc/machine-id` вручную больше
+  не нужен и даёт расхождение, если `[host_identity].sources`
+  содержит не только `machine_id`.
+- `ResolvedHostId::hash_prefix()` — первые 8 hex символов sha256 для
+  on-screen диагностик. Сообщение `host_binding` mismatch на лок-скрине
+  банкомата теперь показывает короткий `host_id=a1b2c3d4 (source=…)`
+  вместо нечитаемых 64 hex. Полный hash остаётся в syslog.
+- fly-dm greeter baseline: в начале `pam_sm_authenticate` модуль
+  отправляет `PAM_TEXT_INFO` с короткой идентификацией машины
+  («Этот банкомат: host_id=… (source=…)»). `fly-dm` показывает её
+  в greeter UI при `greeter-show-messages = true` в
+  `/etc/X11/fly-dm/fly-dmrc` — инженер у банкомата мгновенно сверяет
+  hash с реестром, не заходя в shell.
+
+### Документация
+
+- `configuration.md` §«MAC integrity» — новая подсекция «Семантика
+  `runtime`» с матрицей `runtime × cert_integrity × astra-mac`,
+  таблица полей дополнена `runtime` и `warn_on_homedir_label_mismatch`.
+- `install.md` §8.5 переписан под runtime-переключатель: один и тот же
+  `.deb` для трёх сценариев (МКЦ выключен / включён / смешанный парк).
+  Подсекция §8.5.1 — baseline для fly-dm greeter.
+- `install.md` Troubleshooting — команда `journalctl … 'host_identity:
+  probe'` теперь источник истины для регистрации банкомата.
+
+### Внутреннее
+
+- Новые audit-события `mac_runtime_fallback` (WARN) и
+  `mac_runtime_disabled` (INFO) в target `mac.audit`.
+- `MacRuntimeMode` (validated layer) и `RawMacRuntimeMode`
+  (raw config) — pub re-exports через `pam_certauth_core::config::validated`
+  и `::config::raw`.
+- `build_backend(MacRuntimeMode)` в `pam_certauth::session` —
+  единственная точка решения «Parsec vs Stub», вместо двух compile-time
+  ветвей.
+
+## [0.3.6] — 2026-05-25
+
+### Диагностика
+
+- `host_id` логируется при каждом `resolve()` с указанием `source`,
+  `raw` и полного `host_id_hash` (target `pam_certauth.host_identity`).
+  Fallback на `unknown` тоже логируется. **Регистрация банкомата в
+  реестре теперь по факту resolved hash из syslog**, не ручное
+  вычисление `sha256(/etc/machine-id)` — устраняет drift между скриптом
+  выпуска cert'а и развёрнутыми `[host_identity].sources`.
+- `PAM_TEXT_INFO` на экране при `host_binding` mismatch: показывает
+  `host_id_hash` этой машины + тип источника + просьбу передать
+  админу. Текст дублируется в syslog (`warn`).
+- `PAM_TEXT_INFO` на экране при wrong .p12 PIN (`MAC verify`): если
+  cert лежит в незашифрованном SafeBag (новый issuance-скрипт), модуль
+  читает его без пароля и показывает host/user, для которых cert
+  выпущен — инженер сразу видит «вставлена не та флешка». Для
+  legacy-формата (cert тоже зашифрован) — обычное «пароль неверный».
+- Per-candidate USB-iteration логирование на уровне `info`: mount
+  succeeded → discovery → envelope parsed → chain validated → final
+  outcome. Был «провал тишины» 14 секунд между «trying USB candidate»
+  и concluding модулем; теперь каждый шаг видим в
+  `journalctl -t pam_certauth`.
+
+### Безопасность
+
+- Fail-closed на неверный PIN: не перебираем USB-партиции (lock-test
+  `wrong_pin_does_not_fall_back_to_next_partition`). Multi-partition
+  fallback остаётся ограничен pre-password failures (ASN.1 envelope),
+  иначе создаётся PIN-oracle / chain-probing по сменным носителям.
+- Multi-source matching по `[host_identity].sources` намеренно НЕ
+  делается (weakest-link bypass: атакующий с root спуфит самый
+  писабельный источник → байпасит host-binding). Это зафиксировано в
+  threat-model.md §4.10.
+
+### Документация
+
+- `install.md` — новая секция «Сертификат не принимается на банкомате»
+  (чек-лист: host_id из syslog → сверка с реестром → перевыпуск или
+  чтение cert plaintext из .p12). Обновлён раздел `host_binding
+  mismatch` (cert в новом формате читается без PIN).
+- `install.md` §8.5 — два сценария PAM-стека (с/без МКЦ PARSEC MAC)
+  с явной инструкцией где `pam_parsec_mac.so` нужен, а где он завалит
+  account-фазу с `Can't obtain required data`.
+- `threat-model.md` §4.10 — multi-source iteration по host_identity
+  явно отмечена как НЕ выполняемая по причине weakest-link bypass.
+
+### Внутреннее
+
+- Новый pub helper `pam_certauth_core::pkcs12::try_extract_cert_without_pin`
+  — best-effort чтение leaf-cert из PKCS#12 без пароля. Возвращает
+  `None` для legacy-формата. Используется wrong-PIN диагностикой.
+- Новый pub метод `FlowIo::show_info(&str)` (default no-op) — путь
+  доставки `PAM_TEXT_INFO` на экран. `RealFlowIo::with_pamh()`
+  привязывает live PAM-handle для cdylib; тест-фейки остаются без
+  изменений.
+
+### Deferred (планируется к 0.3.7)
+
+- `[mac].runtime = "auto" | "required" | "disabled"` — runtime-
+  переключатель Parsec backend без пересборки (сейчас compile-time
+  feature `astra-mac` решает однозначно). Боевой кейс: бинарь собран
+  с `astra-mac`, но на конкретной машине МКЦ-ядро выключено — нужен
+  fallback на StubBackend без пересборки .deb.
+- `HostIdentityResolver::probe_all()` — вернёт значения всех
+  сконфигурированных источников (а не только первого работающего)
+  для startup-логирования и admin-troubleshooting'а.
+- `host_id_hash_prefix` (первые 8 hex) в PAM_TEXT_INFO — полный
+  64-char hash на экране нечитаем.
+- Baseline-строка `«Этот банкомат: source=… hash_prefix=…»` для
+  fly-dm greeter (до prompt'а PIN).
+
+## [0.3.5] — 2026-05-25
+
+### Fixed
+
+- USB partition iteration теперь делает fallback на следующий раздел
+  при ASN.1-ошибке парсинга PKCS#12 (т.е. «файл по нашему пути есть,
+  но это не P12»). Раньше такая коллизия имён — типичная для
+  USB-устройств с несколькими разделами и Apple-форматированных
+  носителей — мгновенно роняла auth с
+  `asn1_check_tlen: wrong tag, Type=PKCS12`, не пробуя оставшиеся
+  партиции.
+
+### Security
+
+- Fallback срабатывает ТОЛЬКО на ASN.1-fail (pre-parse БЕЗ пароля).
+  Ошибки MAC verify / decrypt / chain validation (всё, что требует
+  пароля или валидации сертификата) остаются fail-closed без
+  перебора — не создаёт PIN-oracle и не позволяет chain-probing по
+  разделам.
+
+### Added
+
+- `pam_certauth_core::pkcs12::validate_p12_envelope(&[u8])` —
+  pure-функция, проверяющая ASN.1-конверт PKCS#12 без обращения к
+  паролю. Используется в `flow.rs::authenticate_pkcs12` как граница
+  между «файл на USB не P12 → пробуем следующий раздел» и «файл —
+  валидный P12, но не расшифровывается → fail-closed».
+- `FlowError::P12Envelope` (мапится на `PAM_AUTHINFO_UNAVAIL` (9))
+  для случая «ни одна партиция не дала валидного P12-конверта».
+
 ## [0.3.3] — unreleased
 
 ### Fixed

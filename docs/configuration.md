@@ -444,6 +444,8 @@ stub-бэкенд не может применить метки и не долж
 | `cert_integrity`                  | enum          | `"ignore"`   | Один из `required` / `optional` / `ignore`. См. ниже.                                                     |
 | `fallback_max_integrity.level`    | int (-128..127) | —          | Уровень fallback-метки, если расширение `MAX_INTEGRITY` отсутствует и `cert_integrity = "optional"`.       |
 | `fallback_max_integrity.categories` | string (hex или CSV) | —    | Битовая маска категорий для fallback. Пустая строка = `''B`.                                              |
+| `runtime`                         | enum          | `"auto"`     | Один из `required` / `auto` / `disabled`. См. ниже (0.3.7+).                                              |
+| `warn_on_homedir_label_mismatch`  | bool          | `true`       | Логировать `homedir_label_above_session_cap` при расхождении.                                             |
 
 ### Семантика `cert_integrity`
 
@@ -457,6 +459,36 @@ stub-бэкенд не может применить метки и не долж
 - **`ignore`** — расширение распарсивается для диагностики
   (`mac_label_parsed`), но не применяется. Безопасно для миграции
   парка машин без runtime МКЦ.
+
+### Семантика `runtime` (0.3.7+)
+
+Compile-time feature `astra-mac` решает, **может ли** бинарь линковаться
+с libpdp. Поле `runtime` решает, **будет ли** бинарь действительно
+использовать настоящий backend в текущем процессе. Это важно для
+смешанного парка: один и тот же `.deb` ставится и на машины с МКЦ,
+и без, а поведение управляется через `config.toml`.
+
+- **`required`** — обязателен `ParsecBackend` + активное МКЦ-ядро
+  (`parsec_strict_mode() == 1`). Если ядро не активно, аутентификация
+  отклоняется с событием `mac_runtime_required` (ERROR). Требует
+  собранный с `astra-mac` бинарь — иначе конфиг отвергается на старте.
+- **`auto`** *(default)* — на старте сессии пробуется
+  `parsec_strict_mode`; если активен — настоящий `ParsecBackend`, иначе
+  fallback на `StubBackend` с одноразовым событием
+  `mac_runtime_fallback` (WARN). Подходит для дев-машин и смешанного
+  парка.
+- **`disabled`** — всегда `StubBackend`, даже если бинарь собран с
+  `astra-mac`. Используется на банкоматах без МКЦ-ядра, чтобы
+  гарантированно не вызывать `pdp_*`. Логируется событие
+  `mac_runtime_disabled` (INFO).
+
+Валидация конфига:
+
+- `runtime = "disabled"` + `cert_integrity = "required"` отвергается
+  на старте (логически несовместимо: stub не может прочитать или
+  выставить метку, которую требует cert-политика).
+- `runtime = "required"` в бинаре без `astra-mac` отвергается на
+  старте.
 
 ### Эффективная метка
 

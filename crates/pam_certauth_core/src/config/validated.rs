@@ -6,8 +6,8 @@ use std::time::Duration;
 
 use crate::config::raw::{
     RawCertIntegrityMode, RawConfig, RawCryptoBackend, RawHostIdFallback, RawHostIdentity,
-    RawMacPolicy, RawMode, RawMonitor, RawMonitorFailMode, RawOnUsbRemoved, RawPkcs11LockingMode,
-    RawRevocationMode, RawTrust, RawTrustOverride, RawUserMapping,
+    RawMacPolicy, RawMacRuntimeMode, RawMode, RawMonitor, RawMonitorFailMode, RawOnUsbRemoved,
+    RawPkcs11LockingMode, RawRevocationMode, RawTrust, RawTrustOverride, RawUserMapping,
 };
 use crate::error::TrustError;
 use crate::hooks::{validate_hook, HookConfig};
@@ -94,6 +94,9 @@ pub struct MacPolicy {
     /// Whether to emit a warning when the resolved process label disagrees
     /// with the user's `$HOME` label at session-open time. Default `true`.
     pub warn_on_homedir_label_mismatch: bool,
+    /// Runtime selection for the MAC backend. Default
+    /// [`MacRuntimeMode::Auto`]. See [`MacRuntimeMode`].
+    pub runtime: MacRuntimeMode,
 }
 
 impl Default for MacPolicy {
@@ -102,8 +105,29 @@ impl Default for MacPolicy {
             cert_integrity: CertIntegrityMode::Optional,
             fallback_max_integrity: None,
             warn_on_homedir_label_mismatch: true,
+            runtime: MacRuntimeMode::Auto,
         }
     }
+}
+
+/// Runtime selection for the MAC backend (independent of the
+/// compile-time `astra-mac` feature).
+///
+/// - [`MacRuntimeMode::Required`] — auth fails if the МКЦ kernel
+///   subsystem is not present.
+/// - [`MacRuntimeMode::Auto`] — use the real backend when the kernel
+///   reports МКЦ available; otherwise fall back to the no-op stub and
+///   emit a `mac_runtime_fallback` audit event.
+/// - [`MacRuntimeMode::Disabled`] — always use the stub backend even
+///   when the binary is built with `astra-mac`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MacRuntimeMode {
+    /// Real backend required; fail-closed when kernel МКЦ missing.
+    Required,
+    /// Probe kernel; real when present, stub otherwise.
+    Auto,
+    /// Always use the stub backend regardless of kernel state.
+    Disabled,
 }
 
 /// Trinary policy for the X.509 `MAX_INTEGRITY` extension.
@@ -419,6 +443,27 @@ fn validate_mac(raw: &RawMacPolicy) -> Result<MacPolicy, Error> {
         Some(RawCertIntegrityMode::Ignore) => CertIntegrityMode::Ignore,
         Some(RawCertIntegrityMode::Optional) | None => CertIntegrityMode::Optional,
     };
+    let runtime = match raw.runtime {
+        Some(RawMacRuntimeMode::Required) => MacRuntimeMode::Required,
+        Some(RawMacRuntimeMode::Disabled) => MacRuntimeMode::Disabled,
+        Some(RawMacRuntimeMode::Auto) | None => MacRuntimeMode::Auto,
+    };
+    // `runtime = disabled` + `cert_integrity = required` is logically
+    // inconsistent: there will be no backend to read or enforce the
+    // cert label, so the policy can never be satisfied. Reject early so
+    // operators don't get a confusing runtime denial on every login.
+    // Checked first so this clearer error wins over the stub-build
+    // `cert_integrity = required` rejection below.
+    if matches!(runtime, MacRuntimeMode::Disabled)
+        && matches!(cert_integrity, CertIntegrityMode::Required)
+    {
+        return Err(Error::ConfigInvalid {
+            reason:
+                "[mac].runtime = \"disabled\" is incompatible with cert_integrity = \"required\" \
+                     (the stub backend cannot enforce the cert label)"
+                    .into(),
+        });
+    }
     // Fail-fast: stub builds (without `astra-mac`) cannot honour
     // `cert_integrity = "required"` because there is no real backend
     // to enforce the label.  Reject at config load so the operator sees
@@ -429,6 +474,16 @@ fn validate_mac(raw: &RawMacPolicy) -> Result<MacPolicy, Error> {
             reason:
                 "[mac].cert_integrity = \"required\" but binary built without `astra-mac` feature"
                     .into(),
+        });
+    }
+    // Same fail-fast for `runtime = "required"` — a stub build can never
+    // satisfy a hard MAC requirement, so surface the misconfiguration at
+    // config load.
+    #[cfg(not(feature = "astra-mac"))]
+    if matches!(runtime, MacRuntimeMode::Required) {
+        return Err(Error::ConfigInvalid {
+            reason: "[mac].runtime = \"required\" but binary built without `astra-mac` feature"
+                .into(),
         });
     }
     let fallback_max_integrity = raw
@@ -462,6 +517,7 @@ fn validate_mac(raw: &RawMacPolicy) -> Result<MacPolicy, Error> {
         cert_integrity,
         fallback_max_integrity,
         warn_on_homedir_label_mismatch: raw.warn_on_homedir_label_mismatch.unwrap_or(true),
+        runtime,
     })
 }
 
