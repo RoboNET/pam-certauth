@@ -7,7 +7,7 @@ pub mod hostname;
 pub mod machine_id;
 pub mod source;
 
-pub use chain::{normalize_host_id, HostIdentityResolver, ResolvedHostId};
+pub use chain::{normalize_host_id, HostIdentityResolver, ProbeResult, ResolvedHostId};
 pub use custom_command::CustomCommandSource;
 pub use dmi::{DmiBoardSerialSource, DmiSystemSerialSource, DmiSystemUuidSource};
 pub use hostname::HostnameSource;

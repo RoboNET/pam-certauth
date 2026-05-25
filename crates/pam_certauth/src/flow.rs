@@ -629,12 +629,16 @@ where
             pam_user = %pam_user,
             "host_binding rejected; surfacing diagnostic to user"
         );
+        // Show the short prefix on-screen (8 hex chars are eyeballable
+        // on a small terminal); the full hash already lives in syslog
+        // via the warn! above.
+        let prefix_len = deps.host_id_hash.len().min(8);
+        let prefix = &deps.host_id_hash[..prefix_len];
         io.show_info(&format!(
             "Сертификат выпущен для другого банкомата.\n\
-             host_id_hash этой машины: {hash}\n\
-             источник host_id: {source:?}\n\
+             host_id этой машины: {prefix} (source={source:?})\n\
              Передайте администратору для перевыпуска.",
-            hash = deps.host_id_hash,
+            prefix = prefix,
             source = deps.host_id_source,
         ));
         return Err(FlowError::CertScope(e));
