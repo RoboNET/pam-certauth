@@ -77,6 +77,20 @@ jobs:
         # build-deb.sh's `git describe`/`git log` calls succeed.
         run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
 
+      - name: Verify Cargo workspace version matches debian/changelog
+        run: |
+          set -euo pipefail
+          cargo_ver=$(grep -E '^version\s*=' Cargo.toml | head -1 \
+              | sed -E 's/.*"([^"]+)".*/\1/')
+          deb_ver=$(head -1 debian/changelog \
+              | sed -E 's/^[^(]+\(([^-]+).*/\1/')
+          echo "Cargo workspace version : ${cargo_ver}"
+          echo "debian/changelog version: ${deb_ver}"
+          if [ "${cargo_ver}" != "${deb_ver}" ]; then
+              echo "::error::Cargo.toml version (${cargo_ver}) != debian/changelog (${deb_ver}). Bump debian/changelog before releasing."
+              exit 1
+          fi
+
       - name: Probe Astra environment
         run: |
           set -euxo pipefail

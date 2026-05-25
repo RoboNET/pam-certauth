@@ -31,7 +31,7 @@ astra-mac = []
 mac-tests = ["dep:mockall"]
 
 [dependencies]
-pam_certauth_proto = { path = "../pam_certauth_proto", version = "0.3.3" }
+pam_certauth_proto = { path = "../pam_certauth_proto", version = "0.3.4" }
 serde = { workspace = true }
 toml = { workspace = true }
 thiserror = { workspace = true }
