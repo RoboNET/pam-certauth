@@ -48,6 +48,11 @@ pub struct RawConfig {
     /// USB wait seconds.
     #[serde(default = "default_usb_wait_seconds")]
     pub usb_wait_seconds: u64,
+    /// Maximum number of USB partitions inspected at auth time when a
+    /// whole-disk has a partition table.  Defaults to 8.  Validated
+    /// against the inclusive range `1..=64`.
+    #[serde(default)]
+    pub max_usb_partitions: Option<u32>,
     /// USB removal action.
     #[serde(default)]
     pub on_usb_removed: RawOnUsbRemoved,

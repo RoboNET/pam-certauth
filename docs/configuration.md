@@ -49,10 +49,11 @@ PAM-пользователем разрешено залогиниться, а �
 | `pkcs11_locking_mode`      | строка             | `"os"`      | `"os"`, `"mutex"`                                              | Стратегия блокировок PKCS#11.                                 | Зависит от поставляемого PKCS#11-модуля (см. документацию вендора).                  |
 | `pkcs11_pin_prompt`        | строка             | `None`      | UTF-8                                                          | Текст приглашения PIN. По умолчанию — русское приглашение.    | Локализация UX, не безопасности.                                                     |
 | `pkcs11_slot_wait_seconds` | целое              | `10`        | `0..=60`                                                       | Сколько секунд ждать вставки токена.                          | `0` — не ждать; UX vs. удобство.                                                     |
-| `pkcs12_path_pattern`      | строка             | `None`      | путь с placeholder'ами                                         | Где искать `.p12` (поддерживает `${user}`).                   | Обязателен в `mode = "pkcs12"`.                                                      |
+| `pkcs12_path_pattern`      | строка             | `"certs/user.p12"` | относительный путь от mountpoint USB, опц. `${user}`     | Где искать `.p12` на USB-носителе (поддерживает `${user}`).   | Только относительный путь; `..`/`.` сегменты и абсолютные пути отклоняются валидатором. |
 | `pkcs12_pin_prompt`        | строка             | `None`      | UTF-8                                                          | Текст приглашения для пароля `.p12`.                          | Локализация UX.                                                                      |
 | `gost_engine_path`         | путь               | `None`      | абсолютный путь к `.so`                                        | Явный путь к `gost-engine`. По умолчанию — поиск по id.       | `None` — engine ищется через `OPENSSL_ENGINES`.                                      |
 | `usb_wait_seconds`         | целое              | `10`        | `0..=300`                                                      | Сколько секунд ждать USB-носителя.                            | UX. На `0` — fail-fast.                                                              |
+| `max_usb_partitions`       | целое              | `8`         | `1..=64`                                                       | Максимум партиций, перебираемых при поиске `.p12`.            | Защита от DoS: физический атакующий не сможет навязать огромное число mount/umount.  |
 | `on_usb_removed`           | строка             | `"lock"`    | `"lock"`, `"logout"`, `"hook"`, `"shutdown"`                   | Действие при подтверждённом извлечении USB.                   | `"shutdown"` уместен для банкоматов; `"lock"` — для рабочих станций.                 |
 | `usb_removed_grace_seconds`| целое              | `0`         | `0..=300`                                                      | Окно отмены: реинсерт того же серийника отменяет действие.    | Защищает от ложных срабатываний; на банкоматах ставить `0`.                          |
 | `suspend_grace_seconds`    | целое              | `0`         | `0..=600`                                                      | Окно после resume, в котором USB-removal игнорируется.        | Хабы во время suspend часто шумят; `30` секунд — типовое значение.                   |
@@ -205,7 +206,7 @@ PAM-пользователем разрешено залогиниться, а �
 ```toml
 crypto_backend = "openssl"
 mode           = "pkcs12"
-pkcs12_path_pattern = "/run/pam_certauth/usb/${user}.p12"
+pkcs12_path_pattern = "certs/${user}.p12"  # относительно mountpoint USB
 
 usb_wait_seconds         = 10
 on_usb_removed           = "lock"
@@ -387,7 +388,7 @@ run_as          = "audit"
 ```toml
 crypto_backend = "openssl"
 mode           = "pkcs12"
-pkcs12_path_pattern = "/run/pam_certauth/usb/${user}.p12"
+pkcs12_path_pattern = "certs/${user}.p12"  # относительно mountpoint USB
 pkcs12_pin_prompt   = "PKCS#12 password: "
 
 usb_wait_seconds         = 5

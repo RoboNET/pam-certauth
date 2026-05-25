@@ -6,19 +6,22 @@
 //! whole device, so the existing whole-device path fails with
 //! `UnsupportedFs("(unknown)")`.
 //!
-//! [`select_partition`] picks a single PAMCERT-labelled child with an
-//! allow-listed FS.  It is deliberately pure — no udev calls — so it can
-//! be unit-tested on any platform.
+//! [`select_partitions`] picks every child whose `ID_FS_TYPE` belongs to
+//! the [`ALLOWED_FS`](crate::mount::usb::ALLOWED_FS) allowlist.  It is
+//! deliberately pure — no udev calls — so it can be unit-tested on any
+//! platform.
 //!
-//! Fail-closed: when the parent device already has a filesystem the
-//! function returns `Ok(None)` (the caller stays on the whole-device
-//! path); when zero partitions match it likewise returns `Ok(None)` (the
-//! caller produces the same `UnsupportedFs("(unknown)")` error as before);
-//! when more than one partition matches it returns
-//! [`UsbError::AmbiguousPartition`] so the operator must clarify intent.
+//! When the parent whole-device already has a filesystem the function
+//! returns an empty `Vec` (the caller stays on the whole-device path).
+//! Otherwise it returns every viable partition in the input order so the
+//! caller can iterate them and try each one until a `.p12` shows up.
+//! The real trust boundary is `.p12` decryption + chain validation —
+//! filtering by label adds no security, only UX friction.
+//!
+//! Note: the [`PartitionCandidate::fs_label`] field is retained because
+//! it is useful in logs, but the selection logic ignores it.
 
-use super::UsbError;
-use crate::mount::usb::{ALLOWED_FS, REQUIRED_PARTITION_LABEL};
+use crate::mount::usb::ALLOWED_FS;
 use std::path::PathBuf;
 
 /// A child-partition record observed under a whole-device USB block.
@@ -33,52 +36,41 @@ pub struct PartitionCandidate {
     /// `ID_FS_TYPE` reported by udev/blkid on the partition itself.
     pub fs_type: Option<String>,
     /// `ID_FS_LABEL` reported by udev/blkid on the partition itself.
+    ///
+    /// Retained for diagnostic logging only — the selection logic ignores
+    /// it.
     pub fs_label: Option<String>,
 }
 
-/// Decide whether a partition-table fallback applies, and, if so, pick
-/// the single matching child partition.
+/// Pick every child partition with an allow-listed filesystem.
 ///
 /// - `parent_fs_type` — `ID_FS_TYPE` reported on the whole-device.  When
 ///   `Some`, the whole-device already has a filesystem and the caller
-///   must NOT fall back (returns `Ok(None)`).
-/// - `parent_devnode` — used only to enrich the
-///   [`UsbError::AmbiguousPartition`] error.
+///   stays on the whole-device path (returns an empty vector — no
+///   partition-table fallback is needed).
 /// - `partitions` — children of the whole-device with `DEVTYPE=partition`.
 ///
-/// # Errors
-///
-/// [`UsbError::AmbiguousPartition`] when 2+ partitions match.
-pub fn select_partition<'a>(
+/// The returned vector preserves the input order so the caller can iterate
+/// partitions deterministically (typically sysfs natural sort: `sda1`,
+/// `sda2`, …, `sda10`).
+#[must_use]
+pub fn select_partitions<'a>(
     parent_fs_type: Option<&str>,
-    parent_devnode: &std::path::Path,
     partitions: &'a [PartitionCandidate],
-) -> Result<Option<&'a PartitionCandidate>, UsbError> {
+) -> Vec<&'a PartitionCandidate> {
     // Whole-device already has a filesystem — caller stays on existing path.
     if parent_fs_type.is_some() {
-        return Ok(None);
+        return Vec::new();
     }
 
-    let matches: Vec<&PartitionCandidate> = partitions
+    partitions
         .iter()
         .filter(|p| {
-            let fs_ok = p
-                .fs_type
+            p.fs_type
                 .as_deref()
-                .is_some_and(|fs| ALLOWED_FS.contains(&fs));
-            let label_ok = p.fs_label.as_deref() == Some(REQUIRED_PARTITION_LABEL);
-            fs_ok && label_ok
+                .is_some_and(|fs| ALLOWED_FS.contains(&fs))
         })
-        .collect();
-
-    match matches.len() {
-        0 => Ok(None),
-        1 => Ok(Some(matches[0])),
-        n => Err(UsbError::AmbiguousPartition {
-            devnode: parent_devnode.to_path_buf(),
-            count: n,
-        }),
-    }
+        .collect()
 }
 
 #[cfg(test)]
@@ -94,94 +86,85 @@ mod tests {
         }
     }
 
-    fn parent() -> PathBuf {
-        PathBuf::from("/dev/sdb")
-    }
-
     #[test]
-    fn parent_has_fs_skips_fallback_even_with_matching_partitions() {
+    fn parent_has_fs_returns_empty_even_with_matching_partitions() {
         let parts = vec![part("/dev/sdb1", Some("vfat"), Some("PAMCERT"))];
-        let res = select_partition(Some("ext4"), &parent(), &parts).unwrap();
-        assert!(res.is_none());
+        let res = select_partitions(Some("ext4"), &parts);
+        assert!(res.is_empty());
     }
 
     #[test]
-    fn parent_no_fs_no_partitions_returns_none() {
+    fn parent_no_fs_no_partitions_returns_empty() {
         let parts: Vec<PartitionCandidate> = vec![];
-        let res = select_partition(None, &parent(), &parts).unwrap();
-        assert!(res.is_none());
+        let res = select_partitions(None, &parts);
+        assert!(res.is_empty());
     }
 
     #[test]
-    fn parent_no_fs_one_vfat_pamcert_match() {
-        let parts = vec![part("/dev/sdb1", Some("vfat"), Some("PAMCERT"))];
-        let res = select_partition(None, &parent(), &parts).unwrap();
-        assert_eq!(res.unwrap().devnode, PathBuf::from("/dev/sdb1"));
+    fn one_partition_with_allowed_fs_is_picked_regardless_of_label() {
+        let parts = vec![part("/dev/sdb1", Some("ext4"), Some("any-old-label"))];
+        let res = select_partitions(None, &parts);
+        assert_eq!(res.len(), 1);
+        assert_eq!(res[0].devnode, PathBuf::from("/dev/sdb1"));
     }
 
     #[test]
-    fn parent_no_fs_one_ext4_pamcert_match() {
-        let parts = vec![part("/dev/sdb1", Some("ext4"), Some("PAMCERT"))];
-        let res = select_partition(None, &parent(), &parts).unwrap();
-        assert_eq!(res.unwrap().devnode, PathBuf::from("/dev/sdb1"));
+    fn two_allowed_partitions_both_picked_in_input_order() {
+        let parts = vec![
+            part("/dev/sdb1", Some("ext4"), Some("A")),
+            part("/dev/sdb2", Some("vfat"), Some("B")),
+        ];
+        let res = select_partitions(None, &parts);
+        assert_eq!(res.len(), 2);
+        assert_eq!(res[0].devnode, PathBuf::from("/dev/sdb1"));
+        assert_eq!(res[1].devnode, PathBuf::from("/dev/sdb2"));
     }
 
     #[test]
-    fn wrong_label_returns_none() {
-        let parts = vec![part("/dev/sdb1", Some("ext4"), Some("OTHER"))];
-        let res = select_partition(None, &parent(), &parts).unwrap();
-        assert!(res.is_none());
+    fn mixed_only_allowed_picked_order_preserved() {
+        let parts = vec![
+            part("/dev/sdb1", Some("ext4"), Some("A")),
+            part("/dev/sdb2", Some("btrfs"), Some("X")),
+            part("/dev/sdb3", Some("vfat"), Some("B")),
+        ];
+        let res = select_partitions(None, &parts);
+        assert_eq!(res.len(), 2);
+        assert_eq!(res[0].devnode, PathBuf::from("/dev/sdb1"));
+        assert_eq!(res[1].devnode, PathBuf::from("/dev/sdb3"));
     }
 
     #[test]
-    fn wrong_fs_returns_none() {
-        let parts = vec![part("/dev/sdb1", Some("btrfs"), Some("PAMCERT"))];
-        let res = select_partition(None, &parent(), &parts).unwrap();
-        assert!(res.is_none());
+    fn all_unsupported_fs_returns_empty() {
+        let parts = vec![
+            part("/dev/sdb1", Some("btrfs"), None),
+            part("/dev/sdb2", Some("xfs"), None),
+        ];
+        let res = select_partitions(None, &parts);
+        assert!(res.is_empty());
     }
 
     #[test]
-    fn case_sensitive_label_match() {
-        // "pamcert" is NOT "PAMCERT" — must be rejected.
-        let parts = vec![part("/dev/sdb1", Some("vfat"), Some("pamcert"))];
-        let res = select_partition(None, &parent(), &parts).unwrap();
-        assert!(res.is_none());
-    }
-
-    #[test]
-    fn two_matches_yield_ambiguous_partition_error() {
+    fn pamcert_label_is_ignored_both_partitions_picked() {
+        // Historically only the partition with label=PAMCERT was selected;
+        // now label is irrelevant — both allow-listed partitions show up.
         let parts = vec![
             part("/dev/sdb1", Some("ext4"), Some("PAMCERT")),
-            part("/dev/sdb2", Some("vfat"), Some("PAMCERT")),
+            part("/dev/sdb2", Some("vfat"), Some("OTHER")),
         ];
-        let err = select_partition(None, &parent(), &parts).unwrap_err();
-        match err {
-            UsbError::AmbiguousPartition { devnode, count } => {
-                assert_eq!(devnode, PathBuf::from("/dev/sdb"));
-                assert_eq!(count, 2);
-            }
-            other => panic!("unexpected error: {other:?}"),
-        }
+        let res = select_partitions(None, &parts);
+        assert_eq!(res.len(), 2);
+        assert_eq!(res[0].devnode, PathBuf::from("/dev/sdb1"));
+        assert_eq!(res[1].devnode, PathBuf::from("/dev/sdb2"));
     }
 
     #[test]
-    fn one_match_among_irrelevant_partitions() {
-        let parts = vec![
-            part("/dev/sdb1", Some("ext4"), Some("PAMCERT")),
-            part("/dev/sdb2", Some("btrfs"), Some("PAMCERT")),
-            part("/dev/sdb3", Some("vfat"), Some("OTHER")),
-        ];
-        let res = select_partition(None, &parent(), &parts).unwrap();
-        assert_eq!(res.unwrap().devnode, PathBuf::from("/dev/sdb1"));
-    }
-
-    #[test]
-    fn empty_fs_or_label_does_not_match() {
+    fn partition_without_fs_type_is_skipped() {
         let parts = vec![
             part("/dev/sdb1", None, Some("PAMCERT")),
             part("/dev/sdb2", Some("vfat"), None),
         ];
-        let res = select_partition(None, &parent(), &parts).unwrap();
-        assert!(res.is_none());
+        let res = select_partitions(None, &parts);
+        assert_eq!(res.len(), 1);
+        assert_eq!(res[0].devnode, PathBuf::from("/dev/sdb2"));
     }
 }

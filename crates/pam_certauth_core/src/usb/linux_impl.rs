@@ -1,20 +1,42 @@
-//! Linux-only udev backend for [`super::wait_for_usb`] and
+//! Linux-only udev backend for [`super::wait_for_usb_devices`] and
 //! [`super::UdevEnumerator`].
 //!
 //! Only compiled on `cfg(target_os = "linux")`.  Splitting it out keeps
 //! `mod.rs` readable on non-Linux hosts (such as the maintainers' macOS dev
 //! boxes) and avoids leaking udev types into the public surface.
 
-use super::partition::{select_partition, PartitionCandidate};
+use super::partition::{select_partitions, PartitionCandidate};
 use super::{UsbDevice, UsbError};
 use std::ffi::OsStr;
 use std::os::fd::AsFd;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
+/// Default `max_usb_partitions` cap used by [`enumerate_once`] / the
+/// `UdevEnumerator` trait impl, which has no access to a validated
+/// config.  Production callers go through [`super::wait_for_usb_devices`]
+/// with the configured limit; the trait path is only used by callers
+/// that don't carry a config (CLI smoke tests, mock-style helpers), so
+/// the upstream hard cap (64) is the right safety net here.
+const DEFAULT_MAX_USB_PARTITIONS: usize = 64;
+
 /// One-shot enumeration of attached USB block devices.
+///
+/// Each whole-device with a filesystem produces a single [`UsbDevice`];
+/// whole-devices with a partition table produce one entry per viable
+/// child partition (FS in the allow-list), capped at
+/// [`DEFAULT_MAX_USB_PARTITIONS`].
 pub(super) fn enumerate_once(
     vid_pid_filter: Option<(u16, u16)>,
+) -> Result<Vec<UsbDevice>, UsbError> {
+    enumerate_once_with_limit(vid_pid_filter, DEFAULT_MAX_USB_PARTITIONS)
+}
+
+/// Variant of [`enumerate_once`] that takes an explicit cap on the
+/// number of partitions accepted per whole-disk.
+pub(super) fn enumerate_once_with_limit(
+    vid_pid_filter: Option<(u16, u16)>,
+    max_usb_partitions: usize,
 ) -> Result<Vec<UsbDevice>, UsbError> {
     let mut e = udev::Enumerator::new().map_err(|e| UsbError::Udev(e.to_string()))?;
     e.match_subsystem("block")
@@ -27,9 +49,7 @@ pub(super) fn enumerate_once(
         .scan_devices()
         .map_err(|e| UsbError::Udev(e.to_string()))?;
     for d in scanned {
-        if let Some(dev) = device_from(&d, vid_pid_filter)? {
-            out.push(dev);
-        }
+        out.extend(devices_from(&d, vid_pid_filter, max_usb_partitions)?);
     }
     Ok(out)
 }
@@ -38,10 +58,12 @@ pub(super) fn enumerate_once(
 pub(super) fn wait_for_usb_real(
     timeout: Duration,
     vid_pid_filter: Option<(u16, u16)>,
-) -> Result<UsbDevice, UsbError> {
+    max_usb_partitions: usize,
+) -> Result<Vec<UsbDevice>, UsbError> {
     // Phase 1 — already attached?
-    if let Some(dev) = enumerate_once(vid_pid_filter)?.into_iter().next() {
-        return Ok(dev);
+    let already = enumerate_once_with_limit(vid_pid_filter, max_usb_partitions)?;
+    if !already.is_empty() {
+        return Ok(already);
     }
 
     // Phase 2 — block on udev monitor for "add" events.
@@ -70,8 +92,9 @@ pub(super) fn wait_for_usb_real(
                     .property_value("ID_BUS")
                     .is_some_and(|v| v == OsStr::new("usb"))
                 {
-                    if let Some(dev) = device_from(&dev_ref, vid_pid_filter)? {
-                        return Ok(dev);
+                    let devs = devices_from(&dev_ref, vid_pid_filter, max_usb_partitions)?;
+                    if !devs.is_empty() {
+                        return Ok(devs);
                     }
                 }
             }
@@ -95,12 +118,26 @@ pub(super) fn wait_for_usb_real(
     }
 }
 
-fn device_from(
+/// Convert one udev device into zero or more [`UsbDevice`] records.
+///
+/// - A whole-device with `ID_FS_TYPE` set produces exactly one entry
+///   (the existing whole-device path).
+/// - A `DEVTYPE=disk` node with no FS triggers child enumeration; each
+///   child partition whose FS is in [`super::super::mount::usb::ALLOWED_FS`]
+///   becomes its own [`UsbDevice`].  Partitions are returned in stable
+///   sysfs natural order (`sda1`, `sda2`, …, `sda10`).
+/// - Any other device (loose partition node observed independently,
+///   wrong subsystem, etc.) yields an empty vector.
+///
+/// If a whole-disk has more candidate partitions than `max_usb_partitions`
+/// the function returns [`UsbError::TooManyPartitions`] (fail-closed).
+fn devices_from(
     d: &udev::Device,
     filter: Option<(u16, u16)>,
-) -> Result<Option<UsbDevice>, UsbError> {
+    max_usb_partitions: usize,
+) -> Result<Vec<UsbDevice>, UsbError> {
     let Some(devnode) = d.devnode() else {
-        return Ok(None);
+        return Ok(Vec::new());
     };
     let devnode: PathBuf = devnode.to_path_buf();
 
@@ -109,7 +146,7 @@ fn device_from(
 
     if let Some((fv, fp)) = filter {
         if vid != fv || pid != fp {
-            return Ok(None);
+            return Ok(Vec::new());
         }
     }
 
@@ -123,64 +160,77 @@ fn device_from(
         .map(|s| s.to_string_lossy().into_owned())
         .filter(|s| !s.is_empty());
 
-    // Partition-table fallback: whole-device has no FS but is a
-    // `DEVTYPE=disk` node — scan child partitions for the PAMCERT label.
-    let (devnode, fs_type) = if fs_type.is_none() && is_whole_disk(d) {
-        tracing::info!(
-            target: "pam_certauth.usb",
-            parent_devnode = %devnode.display(),
-            "whole-device has no FS, scanning partitions for label=PAMCERT",
-        );
-        match collect_partition_candidates(d) {
-            Ok(candidates) => match select_partition(None, &devnode, &candidates) {
-                Ok(Some(picked)) => {
-                    let part_fs = picked.fs_type.clone();
-                    tracing::info!(
-                        target: "pam_certauth.usb",
-                        partition_devnode = %picked.devnode.display(),
-                        fs_type = part_fs.as_deref().unwrap_or("(unknown)"),
-                        "found PAMCERT partition",
-                    );
-                    (picked.devnode.clone(), part_fs)
-                }
-                Ok(None) => (devnode, None),
-                Err(e) => {
-                    if let UsbError::AmbiguousPartition {
-                        devnode: ref dn,
-                        count,
-                    } = e
-                    {
-                        tracing::warn!(
-                            target: "pam_certauth.usb",
-                            parent_devnode = %dn.display(),
-                            count,
-                            "multiple PAMCERT partitions found; refusing to guess",
-                        );
-                    }
-                    return Err(e);
-                }
-            },
-            Err(e) => {
-                tracing::warn!(
-                    target: "pam_certauth.usb",
-                    parent_devnode = %devnode.display(),
-                    error = %e,
-                    "failed to enumerate child partitions",
-                );
-                (devnode, None)
-            }
+    // Whole-device already carries a filesystem — single UsbDevice, no
+    // partition fallback.
+    if fs_type.is_some() {
+        return Ok(vec![UsbDevice {
+            devnode,
+            serial,
+            vid,
+            pid,
+            fs_type,
+        }]);
+    }
+
+    // No FS on the parent — try the partition-table fallback.  We only
+    // do this for `DEVTYPE=disk` so that incidentally enumerated
+    // partition nodes are skipped (they get attributed via their parent).
+    if !is_whole_disk(d) {
+        return Ok(Vec::new());
+    }
+
+    tracing::info!(
+        target: "pam_certauth.usb",
+        parent_devnode = %devnode.display(),
+        "whole-device has no FS, scanning partitions",
+    );
+    let candidates = match collect_partition_candidates(d) {
+        Ok(c) => c,
+        Err(e) => {
+            tracing::warn!(
+                target: "pam_certauth.usb",
+                parent_devnode = %devnode.display(),
+                error = %e,
+                "failed to enumerate child partitions",
+            );
+            return Ok(Vec::new());
         }
-    } else {
-        (devnode, fs_type)
     };
 
-    Ok(Some(UsbDevice {
-        devnode,
-        serial,
-        vid,
-        pid,
-        fs_type,
-    }))
+    if candidates.len() > max_usb_partitions {
+        tracing::warn!(
+            target: "pam_certauth.usb",
+            parent_devnode = %devnode.display(),
+            count = candidates.len(),
+            limit = max_usb_partitions,
+            "too many USB partitions; refusing to enumerate",
+        );
+        return Err(UsbError::TooManyPartitions {
+            devnode,
+            count: candidates.len(),
+            limit: max_usb_partitions,
+        });
+    }
+
+    let picked = select_partitions(None, &candidates);
+    let mut out = Vec::with_capacity(picked.len());
+    for p in picked {
+        tracing::info!(
+            target: "pam_certauth.usb",
+            partition_devnode = %p.devnode.display(),
+            fs_type = p.fs_type.as_deref().unwrap_or("(unknown)"),
+            fs_label = p.fs_label.as_deref().unwrap_or(""),
+            "viable USB partition",
+        );
+        out.push(UsbDevice {
+            devnode: p.devnode.clone(),
+            serial: serial.clone(),
+            vid,
+            pid,
+            fs_type: p.fs_type.clone(),
+        });
+    }
+    Ok(out)
 }
 
 /// `true` when the udev device is a whole-disk node (`DEVTYPE=disk`),
@@ -191,7 +241,10 @@ fn is_whole_disk(d: &udev::Device) -> bool {
 }
 
 /// Enumerate child partition nodes of `parent` and convert them to pure
-/// [`PartitionCandidate`] records suitable for [`select_partition`].
+/// [`PartitionCandidate`] records suitable for [`select_partitions`].
+///
+/// Partitions are returned in sysfs natural-sort order, sorted by their
+/// kernel name (so `sda1`, `sda2`, …, `sda10`).
 fn collect_partition_candidates(
     parent: &udev::Device,
 ) -> Result<Vec<PartitionCandidate>, UsbError> {
@@ -201,7 +254,8 @@ fn collect_partition_candidates(
     e.match_parent(parent)
         .map_err(|e| UsbError::Udev(e.to_string()))?;
 
-    let mut out = Vec::new();
+    // Collect (kernel_name, candidate) pairs so we can sort deterministically.
+    let mut tagged: Vec<(String, PartitionCandidate)> = Vec::new();
     for child in e
         .scan_devices()
         .map_err(|e| UsbError::Udev(e.to_string()))?
@@ -216,6 +270,7 @@ fn collect_partition_candidates(
         let Some(devnode) = child.devnode() else {
             continue;
         };
+        let kernel = child.sysname().to_string_lossy().into_owned();
         let fs_type = child
             .property_value("ID_FS_TYPE")
             .map(|s| s.to_string_lossy().into_owned())
@@ -224,13 +279,43 @@ fn collect_partition_candidates(
             .property_value("ID_FS_LABEL")
             .map(|s| s.to_string_lossy().into_owned())
             .filter(|s| !s.is_empty());
-        out.push(PartitionCandidate {
-            devnode: devnode.to_path_buf(),
-            fs_type,
-            fs_label,
-        });
+        tagged.push((
+            kernel,
+            PartitionCandidate {
+                devnode: devnode.to_path_buf(),
+                fs_type,
+                fs_label,
+            },
+        ));
     }
-    Ok(out)
+    // Sysfs natural sort: split trailing digits so `sda2` < `sda10`.
+    tagged.sort_by(|a, b| natural_cmp(&a.0, &b.0));
+    Ok(tagged.into_iter().map(|(_, c)| c).collect())
+}
+
+/// Simple natural-sort comparator: splits the trailing decimal suffix off
+/// the kernel name and compares the prefix lexicographically + suffix
+/// numerically.  Good enough for `sd[a-z]+\d+` and `nvme0n1p\d+`.
+fn natural_cmp(a: &str, b: &str) -> std::cmp::Ordering {
+    fn split_suffix(s: &str) -> (&str, u64) {
+        let mut idx = s.len();
+        for (i, c) in s.char_indices().rev() {
+            if c.is_ascii_digit() {
+                idx = i;
+            } else {
+                break;
+            }
+        }
+        let (prefix, suffix) = s.split_at(idx);
+        let n = suffix.parse::<u64>().unwrap_or(0);
+        (prefix, n)
+    }
+    let (pa, na) = split_suffix(a);
+    let (pb, nb) = split_suffix(b);
+    match pa.cmp(pb) {
+        std::cmp::Ordering::Equal => na.cmp(&nb),
+        other => other,
+    }
 }
 
 fn parse_hex16(v: Option<&OsStr>) -> Result<u16, UsbError> {
@@ -239,4 +324,17 @@ fn parse_hex16(v: Option<&OsStr>) -> Result<u16, UsbError> {
         .ok_or_else(|| UsbError::MissingProperty("ID_VENDOR_ID/ID_MODEL_ID".to_string()))?;
     u16::from_str_radix(s, 16)
         .map_err(|_| UsbError::MissingProperty(format!("malformed hex VID/PID: {s}")))
+}
+
+#[cfg(test)]
+#[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn natural_cmp_orders_partitions_correctly() {
+        let mut v = vec!["sda10", "sda2", "sda1", "sdb1"];
+        v.sort_by(|a, b| natural_cmp(a, b));
+        assert_eq!(v, vec!["sda1", "sda2", "sda10", "sdb1"]);
+    }
 }

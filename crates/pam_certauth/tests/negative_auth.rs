@@ -78,7 +78,7 @@ fn missing_p12_returns_authinfo_unavail() {
     .unwrap_err();
     assert!(matches!(
         err,
-        FlowError::Discovery(pam_certauth_core::discovery::DiscoveryError::P12NotFound)
+        FlowError::Discovery(pam_certauth_core::discovery::DiscoveryError::P12NotFound { .. })
     ));
     assert_eq!(err.pam_code(), 9); // PAM_AUTHINFO_UNAVAIL
 }

@@ -293,32 +293,27 @@ openssl pkcs12 -in alice.p12 -nokeys -passin pass:test \
 
 ### 5.1 Форматирование
 
-`pam_certauth` поддерживает **два варианта** разметки USB-носителя:
+`pam_certauth` ищет `.p12` на **любой** партиции с FS из allowlist
+(`vfat`, `exfat`, `ext4`, `ntfs`). Метка партиции значения не имеет —
+защита обеспечивается на уровне расшифровки `.p12` пользовательским
+паролем и валидации цепочки сертификатов модулем доверия. Лимит на
+число перебираемых партиций задаётся параметром `max_usb_partitions`
+в `config.toml` (по умолчанию 8, диапазон 1..=64).
 
-**Вариант A — FS на разделе (рекомендуется для флешек с partition table).**
-Большинство магазинных флешек поставляются уже с MBR/GPT и одним разделом.
-Имя метки **должно** быть ровно `PAMCERT` (с учётом регистра).
-Если на whole-device нет ФС, `pam_certauth` ищет среди разделов ровно один
-с меткой `PAMCERT` и FS из allowlist (`vfat`, `exfat`, `ext4`, `ntfs`).
-Если подходящих разделов несколько — отказ (fail-closed).
+Типовой рецепт (`sdX1` — раздел USB-носителя из вывода `lsblk | grep -i usb`):
 
 ```bash
 # ВНИМАНИЕ: команда УНИЧТОЖАЕТ данные на устройстве /dev/sdX1.
-# Замените sdX1 на реальный путь к разделу USB-носителя
-# (lsblk | grep -i usb).
-sudo mkfs.ext4 -L PAMCERT /dev/sdX1
+# Поддерживаемые FS: vfat, exfat, ext4, ntfs.
+sudo mkfs.ext4 /dev/sdX1
+sudo mount /dev/sdX1 /mnt/usb
+sudo install -m 0600 bfs_service.p12 /mnt/usb/bfs_service.p12
+sudo umount /mnt/usb
 ```
 
-**Вариант B — FS прямо на whole-device (без partition table).**
-Совместимый сценарий, использовавшийся в более ранних версиях. Метка не
-требуется (но не мешает). `pam_certauth` сразу читает `ID_FS_TYPE` у
-udev-устройства и монтирует его.
-
-```bash
-# ВНИМАНИЕ: УНИЧТОЖАЕТ partition table и данные.
-sudo wipefs -a /dev/sdX
-sudo mkfs.ext4 -L PAMCERT /dev/sdX
-```
+Если флешка отформатирована без таблицы разделов (FS лежит прямо на
+whole-device), это тоже работает: `pam_certauth` читает `ID_FS_TYPE`
+udev и монтирует whole-device напрямую.
 
 ### 5.2 Layout
 
