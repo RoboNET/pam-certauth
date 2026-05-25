@@ -1,3 +1,15 @@
+pam-certauth (0.3.14-1) unstable; urgency=medium
+
+  * Build hotfix: 0.3.13 debian/changelog timestamp (12:00 +0300) was
+    earlier than 0.3.12 (18:00 +0300), tripping lintian
+    `latest-changelog-entry-without-new-date` and failing the Ubuntu
+    .deb build. Astra .deb in 0.3.13 release built fine (Astra
+    pipeline skips lintian). This release bumps version + timestamp
+    so both .debs build.
+  * No functional changes vs 0.3.13.
+
+ -- Mikhail Korolev <michael443959@gmail.com>  Mon, 25 May 2026 19:00:00 +0300
+
 pam-certauth (0.3.13-1) unstable; urgency=high
 
   * Hotfix: ACTUALLY implement XDG_SESSION_ID capture in
