@@ -202,12 +202,13 @@ pub unsafe extern "C" fn pam_sm_authenticate(
         if let Err(err) = std::fs::create_dir_all(&mountpoint_base) {
             tracing::warn!(target: "pam_certauth.auth", error = %err, base = %mountpoint_base.display(), "create mountpoint base failed");
         }
-        let real_io = crate::flow::RealFlowIo {
-            timeout: usb_wait,
-            vid_pid_filter: None,
+        let real_io = crate::flow::RealFlowIo::new(
+            usb_wait,
+            None,
+            wired.cfg.max_usb_partitions as usize,
             mountpoint_base,
-            session_id: session_id.clone(),
-        };
+            session_id.clone(),
+        );
 
         // 8. Drive the flow.
         // Stage 5: real fork+execve hook executor. The struct is stateless;

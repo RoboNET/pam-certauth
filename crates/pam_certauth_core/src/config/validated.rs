@@ -52,6 +52,10 @@ pub struct ValidatedConfig {
     pub gost_engine_path: Option<PathBuf>,
     /// USB wait.
     pub usb_wait: Duration,
+    /// Maximum number of USB partitions inspected at auth time (1..=64,
+    /// default 8).  Anti-DoS guard against a physical adversary plugging
+    /// in a many-partition device.
+    pub max_usb_partitions: u32,
     /// USB removal action.
     pub on_usb_removed: OnUsbRemoved,
     /// USB removed grace.
@@ -377,6 +381,7 @@ impl TryFrom<&RawConfig> for ValidatedConfig {
             pkcs12_pin_prompt: raw.pkcs12_pin_prompt.clone(),
             gost_engine_path,
             usb_wait: Duration::from_secs(raw.usb_wait_seconds),
+            max_usb_partitions: validate_max_usb_partitions(raw.max_usb_partitions)?,
             on_usb_removed: match raw.on_usb_removed {
                 RawOnUsbRemoved::Lock => OnUsbRemoved::Lock,
                 RawOnUsbRemoved::Logout => OnUsbRemoved::Logout,
@@ -463,6 +468,29 @@ fn validate_mac(raw: &RawMacPolicy) -> Result<MacPolicy, Error> {
 /// Hard cap on `max_chain_depth` to keep verifier loops bounded.
 /// Range: `1..=16`; validator rejects values outside this.
 const MAX_CHAIN_DEPTH_HARD_CAP: u32 = 16;
+
+/// Default for `max_usb_partitions` when the operator did not set it.
+const DEFAULT_MAX_USB_PARTITIONS: u32 = 8;
+/// Hard cap on `max_usb_partitions`.
+const MAX_USB_PARTITIONS_HARD_CAP: u32 = 64;
+
+/// Validate the (optional) `max_usb_partitions` field.
+fn validate_max_usb_partitions(raw: Option<u32>) -> Result<u32, Error> {
+    let v = raw.unwrap_or(DEFAULT_MAX_USB_PARTITIONS);
+    if v == 0 {
+        return Err(Error::ConfigInvalid {
+            reason: "max_usb_partitions must be >= 1".into(),
+        });
+    }
+    if v > MAX_USB_PARTITIONS_HARD_CAP {
+        return Err(Error::ConfigInvalid {
+            reason: format!(
+                "max_usb_partitions must be <= {MAX_USB_PARTITIONS_HARD_CAP} (got {v})"
+            ),
+        });
+    }
+    Ok(v)
+}
 
 fn validate_trust(raw: &RawTrust) -> Result<TrustSection, Error> {
     if raw.max_chain_depth == 0 {

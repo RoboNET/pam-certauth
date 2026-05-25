@@ -19,7 +19,7 @@ pub mod partition;
 mod linux_impl;
 
 pub use error::UsbError;
-pub use partition::{select_partition, PartitionCandidate};
+pub use partition::{select_partitions, PartitionCandidate};
 
 use std::path::PathBuf;
 use std::time::Duration;
@@ -112,59 +112,70 @@ impl UsbEnumerator for MockEnumerator {
     }
 }
 
-/// Wait for a USB block device, optionally filtered by `(vid, pid)`.
+/// Wait for one or more USB block devices, optionally filtered by
+/// `(vid, pid)`.
 ///
 /// On Linux this enumerates currently attached devices and then falls back
 /// to a blocking udev monitor with the caller's `timeout` budget.  On
 /// non-Linux platforms it returns [`UsbError::UnsupportedPlatform`]
 /// immediately.
 ///
+/// When the discovered physical device exposes a partition table, the
+/// result contains one [`UsbDevice`] per viable child partition (FS in
+/// the [`crate::mount::usb::ALLOWED_FS`] allowlist).  The caller is
+/// expected to iterate the returned slice until a mount produces a
+/// readable `.p12`.
+///
+/// `max_usb_partitions` is the inclusive cap on the number of child
+/// partitions accepted on a single whole-disk; exceeding it produces
+/// [`UsbError::TooManyPartitions`] (fail-closed against a physical
+/// adversary attaching a many-partition device).
+///
 /// # Errors
 ///
 /// - [`UsbError::Timeout`] — no matching device within `timeout`.
+/// - [`UsbError::TooManyPartitions`] — too many viable partitions.
 /// - [`UsbError::Udev`] / [`UsbError::Io`] — propagated from udev.
 /// - [`UsbError::UnsupportedPlatform`] — on non-Linux targets.
-pub fn wait_for_usb(
+pub fn wait_for_usb_devices(
     timeout: Duration,
     vid_pid_filter: Option<(u16, u16)>,
-) -> Result<UsbDevice, UsbError> {
+    max_usb_partitions: usize,
+) -> Result<Vec<UsbDevice>, UsbError> {
     #[cfg(target_os = "linux")]
     {
-        linux_impl::wait_for_usb_real(timeout, vid_pid_filter)
+        linux_impl::wait_for_usb_real(timeout, vid_pid_filter, max_usb_partitions)
     }
     #[cfg(not(target_os = "linux"))]
     {
-        let _ = (timeout, vid_pid_filter);
+        let _ = (timeout, vid_pid_filter, max_usb_partitions);
         Err(UsbError::UnsupportedPlatform)
     }
 }
 
-/// Test-friendly sibling of [`wait_for_usb`].
+/// Test-friendly sibling of [`wait_for_usb_devices`].
 ///
 /// Polls `enumerator.enumerate(filter)` repeatedly with a short sleep until
-/// a device shows up or `timeout` expires.  Used by unit tests where the
-/// real udev monitor is unavailable.
+/// at least one device shows up or `timeout` expires.  Used by unit tests
+/// where the real udev monitor is unavailable.
 ///
 /// # Errors
 ///
-/// As [`wait_for_usb`].  Additionally surfaces enumerator errors verbatim.
+/// As [`wait_for_usb_devices`].  Additionally surfaces enumerator errors
+/// verbatim.
 pub fn wait_for_usb_with<E: UsbEnumerator>(
     enumerator: &E,
     timeout: Duration,
     vid_pid_filter: Option<(u16, u16)>,
     poll_interval: Duration,
-) -> Result<UsbDevice, UsbError> {
+) -> Result<Vec<UsbDevice>, UsbError> {
     use std::time::Instant;
     let deadline = Instant::now() + timeout;
     loop {
         let now = Instant::now();
-        match enumerator.enumerate(vid_pid_filter)? {
-            ref devs if !devs.is_empty() => {
-                // Take the first match; iteration order is enumerator-defined.
-                #[allow(clippy::indexing_slicing)]
-                return Ok(devs[0].clone());
-            }
-            _ => {}
+        let devs = enumerator.enumerate(vid_pid_filter)?;
+        if !devs.is_empty() {
+            return Ok(devs);
         }
         if now >= deadline {
             return Err(UsbError::Timeout);
@@ -212,38 +223,40 @@ mod tests {
     }
 
     #[test]
-    fn wait_for_usb_with_returns_device_quickly() {
+    fn wait_for_usb_with_returns_devices_quickly() {
         let m = MockEnumerator {
             devices: vec![device(0x1, 0x2, "vfat")],
             error: None,
         };
         let start = std::time::Instant::now();
-        let dev = wait_for_usb_with(
+        let devs = wait_for_usb_with(
             &m,
             Duration::from_secs(5),
             Some((0x1, 0x2)),
             Duration::from_millis(10),
         )
         .unwrap();
-        assert_eq!(dev.vid, 0x1);
+        assert_eq!(devs.len(), 1);
+        assert_eq!(devs[0].vid, 0x1);
         assert!(start.elapsed() < Duration::from_millis(200));
     }
 
     #[test]
-    fn wait_for_usb_with_picks_first_when_multiple_match() {
+    fn wait_for_usb_with_returns_all_when_multiple_match() {
         let m = MockEnumerator {
             devices: vec![device(0x1, 0x2, "vfat"), device(0x1, 0x2, "ext4")],
             error: None,
         };
-        let dev = wait_for_usb_with(
+        let devs = wait_for_usb_with(
             &m,
             Duration::from_millis(100),
             Some((0x1, 0x2)),
             Duration::from_millis(10),
         )
         .unwrap();
-        // First in enumeration order.
-        assert_eq!(dev.fs_type.as_deref(), Some("vfat"));
+        assert_eq!(devs.len(), 2);
+        assert_eq!(devs[0].fs_type.as_deref(), Some("vfat"));
+        assert_eq!(devs[1].fs_type.as_deref(), Some("ext4"));
     }
 
     #[test]

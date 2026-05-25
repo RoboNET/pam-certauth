@@ -24,13 +24,6 @@ use thiserror::Error;
 /// allow ntfs writes.
 pub const ALLOWED_FS: &[&str] = &["vfat", "exfat", "ext4", "ntfs"];
 
-/// Required filesystem label on a USB partition when the whole-device has no
-/// filesystem (partition-table fallback).  When `pam_certauth` finds a
-/// whole-device USB block with no `ID_FS_TYPE`, it scans child partitions and
-/// requires exactly one with this exact (case-sensitive) label and an FS in
-/// [`ALLOWED_FS`].  Multiple candidates → fail-closed.
-pub const REQUIRED_PARTITION_LABEL: &str = "PAMCERT";
-
 /// Errors returned by [`mount_usb_device`].
 #[derive(Debug, Error)]
 pub enum MountError {

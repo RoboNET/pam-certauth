@@ -58,6 +58,10 @@ pkcs11_slot_wait_seconds = 10
 # --- USB monitor -------------------------------------------------------------
 # Maximum time to block waiting for the user's USB token at auth time.
 usb_wait_seconds = 10
+# Максимальное число USB-партиций, перебираемых при поиске .p12.
+# Защита от DoS: атакующий с физическим доступом не сможет заставить
+# модуль mount/unmount слишком много FS подряд. Range 1..=64.
+max_usb_partitions = 8
 # Action to take after a confirmed USB removal. One of:
 #   "lock"    — lock the user's session via logind.
 #   "logout"  — terminate the user's session via logind.
