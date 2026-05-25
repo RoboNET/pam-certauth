@@ -21,9 +21,7 @@ use super::{StartupCheckRecord, StartupCheckReport};
 
 /// Standard Astra services we scan. Missing files are silently skipped —
 /// e.g. `fly-dm-np` only exists on некоторых конфигурациях.
-const STANDARD_SERVICES: &[&str] = &[
-    "login", "fly-dm", "fly-dm-np", "sshd", "sudo", "su",
-];
+const STANDARD_SERVICES: &[&str] = &["login", "fly-dm", "fly-dm-np", "sshd", "sudo", "su"];
 
 /// Run the PAM stack ordering check.
 pub fn check(pam_d_root: &Path, report: &mut StartupCheckReport) {
@@ -37,7 +35,10 @@ pub fn check(pam_d_root: &Path, report: &mut StartupCheckReport) {
             Err(e) => {
                 report.push(StartupCheckRecord::warn(
                     "pam_stack_read_failed",
-                    format!("PAM service {path}: read failed ({e})", path = path.display()),
+                    format!(
+                        "PAM service {path}: read failed ({e})",
+                        path = path.display()
+                    ),
                 ));
                 continue;
             }

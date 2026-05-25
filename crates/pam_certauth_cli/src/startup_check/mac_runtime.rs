@@ -1,7 +1,7 @@
 //! `[mac].runtime` vs running kernel cross-check.
 
-use pam_certauth_core::config::ValidatedConfig;
 use pam_certauth_core::config::validated::MacRuntimeMode;
+use pam_certauth_core::config::ValidatedConfig;
 
 use super::{KernelParsecState, StartupCheckRecord, StartupCheckReport};
 
@@ -17,11 +17,7 @@ use super::{KernelParsecState, StartupCheckRecord, StartupCheckReport};
 /// * `Auto` + kernel present/absent → INFO/WARN respectively (matches
 ///   the per-session `mac_runtime_fallback` audit but stated up-front).
 /// * `Required` + kernel present → INFO confirming the strict mode.
-pub fn check(
-    cfg: &ValidatedConfig,
-    kernel: KernelParsecState,
-    report: &mut StartupCheckReport,
-) {
+pub fn check(cfg: &ValidatedConfig, kernel: KernelParsecState, report: &mut StartupCheckReport) {
     match (cfg.mac.runtime, kernel) {
         (MacRuntimeMode::Required, KernelParsecState::Active) => {
             report.push(StartupCheckRecord::info(

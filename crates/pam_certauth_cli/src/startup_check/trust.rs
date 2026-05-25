@@ -46,10 +46,7 @@ fn check_pem_list(
             Err(e) => {
                 report.push(StartupCheckRecord::error(
                     unreadable_check(check_prefix),
-                    format!(
-                        "{kind} {path}: read failed ({e})",
-                        path = path.display()
-                    ),
+                    format!("{kind} {path}: read failed ({e})", path = path.display()),
                 ));
                 continue;
             }

@@ -12,11 +12,11 @@ use std::io::Write;
 use std::path::PathBuf;
 
 use pam_certauth_cli::startup_check::{
-    self, KernelParsecState, StartupCheckOptions, StartupCheckReport,
-    StartupCheckSeverity, run_startup_checks,
+    self, run_startup_checks, KernelParsecState, StartupCheckOptions, StartupCheckReport,
+    StartupCheckSeverity,
 };
 use pam_certauth_core::config::validated::MacRuntimeMode;
-use pam_certauth_core::config::{ValidatedConfig, load_validated_config};
+use pam_certauth_core::config::{load_validated_config, ValidatedConfig};
 
 /// Helper: minimal config TOML mirroring `fixtures/full_valid.toml` but
 /// parameterised on anchor path, mac runtime, and `host_identity` sources
@@ -213,12 +213,7 @@ fn startup_check_runtime_required_without_kernel_errors() {
 fn startup_check_runtime_disabled_with_kernel_present_is_info() {
     let tmp = tempfile::tempdir().expect("tmp");
     let anchor = write_anchor(tmp.path(), "anchor.pem", FAKE_PEM);
-    let cfg_path = write_min_config(
-        tmp.path(),
-        anchor.to_str().unwrap(),
-        "disabled",
-        "optional",
-    );
+    let cfg_path = write_min_config(tmp.path(), anchor.to_str().unwrap(), "disabled", "optional");
     let cfg = load_cfg(&cfg_path);
 
     let mut report = StartupCheckReport::default();
@@ -234,12 +229,7 @@ fn startup_check_runtime_disabled_with_kernel_present_is_info() {
 fn startup_check_runtime_auto_without_kernel_warns() {
     let tmp = tempfile::tempdir().expect("tmp");
     let anchor = write_anchor(tmp.path(), "anchor.pem", FAKE_PEM);
-    let cfg_path = write_min_config(
-        tmp.path(),
-        anchor.to_str().unwrap(),
-        "auto",
-        "optional",
-    );
+    let cfg_path = write_min_config(tmp.path(), anchor.to_str().unwrap(), "auto", "optional");
     let cfg = load_cfg(&cfg_path);
 
     let mut report = StartupCheckReport::default();

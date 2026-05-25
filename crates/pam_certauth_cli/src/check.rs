@@ -13,9 +13,7 @@ use std::process::ExitCode;
 
 use clap::Args;
 
-use crate::startup_check::{
-    StartupCheckSeverity, run_startup_checks, StartupCheckOptions,
-};
+use crate::startup_check::{run_startup_checks, StartupCheckOptions, StartupCheckSeverity};
 
 /// CLI arguments for `pam-certauth check`.
 #[derive(Debug, Args)]
@@ -56,7 +54,11 @@ pub fn run(args: CheckArgs) -> ExitCode {
             StartupCheckSeverity::Warn => "WARN ",
             StartupCheckSeverity::Error => "ERROR",
         };
-        println!("[{prefix}] {check}: {msg}", check = r.check, msg = r.message);
+        println!(
+            "[{prefix}] {check}: {msg}",
+            check = r.check,
+            msg = r.message
+        );
     }
     println!("---");
     println!("summary: {info} info, {warn} warn, {err} error");

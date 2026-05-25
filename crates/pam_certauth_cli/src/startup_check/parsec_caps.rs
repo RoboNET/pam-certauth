@@ -1,7 +1,7 @@
 //! PARSEC_CAP_CHMAC presence check when MAC writes are expected.
 
-use pam_certauth_core::config::ValidatedConfig;
 use pam_certauth_core::config::validated::{CertIntegrityMode, MacRuntimeMode};
+use pam_certauth_core::config::ValidatedConfig;
 
 use super::{KernelParsecState, StartupCheckRecord, StartupCheckReport};
 
@@ -15,11 +15,7 @@ use super::{KernelParsecState, StartupCheckRecord, StartupCheckReport};
 /// writes (`runtime` not `Disabled` AND `cert_integrity` is not `Ignore`).
 /// In every other combination the daemon would never call `pdp_set_*`
 /// anyway, so missing capability is irrelevant.
-pub fn check(
-    cfg: &ValidatedConfig,
-    kernel: KernelParsecState,
-    report: &mut StartupCheckReport,
-) {
+pub fn check(cfg: &ValidatedConfig, kernel: KernelParsecState, report: &mut StartupCheckReport) {
     let writes_expected = !matches!(cfg.mac.runtime, MacRuntimeMode::Disabled)
         && !matches!(cfg.mac.cert_integrity, CertIntegrityMode::Ignore);
     if !writes_expected || !matches!(kernel, KernelParsecState::Active) {

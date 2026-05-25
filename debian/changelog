@@ -1,3 +1,37 @@
+pam-certauth (0.3.9-1) unstable; urgency=medium
+
+  * Startup validation pipeline: daemon на старте прогоняет шесть
+    проверок (PAM-стек ordering против `pam_parsec_mac.so`,
+    `[mac].runtime` vs ядро, trust anchors / intermediates,
+    `/etc/pam_certauth/ca/` permissions, `PARSEC_CAP_CHMAC`,
+    `host_identity` probe). Каждая запись помечена стабильным
+    `check` ID; ERROR → fail-fast, заметный в `systemctl status`,
+    а не в первой неудачной auth-сессии.
+  * Новый subcommand `pam-certauth check`: standalone preflight,
+    тот же pipeline без открытия socket'а. Exit 0/1, может быть
+    навешан на `ExecStartPre=` для hard-gate boot'а. Документация в
+    `docs/install.md` §2.4½.
+
+ -- Mikhail Korolev <mikhail@robonet.me>  Mon, 25 May 2026 16:00:00 +0300
+
+pam-certauth (0.3.8-1) unstable; urgency=medium
+
+  * `integrate-pam.sh` placement fix для Astra SE: `@include certauth-*`
+    теперь вставляется ПОСЛЕ `auth required pam_parsec_mac.so`, если
+    эта строка уже есть в `/etc/pam.d/*` (Astra SE 1.8.x). Прежняя
+    логика вставляла перед первой `auth`-строкой, и `success=done` jump
+    из `certauth-only` snippet'а обходил auth-инстанс
+    `pam_parsec_mac` → account/session валились
+    `"Can't obtain required data"`. Этот же боевой случай детектится
+    новой 0.3.9 startup-проверкой `pam_stack_misorder`.
+  * docs/install.md §10 «Что делать, если…» расширен боевой
+    troubleshooting-секцией по `pam_parsec_mac`, `parsec.mac=0`,
+    legacy `[mac].enabled`, `mac_caps_missing`, USB candidate тишина,
+    DMI host_id drift, fly-dm greeter banner и DIGSIG enforce без
+    подписи.
+
+ -- Mikhail Korolev <mikhail@robonet.me>  Mon, 25 May 2026 15:50:00 +0300
+
 pam-certauth (0.3.7-1) unstable; urgency=medium
 
   * Критично: новое поле `[mac].runtime` (required|auto|disabled,

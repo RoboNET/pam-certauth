@@ -227,10 +227,7 @@ pub fn real_kernel_parsec_probe() -> KernelParsecState {
 /// single log sweep). Callers decide whether to fail-fast based on
 /// [`StartupCheckReport::has_errors`].
 #[must_use]
-pub fn run_startup_checks(
-    cfg: &ValidatedConfig,
-    opts: &StartupCheckOptions,
-) -> StartupCheckReport {
+pub fn run_startup_checks(cfg: &ValidatedConfig, opts: &StartupCheckOptions) -> StartupCheckReport {
     let mut report = StartupCheckReport::default();
 
     crate::startup_check::pam_stack::check(&opts.pam_d_root, &mut report);
