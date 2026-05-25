@@ -579,7 +579,76 @@ sudo /usr/share/pam-certauth/integrate-pam.sh /etc/pam.d/sudo
 sudo /usr/share/pam-certauth/integrate-pam.sh /etc/pam.d/login
 ```
 
-### 8.5 Безопасность правки
+### 8.5 PAM-стек на Astra SE — учёт состояния МКЦ (PARSEC MAC)
+
+Стек PAM зависит от того, включено ли МКЦ-ядро PARSEC на конкретной
+машине. `pam_certauth` опционально интегрирован с libparsec через
+compile-time feature `astra-mac` (см. также секцию
+[`[mac]`](configuration.md) в `config.toml`), однако сам не выставляет
+MAC-контекст без неё — поэтому `pam_parsec_mac.so` в стеке нужен
+только когда МКЦ-ядро реально работает.
+
+**Как проверить состояние МКЦ:**
+
+```bash
+mount | grep -i parsec                           # пусто → МКЦ выключен
+cat /etc/parsec/mswitch.conf 2>/dev/null         # zero_if_notfound: yes → МКЦ выключен
+ls /sys/kernel/security/parsec 2>/dev/null       # ENOENT → МКЦ выключен
+```
+
+**Сценарий 1 — МКЦ выключен (текущий default на банкоматах):**
+
+```
+# /etc/pam.d/login
+auth      required pam_certauth.so
+account   required pam_certauth.so
+session   required pam_certauth.so
+```
+
+Никаких `pam_parsec_mac.so` в стеке. В `config.toml`:
+
+```toml
+[mac]
+cert_integrity = "ignored"
+# runtime = "disabled"   # планируется в следующем релизе (см. ниже)
+```
+
+**Сценарий 2 — МКЦ включён:**
+
+```
+# /etc/pam.d/login
+auth      required pam_certauth.so
+auth      required pam_parsec_mac.so       # ВАЖНО: после pam_certauth
+account   required pam_parsec_mac.so
+session   required pam_parsec_mac.so
+```
+
+В `config.toml`:
+
+```toml
+[mac]
+cert_integrity = "required"
+```
+
+`pam_parsec_mac.so` в `account` и `session` фазах читает MAC-контекст,
+выставленный в `auth`-фазе. Если в `auth` нет ни одного модуля,
+который выставит этот контекст, login падает с:
+
+```
+pam_parsec_mac(login:account): Can't obtain required data.
+NOTICE: pam_parsec_mac must be added to "auth" "account" and "session" stack
+```
+
+> **Известное ограничение 0.3.6.** Если бинарь собран с feature
+> `astra-mac`, но МКЦ-ядро на конкретной машине выключено,
+> `ParsecBackend.apply_session_policy()` не сможет корректно
+> выставить контекст. Раннее лечение — пересобрать без `astra-mac`
+> или выровнять `[mac].cert_integrity` под фактическое состояние
+> ядра. Полноценный runtime-переключатель (`[mac].runtime =
+> "auto" | "required" | "disabled"`) спланирован к 0.3.7
+> (см. changelog 0.3.6 → «Deferred»).
+
+### 8.6 Безопасность правки
 
 - Перед правкой убедиться, что есть второй открытый рут-shell.
 - Проверять каждое изменение командой `pamtester` сразу после правки
@@ -647,20 +716,36 @@ openssl engine gost -t
 ### `host_binding mismatch`
 
 Симптом: PAM-вызов отказывает с `HostNotAllowed` или
-`HostExtensionMissing` в журнале.
+`HostExtensionMissing` в журнале. Начиная с 0.3.6 на экране banner'а
+выводится `PAM_TEXT_INFO` вида:
 
-Диагностика:
+```
+Сертификат выпущен для другого банкомата.
+host_id_hash этой машины: <hex>
+источник host_id: DmiBoardSerial
+Передайте администратору для перевыпуска.
+```
+
+Диагностика на банкомате:
 
 ```bash
-cat /etc/machine-id
-journalctl -u pam-certauth -g host_id -n 20
-openssl x509 -in /tmp/ca/alice.pem -noout -text \
+# Реальный resolved host_id_hash (источник зависит от config.toml
+# [host_identity].sources):
+sudo journalctl -t pam_certauth | grep 'host_id resolved' | tail -1
+# Печатает строку с source=..., raw=..., host_id_hash=<full sha256 hex>.
+
+# Что зашито в сертификате:
+openssl x509 -in /etc/pam_certauth/<atm>.pem -noout -text \
     | grep -A1 '2\.25\.183976554325829274683049824615098'
 ```
 
-Сверить `sha256:<HEX>`-записи из расширения с реально вычисленным
-`host_id_hash = sha256(host_id)` (см.
-[architecture.md](architecture.md#host-identity-chain)).
+Сверить значения; при расхождении — перевыпустить cert через
+`issue-bfs-service-cert.sh` с правильным host_id_hash. **НЕ**
+вычислять hash вручную через `sha256sum /etc/machine-id` — реальный
+source-of-truth определяется развёрнутым конфигом
+`[host_identity].sources` (см.
+[architecture.md](architecture.md#host-identity-chain)). Это устраняет
+drift между скриптом выпуска и развёрнутой конфигурацией.
 
 ### `user_binding mismatch`
 
@@ -673,6 +758,41 @@ openssl x509 -in /tmp/ca/alice.pem -noout -text \
 ```bash
 openssl x509 -in /tmp/ca/alice.pem -noout -text \
     | grep -A1 '2\.25\.215438916728501023845629178354627'
+```
+
+### Сертификат не принимается на банкомате (общий чек-лист)
+
+Начиная с 0.3.6 PAM выводит на экран `PAM_TEXT_INFO` с актуальной
+диагностикой для двух частых случаев — несовпадение `host_binding`
+и неверный PIN. На обоих сценариях смотреть на экран **и** в syslog:
+
+```bash
+# 1. Реальный host_id_hash этой машины (с указанием источника):
+sudo journalctl -t pam_certauth | grep 'host_id resolved' | tail -1
+
+# 2. Пошаговая трасса последней попытки (mount → discovery → envelope →
+#    chain → результат):
+sudo journalctl -t pam_certauth --since '5 min ago' \
+    | grep -E 'pam_certauth\.(flow|host_identity)'
+```
+
+Дальше сверять с реестром выпуска (`atm-registry.tsv` на админ-машине):
+
+- `host_id_hash` в логе ≠ значение в cert → cert выпущен для другого
+  банкомата. Перевыпустить через `issue-bfs-service-cert.sh`,
+  используя hash из лога этого банкомата.
+- В логе нет `host_id resolved` → resolver не отработал. Проверить
+  `[host_identity].sources` в `/etc/pam_certauth/config.toml`.
+- `PAM_TEXT_INFO` сообщает «Пароль .p12 неверный. Этот сертификат
+  выпущен для host_id_hash=…, пользователь=…» → user вставил флешку
+  другого инженера. Достать и проверить, что host/user в выводе
+  соответствует ожидаемому. Если cert закодирован полностью
+  (legacy-формат — без открытого SafeBag), будет короткое сообщение
+  «Пароль .p12 неверный»; тогда читать cert на админ-машине:
+
+```bash
+openssl pkcs12 -in bfs_service.p12 -nokeys -nomacver -passin pass: \
+    | openssl x509 -noout -text
 ```
 
 ### `monitord not reachable`

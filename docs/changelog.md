@@ -1,5 +1,77 @@
 # Changelog
 
+## [0.3.6] — 2026-05-25
+
+### Диагностика
+
+- `host_id` логируется при каждом `resolve()` с указанием `source`,
+  `raw` и полного `host_id_hash` (target `pam_certauth.host_identity`).
+  Fallback на `unknown` тоже логируется. **Регистрация банкомата в
+  реестре теперь по факту resolved hash из syslog**, не ручное
+  вычисление `sha256(/etc/machine-id)` — устраняет drift между скриптом
+  выпуска cert'а и развёрнутыми `[host_identity].sources`.
+- `PAM_TEXT_INFO` на экране при `host_binding` mismatch: показывает
+  `host_id_hash` этой машины + тип источника + просьбу передать
+  админу. Текст дублируется в syslog (`warn`).
+- `PAM_TEXT_INFO` на экране при wrong .p12 PIN (`MAC verify`): если
+  cert лежит в незашифрованном SafeBag (новый issuance-скрипт), модуль
+  читает его без пароля и показывает host/user, для которых cert
+  выпущен — инженер сразу видит «вставлена не та флешка». Для
+  legacy-формата (cert тоже зашифрован) — обычное «пароль неверный».
+- Per-candidate USB-iteration логирование на уровне `info`: mount
+  succeeded → discovery → envelope parsed → chain validated → final
+  outcome. Был «провал тишины» 14 секунд между «trying USB candidate»
+  и concluding модулем; теперь каждый шаг видим в
+  `journalctl -t pam_certauth`.
+
+### Безопасность
+
+- Fail-closed на неверный PIN: не перебираем USB-партиции (lock-test
+  `wrong_pin_does_not_fall_back_to_next_partition`). Multi-partition
+  fallback остаётся ограничен pre-password failures (ASN.1 envelope),
+  иначе создаётся PIN-oracle / chain-probing по сменным носителям.
+- Multi-source matching по `[host_identity].sources` намеренно НЕ
+  делается (weakest-link bypass: атакующий с root спуфит самый
+  писабельный источник → байпасит host-binding). Это зафиксировано в
+  threat-model.md §4.10.
+
+### Документация
+
+- `install.md` — новая секция «Сертификат не принимается на банкомате»
+  (чек-лист: host_id из syslog → сверка с реестром → перевыпуск или
+  чтение cert plaintext из .p12). Обновлён раздел `host_binding
+  mismatch` (cert в новом формате читается без PIN).
+- `install.md` §8.5 — два сценария PAM-стека (с/без МКЦ PARSEC MAC)
+  с явной инструкцией где `pam_parsec_mac.so` нужен, а где он завалит
+  account-фазу с `Can't obtain required data`.
+- `threat-model.md` §4.10 — multi-source iteration по host_identity
+  явно отмечена как НЕ выполняемая по причине weakest-link bypass.
+
+### Внутреннее
+
+- Новый pub helper `pam_certauth_core::pkcs12::try_extract_cert_without_pin`
+  — best-effort чтение leaf-cert из PKCS#12 без пароля. Возвращает
+  `None` для legacy-формата. Используется wrong-PIN диагностикой.
+- Новый pub метод `FlowIo::show_info(&str)` (default no-op) — путь
+  доставки `PAM_TEXT_INFO` на экран. `RealFlowIo::with_pamh()`
+  привязывает live PAM-handle для cdylib; тест-фейки остаются без
+  изменений.
+
+### Deferred (планируется к 0.3.7)
+
+- `[mac].runtime = "auto" | "required" | "disabled"` — runtime-
+  переключатель Parsec backend без пересборки (сейчас compile-time
+  feature `astra-mac` решает однозначно). Боевой кейс: бинарь собран
+  с `astra-mac`, но на конкретной машине МКЦ-ядро выключено — нужен
+  fallback на StubBackend без пересборки .deb.
+- `HostIdentityResolver::probe_all()` — вернёт значения всех
+  сконфигурированных источников (а не только первого работающего)
+  для startup-логирования и admin-troubleshooting'а.
+- `host_id_hash_prefix` (первые 8 hex) в PAM_TEXT_INFO — полный
+  64-char hash на экране нечитаем.
+- Baseline-строка `«Этот банкомат: source=… hash_prefix=…»` для
+  fly-dm greeter (до prompt'а PIN).
+
 ## [0.3.5] — 2026-05-25
 
 ### Fixed

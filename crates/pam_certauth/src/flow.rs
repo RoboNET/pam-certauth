@@ -2556,7 +2556,10 @@ journald_priority = false
             "expected Discovery error on empty USB list, got {err:?}"
         );
         // Nothing was mounted, so nothing should have been umount/rmdir'd.
-        assert_eq!(ops.umount_calls.load(std::sync::atomic::Ordering::SeqCst), 0);
+        assert_eq!(
+            ops.umount_calls.load(std::sync::atomic::Ordering::SeqCst),
+            0
+        );
         assert_eq!(ops.rmdir_calls.load(std::sync::atomic::Ordering::SeqCst), 0);
     }
 

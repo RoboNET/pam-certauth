@@ -1,3 +1,50 @@
+pam-certauth (0.3.6-1) unstable; urgency=medium
+
+  * Диагностика: при resolve `host_id` в syslog логируется source/raw/
+    `host_id_hash` (target `pam_certauth.host_identity`). Fallback на
+    `unknown` тоже логируется. Источник истины для регистрации
+    банкомата в реестре — этот лог, а не ручной
+    `sha256sum /etc/machine-id` (устраняет drift между скриптом
+    выпуска и развёрнутым `[host_identity].sources`).
+  * Диагностика: при отказе `host_binding` модуль показывает на экране
+    (PAM_TEXT_INFO) `host_id_hash` этой машины и тип источника, чтобы
+    инженер мог сразу сверить с реестром без захода в логи. Текст
+    дублируется в syslog на уровне warn.
+  * Диагностика: при исчерпании PIN-цикла (`MAC verify`) модуль
+    пытается прочитать leaf-cert из `.p12` без пароля (новый
+    issuance-скрипт кладёт его в незашифрованный SafeBag) и
+    показывает на экране host/user, для которых cert был выпущен —
+    инженер видит «не та флешка» против «не тот PIN». Для legacy
+    `.p12` (cert тоже зашифрован) — обычное «пароль неверный».
+  * Диагностика: пошаговое INFO-логирование per-candidate USB
+    итерации (mount → discovery → envelope → chain → outcome). После
+    0.3.5 у админов был 14-секундный «провал тишины» между «trying
+    USB candidate» и concluding PAM-модулем — теперь каждая стадия
+    видна в `journalctl -t pam_certauth`.
+  * Тест: `wrong_pin_does_not_fall_back_to_next_partition` фиксирует
+    fail-closed-инвариант — неверный PIN не запускает перебор USB
+    разделов (иначе создавал бы PIN-oracle).
+  * Тест: `empty_usb_device_list_returns_p12_not_found` —
+    `wait_for_usb` без устройств не должен иницировать `mount()`.
+  * Тест: `rmdir_calls` assertion'ы добавлены к существующим
+    partition-iteration тестам — гарантирует, что failed-партиция
+    полностью разнесена (umount + rmdir), а не только размонтирована.
+  * Документация: install.md — раздел «Сертификат не принимается на
+    банкомате» (чек-лист host_id из syslog + чтение cert plaintext
+    из .p12), обновлён раздел host_binding mismatch (cert в новом
+    формате читается без PIN), новая секция 8.5 про PAM-стек на
+    Astra SE с/без МКЦ (PARSEC MAC).
+  * Документация: threat-model.md — фиксирует, что multi-source
+    matching по host_identity намеренно отключён (weakest-link
+    bypass), `[host_identity].sources` остаётся упорядоченным
+    fallback'ом.
+  * Документация: changelog отмечает отложенные пункты к 0.3.7 —
+    runtime-переключатель `[mac].runtime`, `probe_all()` для
+    host_identity, host_id_hash_prefix в PAM_TEXT_INFO, baseline-
+    строка для fly-dm greeter.
+
+ -- Mikhail Korolev <mikhail@robonet.me>  Mon, 25 May 2026 14:00:00 +0300
+
 pam-certauth (0.3.5-1) unstable; urgency=medium
 
   * Fix: USB partition iteration теперь делает fallback на следующий

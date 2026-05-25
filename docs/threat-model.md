@@ -281,6 +281,26 @@ mitigation → evidence (код, конфиг, тест).
 | 4.8 | Компрометация УЦ (CA private key утёк).                                                      | HSM для CA, разделение ролей; `[trust.pinning]` ограничивает blast radius до уровня pinned-roots. |
 | 4.9 | Уязвимости в `libpam`, `libssl3`, ядре.                                                      | Apt-обновления, CVE-мониторинг.                                 |
 
+### 4.10. Host identity: multi-source matching НЕ выполняется
+
+`[host_identity].sources` задаётся как **упорядоченный fallback**, а не
+как «принять, если совпало с любым из источников». `resolve()` берёт
+первый успешный источник и считает только его `host_id_hash`; cert
+обязан зашифровать именно это значение (через `pam_cert_host_binding`).
+
+Это сделано намеренно. Multi-source matching «совпало хотя бы с
+одним» эквивалентен «weakest source wins»: атакующий с root правами
+подменяет самый писабельный источник (например
+`/sys/class/dmi/id/board_serial` под qemu или `custom_command` через
+shim), и host-binding обходится. Поэтому соответствие проверяется
+ТОЛЬКО против resolved-источника per fallback policy.
+
+Эффект для администраторов: после смены `[host_identity].sources`
+требуется перевыпуск cert'а (новый источник → новый
+`host_id_hash`). Drift между скриптом выпуска и развёрнутой
+конфигурацией ловится через `journalctl -t pam_certauth | grep 'host_id resolved'`
+(см. [install.md](install.md#host_binding-mismatch)).
+
 ## 5. Поверхность атаки
 
 | #   | Поверхность                            | Защита                                                                              |
