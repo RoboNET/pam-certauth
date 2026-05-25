@@ -935,6 +935,305 @@ Recovery:
 См. также [docs/operations.md](operations.md) — раздел «Действия при
 инцидентах».
 
+### `pam_parsec_mac(login:account): Can't obtain required data`
+
+Симптом: на банкомате Astra SE наш `pam_certauth` отработал успешно
+(в логе `pam_certauth.flow: auth result: success`), но через несколько
+секунд `pam_parsec_mac` валит login в `account`-фазе:
+
+```
+pam_parsec_mac(login:account): Can't obtain required data.
+Did you forget add pam_parsec_mac to "auth" stack?
+NOTICE: pam_parsec_mac must be added to "auth" "account" and "session" stack
+```
+
+`pam_parsec_mac.so` хранит PAM data между фазами: auth-инстанс пишет,
+account/session-инстансы читают. Сообщение появляется когда
+auth-инстанс **не выполнился**, хотя в файле он формально присутствует.
+
+**Причина 1 (наиболее частая, integrate-pam.sh < 0.3.8):** наш
+`@include certauth-only` оказался ПЕРЕД строкой `auth required
+pam_parsec_mac.so`. `certauth-only` использует `auth [success=done
+default=die] pam_certauth.so` — `success=done` обрывает auth-стек на
+успехе, поэтому pam_parsec_mac в auth не успевает положить data.
+
+Проверка:
+
+```bash
+sudo grep -n -E 'certauth|parsec_mac' /etc/pam.d/login /etc/pam.d/fly-dm
+```
+
+Если номер строки `@include certauth*` **меньше** номера строки `auth
+... pam_parsec_mac.so` — это оно. Фикс:
+
+```bash
+# integrate-pam.sh >= 0.3.8 расставляет правильно сам
+sudo /usr/share/pam-certauth/integrate-pam.sh --unintegrate /etc/pam.d/login
+sudo /usr/share/pam-certauth/integrate-pam.sh --mode=cert-only /etc/pam.d/login
+sudo /usr/share/pam-certauth/integrate-pam.sh --unintegrate /etc/pam.d/fly-dm
+sudo /usr/share/pam-certauth/integrate-pam.sh --mode=cert-only /etc/pam.d/fly-dm
+
+# либо вручную: переместить `auth required pam_parsec_mac.so` ВЫШЕ строки
+# `@include certauth*`. Не забыть backup.
+```
+
+**Причина 2:** МКЦ-ядро выключено (`parsec.mac=0` в GRUB cmdline), а
+`pam_parsec_mac.so` всё равно в `/etc/pam.d/login`. У модуля нет
+источника MAC data, любая auth-фаза не может её положить → account
+валится. См. подраздел «`parsec.mac=0` + pam_parsec_mac в стеке» ниже.
+
+**Причина 3:** МКЦ-ядро включено, но у пользователя `bfs_service` нет
+MAC-уровня. Проверка:
+
+```bash
+sudo /sbin/pdpl-user bfs_service
+sudo ls /etc/parsec/macdb/$(id -u bfs_service)
+```
+
+Если `pdpl-user` показывает только default range `0:0:0x0:0x0` →
+`0:0:0x0:0x0` без записи в `/etc/parsec/macdb/<uid>` — выставить
+уровень:
+
+```bash
+sudo /sbin/pdpl-user --ilevel 63 bfs_service
+```
+
+После любого из фиксов:
+
+```bash
+sudo systemctl restart fly-dm
+# или для console: просто новая попытка login
+```
+
+### `parsec.mac=0` + `pam_parsec_mac` в стеке
+
+Симптом: на банкомате МКЦ-ядро отключено через GRUB cmdline
+(`parsec.mac=0`), но `/etc/pam.d/login` всё равно содержит
+`pam_parsec_mac.so` в auth/account/session. Модуль ждёт MAC data,
+которой не существует в ядре с выключенным МКЦ — login deny.
+
+Проверка:
+
+```bash
+cat /proc/cmdline | tr ' ' '\n' | grep parsec
+cat /sys/module/parsec/parameters/strict_mode    # N = выключен
+sudo astra-strictmode-control status             # НЕАКТИВНО
+```
+
+Два варианта решения:
+
+**(А) МКЦ нужен** — включить ядро:
+
+```bash
+# /etc/default/grub
+GRUB_CMDLINE_LINUX_DEFAULT="... parsec.mac=1 parsec.max_ilev=63 ..."
+sudo update-grub
+sudo reboot
+# после ребута — выставить уровни:
+sudo /sbin/pdpl-user --ilevel 63 bfs_service
+```
+
+**(Б) МКЦ не нужен** — убрать `pam_parsec_mac.so` из стеков и поставить
+`runtime = "disabled"` нашему модулю:
+
+```toml
+# /etc/pam_certauth/config.toml
+[mac]
+runtime        = "disabled"
+cert_integrity = "ignored"
+```
+
+```bash
+# закомментировать pam_parsec_mac.so в login и fly-dm
+for f in /etc/pam.d/login /etc/pam.d/fly-dm; do
+    sudo sed -i.bak 's|^\(\s*\(auth\|account\|session\).*pam_parsec_mac\.so\)|# disabled МКЦ off: \1|' "$f"
+done
+sudo systemctl restart pam-certauth fly-dm
+```
+
+См. также §8.5 для подробной матрицы PAM-стеков с/без МКЦ.
+
+### `unknown field 'enabled', expected one of ... 'runtime'`
+
+Симптом: daemon не стартует, в логе TOML parse error:
+
+```
+failed to load monitord config from /etc/pam_certauth/config.toml:
+unknown field `enabled`, expected one of `cert_integrity`,
+`fallback_max_integrity`, `warn_on_homedir_label_mismatch`, `runtime`
+```
+
+Причина: в конфиге осталось legacy-поле `[mac].enabled = true` из
+0.3.0–0.3.6. Начиная с 0.3.7 это поле удалено и заменено на
+`[mac].runtime`.
+
+Фикс:
+
+```toml
+# было
+[mac]
+enabled        = true
+cert_integrity = "optional"
+
+# стало (для МКЦ-ядра ВКЛ)
+[mac]
+runtime        = "required"     # или "auto"
+cert_integrity = "optional"
+
+# или (для МКЦ-ядра ВЫКЛ)
+[mac]
+runtime        = "disabled"
+cert_integrity = "ignored"
+```
+
+### WARN `mac_caps_missing` / `pdp_set_fd rc=-1` в логе daemon
+
+Симптом: при старте daemon в `journalctl -u pam-certauth`:
+
+```
+WARN mac.audit: F_event="mac_caps_missing" F_detail="PARSEC_CAP_CHMAC not present in effective set"
+WARN mac.audit: F_event="mac_sessions_file_label_warning" F_error="parsec error: op=pdp_set_fd rc=-1"
+```
+
+Эти warnings **не блокирующие** — daemon стартует и работает. Они
+означают что демон не смог выставить МКЦ-метку на свой
+`sessions.json`, но auth-flow это не затрагивает.
+
+Чтобы убрать (опционально, только если МКЦ-ядро активно и нужна метка
+на session-файле):
+
+```bash
+# Выдать PARSEC_CAP_CHMAC пользователю pamcertauth
+sudo /sbin/usercaps -m "+3" pamcertauth
+
+# Включить wrapper execaps в systemd unit:
+sudo cp /usr/share/pam-certauth/systemd/mac-integrity.conf.example \
+    /etc/systemd/system/pam-certauth.service.d/mac-integrity.conf
+sudo systemctl daemon-reload
+sudo systemctl restart pam-certauth
+```
+
+После этого `mac_caps_missing` пропадает. Подробности — `docs/install.md`
+раздел §«МКЦ — опциональная активация».
+
+### 14-секундная тишина после `trying USB candidate`
+
+Симптом (0.3.5 и старше): между строкой `pam_certauth.flow: trying
+USB candidate devnode=/dev/sdb1` и завершением модуля проходит 10–30
+секунд без логов, потом login deny. На USB-флешке Ventoy или
+multi-partition USB.
+
+Причина: в этих версиях не было per-candidate logging — модуль
+итерировал партиции (mount → discovery → ASN.1 envelope → cleanup) без
+вывода. Длительность = количество партиций × таймаут поиска `.p12`.
+
+Фикс: обновиться до 0.3.6 или новее. В 0.3.6 добавлено пошаговое
+INFO-логирование:
+
+```
+INFO pam_certauth.flow: candidate mounted devnode="/dev/sdb1"
+INFO pam_certauth.flow: p12 not found at <path>, skipping candidate
+INFO pam_certauth.flow: trying USB candidate devnode="/dev/sdb2"
+...
+```
+
+После апгрейда `journalctl -t pam_certauth` показывает что именно
+происходит в эти секунды.
+
+### `dmi_board_serial = 0` (виртуалка), hash меняется при пересборке VM
+
+Симптом: на VirtualBox/QEMU `/sys/class/dmi/id/board_serial` пуст или
+содержит `0`. Если `[host_identity].sources` начинается с
+`dmi_board_serial` — resolver правильно делает fallback на следующий
+источник (обычно `machine_id`), но при пересборке VM `machine-id`
+тоже может измениться → cert с зашитым hash перестаёт валидироваться.
+
+Проверка:
+
+```bash
+cat /sys/class/dmi/id/board_serial   # 0 или пусто = непригоден
+sudo journalctl -t pam_certauth | grep 'host_identity:' | tail -10
+```
+
+Для разработки/тестов на виртуалке рекомендуется:
+
+```toml
+[host_identity]
+sources  = ["override"]
+fallback = "deny"
+override = "test-vm-stable-id"     # любая строка, не меняется при пересборке
+```
+
+В production на железных банкоматах `dmi_board_serial` обычно валиден.
+
+### fly-dm не показывает greeter banner `Этот банкомат: host_id=...`
+
+Симптом (0.3.7+): сообщение `PAM_TEXT_INFO` от нашего модуля не видно
+на greeter UI до prompt'а PIN'а, хотя в `journalctl` оно есть.
+
+Причина: `fly-dm` по умолчанию не пробрасывает PAM info-messages в UI.
+
+Фикс:
+
+```ini
+# /etc/X11/fly-dm/fly-dmrc
+[greeter]
+greeter-show-messages = true
+```
+
+```bash
+sudo systemctl restart fly-dm
+```
+
+### DIGSIG `enforce` без подписи на `pam_certauth.so`
+
+Симптом: `PAM unable to dlopen(pam_certauth.so)` или
+`DIGSIG: blocked unsigned ELF` в `dmesg`. На production-Astra с
+включённым `astra-digsig-control` в enforce-режиме.
+
+Проверка:
+
+```bash
+sudo astra-digsig-control status   # ВКЛЮЧЕНО = enforce
+sudo dmesg | grep -i digsig | grep pam_certauth
+```
+
+Два варианта:
+
+1. Подписать `.deb`-артефакты через Astra-партнёрский CI/CD
+   (`bsign` ключом из `/etc/digsig/keys/`). Стандартный pipeline для
+   production.
+2. Временно перевести в `logging-only`-режим:
+
+   ```bash
+   sudo astra-digsig-control logging
+   ```
+
+   Не для production — в syslog появятся `DIGSIG: NOT_ELF_SIGNED` от
+   каждого вызова `pam_certauth.so`.
+
+См. также `docs/threat-model.md` §3.7.
+
+### `pam-certauth` в `/etc/pam.d/login` не находится после правки
+
+Симптом: после ручной правки `/etc/pam.d/login` login отказывает с
+`Module is unknown` или вообще не стартует.
+
+Проверка:
+
+```bash
+ls -la /lib/security/pam_certauth.so
+test -f /lib/security/pam_certauth.so && echo "module installed"
+sudo ldd /lib/security/pam_certauth.so | grep -i 'not found'
+```
+
+- Если `not found` → недостающая зависимость (например `libparsec-mic.so.3`
+  на старых сборках). Обновиться до `pam-certauth >= 0.3.7-1_amd64-astra.deb`
+  — в этой сборке `cargo:rustc-link-lib=parsec-mic` добавлен в `build.rs`.
+- Если файл `pam_certauth.so` отсутствует — `dpkg -l pam-certauth`
+  покажет состояние пакета. Возможно прерванная установка → `sudo
+  dpkg --configure -a`.
+
 ## 11. Хосты без systemd: SysV init
 
 Пакет `pam-certauth` ставит **оба** init-варианта:

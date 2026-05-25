@@ -1,5 +1,43 @@
 # Changelog
 
+## [0.3.8] — 2026-05-25
+
+### Critical
+
+- **`integrate-pam.sh` placement fix для Astra SE.** Скрипт теперь
+  вставляет `@include certauth*` ПОСЛЕ существующей строки
+  `auth ... pam_parsec_mac.so`, если она есть, а не перед первой
+  `auth`-строкой. Боевой кейс: на Astra SE 1.8.3 `/etc/pam.d/login` и
+  `/etc/pam.d/fly-dm` штатно начинаются с `auth required
+  pam_parsec_mac.so`; placement до неё приводил к тому, что
+  `success=done` jump из `certauth-only` snippet'а обходил
+  auth-инстанс pam_parsec_mac, и account/session-инстансы валились
+  `"Can't obtain required data"` → login deny несмотря на успешную
+  cert-аутентификацию. Подтверждено на проде (Astra SE 1.8.3, kernel
+  6.1.141): после reordering login проходит до конца, fly-dm greeter
+  banner и MAC integrity level 63 — всё работает.
+- Test harness: `tests/scripts/test_integrate_pam.sh` проверяет
+  инвариант «`@include certauth-only` строго после `pam_parsec_mac.so`».
+
+### Документация
+
+- `docs/install.md` §8 — описана логика placement anchor.
+- `docs/install.md` §10 «Что делать, если…» расширен на 8 новых
+  troubleshooting-кейсов из боевой отладки:
+  - `pam_parsec_mac: Can't obtain required data` (три причины + фиксы)
+  - `parsec.mac=0` + pam_parsec_mac в стеке (включить kernel МКЦ vs
+    убрать из стека)
+  - Legacy `[mac].enabled = true` (TOML parse error → миграция на
+    `[mac].runtime`)
+  - WARN `mac_caps_missing` / `pdp_set_fd rc=-1` — не блокеры, как
+    выдать `PARSEC_CAP_CHMAC` если нужна метка на session-файле
+  - 14-секундная тишина после `trying USB candidate` на 0.3.5
+    (фикс через апгрейд на 0.3.6+)
+  - `dmi_board_serial = 0` в виртуалках, drift host_id при пересборке
+  - fly-dm не показывает greeter banner (`greeter-show-messages = true`)
+  - DIGSIG enforce без подписи (подписание или logging-only)
+  - `pam-certauth` модуль не загружается (ldd missing libparsec-mic.so.3)
+
 ## [0.3.7] — 2026-05-25
 
 ### Critical
