@@ -72,18 +72,37 @@ impl HostIdentityResolver {
                         attempts.push((source.kind(), "empty after normalization".to_string()));
                         continue;
                     }
-                    return Ok(resolved(source.kind(), raw, normalized));
+                    let r = resolved(source.kind(), raw, normalized);
+                    tracing::info!(
+                        target: "pam_certauth.host_identity",
+                        source = ?r.source_kind,
+                        raw = %r.raw,
+                        host_id_hash = %r.hash_hex,
+                        "host_id resolved"
+                    );
+                    return Ok(r);
                 }
                 Err(e) => attempts.push((source.kind(), e.to_string())),
             }
         }
         match self.fallback {
             HostIdFallback::Deny => Err(HostIdentityError::AllSourcesFailed { attempts }),
-            HostIdFallback::Warn | HostIdFallback::Allow => Ok(resolved(
-                HostIdSourceKind::Override,
-                "unknown".to_string(),
-                "unknown".to_string(),
-            )),
+            HostIdFallback::Warn | HostIdFallback::Allow => {
+                let r = resolved(
+                    HostIdSourceKind::Override,
+                    "unknown".to_string(),
+                    "unknown".to_string(),
+                );
+                tracing::info!(
+                    target: "pam_certauth.host_identity",
+                    source = ?r.source_kind,
+                    raw = %r.raw,
+                    host_id_hash = %r.hash_hex,
+                    fallback = ?self.fallback,
+                    "host_id fallback to unknown"
+                );
+                Ok(r)
+            }
         }
     }
 }
