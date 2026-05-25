@@ -2410,6 +2410,13 @@ journald_priority = false
             umounts, 1,
             "expected exactly one umount (the junk partition); got {umounts}"
         );
+        // rmdir fires from the MountGuard drop, paired with umount —
+        // junk partition was torn down completely, not just unmounted.
+        let rmdirs = ops.rmdir_calls.load(std::sync::atomic::Ordering::SeqCst);
+        assert_eq!(
+            rmdirs, 1,
+            "expected exactly one rmdir (the junk partition); got {rmdirs}"
+        );
     }
 
     #[test]
@@ -2458,5 +2465,117 @@ journald_priority = false
         // Both junk partitions must have been unmounted on their way out.
         let umounts = ops.umount_calls.load(std::sync::atomic::Ordering::SeqCst);
         assert_eq!(umounts, 2, "expected both junk partitions to umount");
+        // rmdir fires from the MountGuard drop, paired with umount —
+        // both junk partitions were torn down completely (no leaked
+        // mountpoint dirs in tmpfs).
+        let rmdirs = ops.rmdir_calls.load(std::sync::atomic::Ordering::SeqCst);
+        assert_eq!(rmdirs, 2, "expected both junk partitions to rmdir");
+    }
+
+    /// `wait_for_usb` returning an empty list must NOT iterate / mount
+    /// anything — it bubbles up as `Discovery::P12NotFound` (no usable
+    /// credential on the bus). Lock-down test against a future regression
+    /// where someone tries to "try anyway" on an empty device list.
+    #[test]
+    fn empty_usb_device_list_returns_p12_not_found() {
+        struct EmptyUsbFlowIo {
+            ops: Arc<CountingMountOps>,
+        }
+        impl FlowIo for EmptyUsbFlowIo {
+            type Ops = CountingMountOps;
+            fn wait_for_usb(&self) -> Result<Vec<UsbDevice>, UsbError> {
+                Ok(Vec::new())
+            }
+            fn mount(&self, _dev: &UsbDevice) -> Result<MountSession<Self::Ops>, MountError> {
+                panic!("mount() must not be called when wait_for_usb returned empty");
+            }
+        }
+
+        let io = EmptyUsbFlowIo {
+            ops: Arc::new(CountingMountOps::default()),
+        };
+        let ops = io.ops.clone();
+
+        let verifier = build_verifier();
+        let cfg = minimal_cfg();
+        let mappings = vec![cn_mapping("alice", "alice")];
+        let monitor = StubClient;
+        let exec = pam_certauth_core::hooks::NoopExecutor::new();
+        let deps = Deps {
+            cfg: &cfg,
+            trust: &verifier,
+            monitor: &monitor,
+            hook_executor: &exec,
+            host_id_hash: "host-T-hash",
+            host_id_source: HostIdSourceKind::Override,
+            user_mappings: &mappings,
+            pam_target: pam_certauth_proto::SessionTarget::Unknown,
+        };
+
+        let err = authenticate(deps, &io, "alice", "ssh", "sess-empty".into(), |_| {
+            Ok(SecretString::from("any"))
+        })
+        .unwrap_err();
+        assert!(
+            matches!(err, FlowError::Discovery(_)),
+            "expected Discovery error on empty USB list, got {err:?}"
+        );
+        // Nothing was mounted, so nothing should have been umount/rmdir'd.
+        assert_eq!(ops.umount_calls.load(std::sync::atomic::Ordering::SeqCst), 0);
+        assert_eq!(ops.rmdir_calls.load(std::sync::atomic::Ordering::SeqCst), 0);
+    }
+
+    /// Fail-closed invariant: a wrong PIN exhausts the per-partition
+    /// retry loop and returns `FlowError::MaxTries` **without** falling
+    /// back to the next USB partition. Multi-partition fallback is
+    /// restricted to pre-password failures (ASN.1 envelope) so we never
+    /// create a PIN oracle nor enable chain-probing across removable
+    /// media. Locks the boundary against future regressions where
+    /// someone adds `if pin_fail { try_next_partition() }`.
+    #[test]
+    fn wrong_pin_does_not_fall_back_to_next_partition() {
+        // Two partitions, both with valid PKCS#12 bundles. We only
+        // ever mount the first — the second exists to prove we did
+        // NOT iterate to it on PIN failure.
+        let part0 = stage_p12_mount("leaf_rsa.p12", false);
+        let part1 = stage_p12_mount("leaf_rsa.p12", false);
+
+        let partitions = vec![
+            (synth_dev("/dev/sdz1"), part0.path().to_path_buf()),
+            (synth_dev("/dev/sdz2"), part1.path().to_path_buf()),
+        ];
+        let io = MultiPartFlowIo::new(partitions);
+
+        let verifier = build_verifier();
+        let cfg = minimal_cfg();
+        let mappings = vec![cn_mapping("alice", "alice")];
+        let monitor = StubClient;
+        let exec = pam_certauth_core::hooks::NoopExecutor::new();
+        let deps = Deps {
+            cfg: &cfg,
+            trust: &verifier,
+            monitor: &monitor,
+            hook_executor: &exec,
+            host_id_hash: "host-T-hash",
+            host_id_source: HostIdSourceKind::Override,
+            user_mappings: &mappings,
+            pam_target: pam_certauth_proto::SessionTarget::Unknown,
+        };
+
+        let err = authenticate(deps, &io, "alice", "ssh", "sess-wpin".into(), |_| {
+            Ok(SecretString::from("definitely-wrong-pin"))
+        })
+        .unwrap_err();
+        assert!(
+            matches!(err, FlowError::MaxTries),
+            "wrong PIN must yield MaxTries, not partition fallback; got {err:?}"
+        );
+        // Only partition 0 was touched. mount_idx is the next index that
+        // *would* be returned, i.e. the number of mount() calls so far.
+        assert_eq!(
+            io.mount_idx.get(),
+            1,
+            "PIN failure must NOT iterate to partition 1 (would be a PIN oracle)"
+        );
     }
 }
