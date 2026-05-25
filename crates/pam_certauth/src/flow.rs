@@ -292,6 +292,15 @@ pub trait FlowIo {
     ) -> Result<DiscoveredCreds, DiscoveryError> {
         discover_credentials(mountpoint, pattern, pam_user)
     }
+
+    /// Surface an admin-actionable diagnostic message to the user via
+    /// `PAM_TEXT_INFO` (lock screen / terminal). Best-effort: if the PAM
+    /// conv item is unavailable or the application rejects the message,
+    /// the flow MUST continue — this never changes the auth verdict.
+    ///
+    /// Default impl is a no-op so test fakes don't need updating unless
+    /// they want to capture the messages.
+    fn show_info(&self, _msg: &str) {}
 }
 
 /// All runtime collaborators required by [`authenticate`].
@@ -538,7 +547,21 @@ where
 
     // Step 5 — PIN-retry loop.
     let loaded: LoadedKeyMaterial =
-        acquire_p12_material_with_prompter(&creds.p12_bytes, 3, &mut prompt_pin)?;
+        match acquire_p12_material_with_prompter(&creds.p12_bytes, 3, &mut prompt_pin) {
+            Ok(m) => m,
+            Err(AcquireError::MaxTries) => {
+                // Try to read the cert plaintext from the .p12 (newer issuance
+                // tooling embeds the leaf cert outside the encrypted SafeContents
+                // so it can be inspected without the PIN). When that works, we
+                // can surface the host/user binding the cert is bound to so the
+                // engineer can match it against the deployment registry. If the
+                // .p12 predates that change and the cert is still encrypted,
+                // parsing fails gracefully and we fall back to a generic message.
+                io.show_info(&p12_wrong_pin_diagnostic(&creds.p12_bytes));
+                return Err(FlowError::MaxTries);
+            }
+            Err(e) => return Err(FlowError::from(e)),
+        };
 
     // Step 6 — challenge-response (proves we hold the private key).
     let priv_key = loaded.private_key()?;
@@ -566,7 +589,29 @@ where
     // back to `[[user_mapping]]`. Runs BEFORE Step 10 so that cert-
     // extension errors (e.g. missing `pam_cert_host_binding`) surface
     // as the real cause instead of being masked by a stale mapping.
-    verify_host_binding(loaded.end_entity.x509(), deps.host_id_hash)?;
+    if let Err(e) = verify_host_binding(loaded.end_entity.x509(), deps.host_id_hash) {
+        // Surface an admin-actionable diagnostic on the lock screen /
+        // terminal: the host_id_hash of this machine + the source kind
+        // is what the cert MUST encode. Logged at warn so syslog has a
+        // record even when the conv layer drops the message.
+        tracing::warn!(
+            target: "pam_certauth.flow",
+            error = %e,
+            host_id_hash = %deps.host_id_hash,
+            host_id_source = ?deps.host_id_source,
+            pam_user = %pam_user,
+            "host_binding rejected; surfacing diagnostic to user"
+        );
+        io.show_info(&format!(
+            "Сертификат выпущен для другого банкомата.\n\
+             host_id_hash этой машины: {hash}\n\
+             источник host_id: {source:?}\n\
+             Передайте администратору для перевыпуска.",
+            hash = deps.host_id_hash,
+            source = deps.host_id_source,
+        ));
+        return Err(FlowError::CertScope(e));
+    }
 
     // Step 10 — user authorisation. Cert-driven path (user_binding
     // extension present) wins over the legacy `[[user_mapping]]`. Only
@@ -1127,11 +1172,20 @@ pub struct RealFlowIo {
     /// when the flow tries multiple partitions for the same session id.
     /// `Cell` is fine — we run single-threaded inside `pam_sm_authenticate`.
     mount_seq: std::cell::Cell<u32>,
+    /// Optional live PAM handle (as `usize` to avoid raw-ptr Send/Sync
+    /// linting; we never share across threads). When `Some`, `show_info`
+    /// drives `PAM_TEXT_INFO` via the conv callback; when `None` it is a
+    /// silent no-op (tests / e2e on tmpfs).
+    pamh: Option<usize>,
 }
 
 #[cfg(target_os = "linux")]
 impl RealFlowIo {
     /// Build a [`RealFlowIo`] with the standard `mount_seq` starting at 0.
+    ///
+    /// `show_info` is a silent no-op for instances built this way; use
+    /// [`Self::with_pamh`] from `pam_sm_authenticate` to wire the live
+    /// PAM conversation handle for `PAM_TEXT_INFO` diagnostics.
     #[must_use]
     pub fn new(
         timeout: std::time::Duration,
@@ -1147,7 +1201,19 @@ impl RealFlowIo {
             mountpoint_base,
             session_id,
             mount_seq: std::cell::Cell::new(0),
+            pamh: None,
         }
+    }
+
+    /// Attach the live PAM handle so [`FlowIo::show_info`] can deliver
+    /// diagnostics via `PAM_TEXT_INFO`. The handle is stored as `usize`
+    /// to keep the struct `Send`-friendly; the caller MUST ensure the
+    /// `RealFlowIo` does not outlive the `pam_sm_*` stack frame that
+    /// owns `pamh`.
+    #[must_use]
+    pub fn with_pamh(mut self, pamh: *mut pam_sys::pam_handle_t) -> Self {
+        self.pamh = Some(pamh as usize);
+        self
     }
 }
 
@@ -1181,6 +1247,27 @@ impl FlowIo for RealFlowIo {
             mountpoint: target,
             guard,
         })
+    }
+
+    fn show_info(&self, msg: &str) {
+        // Best-effort: PAM_TEXT_INFO failures MUST NOT change the auth
+        // verdict. We log conv failures at warn so admins still see them
+        // even if the lock screen swallows the message.
+        let Some(pamh_addr) = self.pamh else {
+            return;
+        };
+        let pamh = pamh_addr as *mut pam_sys::pam_handle_t;
+        // SAFETY: `pamh` was attached via `with_pamh` from the cdylib
+        // entry, which guarantees the handle is live for the entire
+        // `pam_sm_authenticate` call (and thus the entire flow). The
+        // call is single-threaded.
+        if let Err(e) = unsafe { crate::pam_conv::show_info(pamh, msg) } {
+            tracing::warn!(
+                target: "pam_certauth.flow",
+                error = %e,
+                "PAM_TEXT_INFO conv failed; admin diagnostic not delivered to user"
+            );
+        }
     }
 }
 
@@ -1292,6 +1379,57 @@ impl FlowIo for InMemoryFlowIo {
             guard,
         })
     }
+}
+
+/// Build the user-facing diagnostic shown when the .p12 PIN-retry loop
+/// is exhausted (MAC verify failure).
+///
+/// Tries to read the leaf cert from the .p12 without a password — newer
+/// issuance tooling embeds the cert in an unencrypted `SafeBag` so this
+/// path succeeds and we can tell the engineer which host and which user
+/// the cert was issued for, which is the actionable information for a
+/// "wrong flash" mix-up. When the cert is also encrypted (legacy bundles)
+/// we degrade gracefully to a generic password-wrong message.
+fn p12_wrong_pin_diagnostic(p12_bytes: &[u8]) -> String {
+    let Some(cert) = pam_certauth_core::pkcs12::try_extract_cert_without_pin(p12_bytes) else {
+        return "Пароль .p12 неверный. Проверьте флешку и попробуйте ещё раз.".to_string();
+    };
+    let host = match pam_certauth_core::x509::host_binding_ext::parse(cert.x509()) {
+        Ok(entries) => entries
+            .iter()
+            .map(|e| match e {
+                pam_certauth_core::x509::host_binding_ext::HostDescriptor::Wildcard => {
+                    "*".to_string()
+                }
+                pam_certauth_core::x509::host_binding_ext::HostDescriptor::Sha256Hex(h) => {
+                    format!("sha256:{h}")
+                }
+                pam_certauth_core::x509::host_binding_ext::HostDescriptor::Raw(r) => r.clone(),
+            })
+            .collect::<Vec<_>>()
+            .join(", "),
+        Err(_) => "<не указан>".to_string(),
+    };
+    let user = match pam_certauth_core::x509::user_binding_ext::parse(cert.x509()) {
+        Ok(entries) => entries
+            .iter()
+            .map(|e| match e {
+                pam_certauth_core::x509::user_binding_ext::UserDescriptor::Wildcard => {
+                    "*".to_string()
+                }
+                pam_certauth_core::x509::user_binding_ext::UserDescriptor::Exact(u) => u.clone(),
+            })
+            .collect::<Vec<_>>()
+            .join(", "),
+        Err(_) => "<не указан>".to_string(),
+    };
+    format!(
+        "Пароль .p12 неверный.\n\
+         Этот сертификат выпущен для:\n\
+           host_id_hash: {host}\n\
+           пользователь: {user}\n\
+         Проверьте, что вставлена нужная флешка."
+    )
 }
 
 #[cfg(test)]

@@ -159,6 +159,28 @@ pub fn validate_p12_envelope(bytes: &[u8]) -> Result<(), P12EnvelopeError> {
         .map_err(|e| P12EnvelopeError::Asn1(e.to_string()))
 }
 
+/// Attempt to extract the end-entity certificate from a PKCS#12 buffer
+/// **without** a password.
+///
+/// Newer issuance tooling (`issue-bfs-service-cert.sh` v2 and later)
+/// places the leaf certificate in an unencrypted `SafeBag` so an admin
+/// can inspect host/user bindings without the PIN. When that layout is
+/// present this returns `Some(Certificate)`; when the cert is encrypted
+/// (legacy bundles) or the bundle is malformed it returns `None`.
+///
+/// Used by the PAM flow to enrich the "wrong PIN" diagnostic with the
+/// host/user the cert was issued for — strictly best-effort. The cert
+/// is NOT validated against any trust anchor; it is only parsed enough
+/// to read its extensions for display.
+#[must_use]
+pub fn try_extract_cert_without_pin(bytes: &[u8]) -> Option<Certificate> {
+    let p12 = Pkcs12::from_der(bytes).ok()?;
+    let parsed = p12.parse2("").ok()?;
+    let cert = parsed.cert?;
+    let der = cert.to_der().ok()?;
+    Certificate::from_der(&der).ok()
+}
+
 /// Bounded PIN-retry loop.
 ///
 /// Calls `prompter` up to `max_tries` times.  Each prompt's result is fed to
