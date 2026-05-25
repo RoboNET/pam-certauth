@@ -137,17 +137,36 @@ cp -p "$target" "$backup"
 echo "info: backup written to $backup"
 
 tmpfile="$(mktemp "${target}.XXXXXX")"
+
+# Detect placement anchor:
+#   - if file contains `auth ... pam_parsec_mac.so` — insert AFTER it
+#     (avoids success=done jumps skipping pam_parsec_mac's auth instance,
+#     which leaves its account/session instances without PAM data and
+#     produces "Can't obtain required data" on Astra SE deployments);
+#   - otherwise insert before the first auth line (legacy behaviour).
+if grep -qE '^[[:space:]]*auth[[:space:]].*pam_parsec_mac\.so' "$target"; then
+    insert_mode="after-parsec-mac"
+else
+    insert_mode="before-first-auth"
+fi
+
 inserted=0
 while IFS= read -r line || [[ -n "$line" ]]; do
-    if [[ $inserted -eq 0 && "$line" =~ ^[[:space:]]*auth[[:space:]] ]]; then
+    if [[ $inserted -eq 0 && "$insert_mode" == "before-first-auth" \
+          && "$line" =~ ^[[:space:]]*auth[[:space:]] ]]; then
         printf '%s\n' "$include_line" >> "$tmpfile"
         inserted=1
     fi
     printf '%s\n' "$line" >> "$tmpfile"
+    if [[ $inserted -eq 0 && "$insert_mode" == "after-parsec-mac" \
+          && "$line" =~ ^[[:space:]]*auth[[:space:]].*pam_parsec_mac\.so ]]; then
+        printf '%s\n' "$include_line" >> "$tmpfile"
+        inserted=1
+    fi
 done < "$target"
 
 if [[ $inserted -eq 0 ]]; then
-    # No `auth` line present — append at end.
+    # No anchor line present — append at end.
     printf '%s\n' "$include_line" >> "$tmpfile"
 fi
 

@@ -1,4 +1,25 @@
-pam-certauth (0.3.7-1) unstable; urgency=medium
+pam-certauth (0.3.8-1) unstable; urgency=medium
+
+  * Критично: integrate-pam.sh теперь вставляет `@include certauth*`
+    ПОСЛЕ существующей строки `auth ... pam_parsec_mac.so`, а не перед
+    первой `auth`-строкой. На Astra SE `/etc/pam.d/login` и
+    `/etc/pam.d/fly-dm` штатно начинаются с `auth required
+    pam_parsec_mac.so`; placement до неё приводил к тому, что
+    `success=done` jump из `certauth-only` snippet'а обходил
+    auth-инстанс pam_parsec_mac, и account/session-инстансы валились
+    с `"Can't obtain required data"` → login deny несмотря на
+    успешную cert-аутентификацию. Подтверждено на боевом банкомате
+    (Astra SE 1.8.3, kernel 6.1.141): после ручного reordering и
+    автоматически с новым скриптом login проходит до конца.
+  * Test harness обновлён: `tests/scripts/test_integrate_pam.sh`
+    проверяет инвариант «`@include certauth-only` строго ПОСЛЕ
+    `pam_parsec_mac.so`».
+  * docs/install.md §8 обновлён: документирована логика placement
+    anchor.
+
+ -- Mikhail Korolev <michael443959@gmail.com>  Mon, 25 May 2026 15:40:00 +0300
+
+
 
   * Критично: новое поле `[mac].runtime` (required|auto|disabled,
     default auto) разводит compile-time `astra-mac` от runtime-выбора

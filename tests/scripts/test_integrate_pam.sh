@@ -67,3 +67,26 @@ fi
     || { echo "FAIL: --unintegrate on missing file should be no-op" >&2; exit 1; }
 
 echo "ok: integrate-pam.sh --unintegrate round-trip"
+
+# Astra SE placement: when pam_parsec_mac.so is present in auth, our
+# @include MUST land AFTER it, not before — otherwise certauth-only's
+# `success=done` jump skips pam_parsec_mac's auth instance and account
+# fails with "Can't obtain required data".
+cat > "$WORK/login_astra" <<'EOF'
+auth required pam_parsec_mac.so
+auth requisite pam_nologin.so
+@include common-auth
+account required pam_parsec_mac.so
+@include common-account
+EOF
+"$HELPER" --mode=cert-only "$WORK/login_astra"
+
+# @include certauth-only must appear AFTER `auth ... pam_parsec_mac.so`.
+parsec_line=$(grep -nE '^auth[[:space:]]+.*pam_parsec_mac\.so' "$WORK/login_astra" \
+    | head -1 | awk -F: '{print $1}')
+include_line=$(grep -n '^@include certauth-only$' "$WORK/login_astra" \
+    | head -1 | awk -F: '{print $1}')
+test -n "$parsec_line" && test -n "$include_line" && [ "$include_line" -gt "$parsec_line" ] \
+    || { echo "FAIL: @include certauth-only ($include_line) must come AFTER pam_parsec_mac ($parsec_line)" >&2; exit 1; }
+
+echo "ok: integrate-pam.sh inserts after pam_parsec_mac on Astra SE stacks"
