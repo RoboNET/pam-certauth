@@ -13,6 +13,17 @@ pub enum ServerMessage {
     },
     /// Generic acknowledgement of a request.
     Ack,
+    /// Reply to a [`crate::ClientMessage::UpdateSessionTarget`] request.
+    ///
+    /// Added in 0.3.10. A separate variant from [`Self::Ack`] so that the
+    /// client can distinguish "daemon accepted the update" from "daemon
+    /// accepted some other request"; this also makes it trivial for old
+    /// daemons (which don't know `UpdateSessionTarget`) to fall through to
+    /// `BAD_REQUEST` without the client confusing the responses.
+    SessionTargetUpdated {
+        /// Session id that was updated.
+        session_id: String,
+    },
     /// Pong (response to Ping).
     Pong,
     /// Reply to a [`crate::ClientMessage::GetActiveSessionByUid`] lookup.
