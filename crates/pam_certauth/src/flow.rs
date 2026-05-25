@@ -473,7 +473,9 @@ where
     let mut last_discovery_err: Option<DiscoveryError> = None;
     let mut last_envelope_err: Option<P12EnvelopeError> = None;
     let mut bound: Option<BoundUsb<I::Ops>> = None;
+    let mut candidates_tried: usize = 0;
     for candidate in usb_devices {
+        candidates_tried += 1;
         tracing::info!(
             target: "pam_certauth.flow",
             devnode = ?candidate.devnode,
@@ -486,8 +488,21 @@ where
             mountpoint,
             guard: mount,
         } = io.mount(&candidate)?;
+        tracing::info!(
+            target: "pam_certauth.flow",
+            devnode = ?candidate.devnode,
+            mountpoint = %mountpoint.display(),
+            "candidate mounted"
+        );
         match io.discover(&mountpoint, pkcs12_pattern, pam_user) {
             Ok(creds) => {
+                tracing::info!(
+                    target: "pam_certauth.flow",
+                    devnode = ?candidate.devnode,
+                    p12_path = %creds.p12_path.display(),
+                    p12_bytes = creds.p12_bytes.len(),
+                    "p12 found"
+                );
                 // Pre-parse the outer ASN.1 envelope WITHOUT the PIN.
                 // A file at the expected path that is not actually a
                 // PKCS#12 bundle (typical for multi-partition Apple-
@@ -501,6 +516,11 @@ where
                 // and remain fail-closed without partition iteration.
                 match validate_p12_envelope(&creds.p12_bytes) {
                     Ok(()) => {
+                        tracing::info!(
+                            target: "pam_certauth.flow",
+                            devnode = ?candidate.devnode,
+                            "p12 envelope parsed (pre-PIN ASN.1 check ok)"
+                        );
                         bound = Some((candidate, mountpoint, mount, creds));
                         break;
                     }
@@ -580,6 +600,13 @@ where
 
     // Step 8 — trust verification (path build, signatures, CRLs, pinning).
     let verified = deps.trust.verify(&loaded.end_entity, &presented)?;
+    tracing::info!(
+        target: "pam_certauth.flow",
+        devnode = ?dev.devnode,
+        cert_subject = ?loaded.end_entity.subject_cn().ok(),
+        cert_serial = %loaded.end_entity.serial_hex().to_lowercase(),
+        "cert chain validated"
+    );
 
     // Step 9 — cert scope (cert authorises this host).
     //
@@ -703,6 +730,14 @@ where
             "monitor open_session failed (non-fatal)"
         );
     }
+
+    tracing::info!(
+        target: "pam_certauth.flow",
+        pam_user = %pam_user,
+        candidates_tried,
+        cert_serial = %loaded.end_entity.serial_hex().to_lowercase(),
+        "auth result: success (pkcs12)"
+    );
 
     Ok(FlowOutcome {
         auth_ctx,
