@@ -1,5 +1,74 @@
 # Changelog
 
+## [0.3.7] — 2026-05-25
+
+### Critical
+
+- **`[mac].runtime` runtime-переключатель Parsec backend.** Новое поле
+  `[mac].runtime` (`required` | `auto` | `disabled`, default `auto`)
+  разводит compile-time feature `astra-mac` от runtime-выбора backend'а.
+  Боевой кейс: один `.deb` (собранный с `astra-mac`) ставится на
+  банкоматы с МКЦ и без — поведение управляется через `config.toml`.
+  - `disabled` — гарантированный `StubBackend`, никаких `pdp_*`
+    вызовов даже на сборке с `astra-mac` (фиксирует событие
+    `mac_runtime_disabled` в syslog).
+  - `required` — fail-closed: если `parsec_strict_mode()` ядра вернул
+    не «активно», аутентификация отклоняется с событием
+    `mac_runtime_required` (вместо тихой деградации).
+  - `auto` *(default)* — probe ядра на старте сессии; настоящий
+    `ParsecBackend` при активном МКЦ, fallback на `StubBackend` с
+    одноразовым `mac_runtime_fallback` (WARN) иначе.
+  - Валидация: `disabled + cert_integrity=required` и `required` без
+    `astra-mac` отвергаются на старте.
+  - Снимает блокер на банкомате МКЦ: `pam_parsec_mac: Can't obtain
+    required data` теперь решается выставлением `runtime = "disabled"`
+    + удалением `pam_parsec_mac` из стека, а не пересборкой `.deb`.
+
+### Диагностика
+
+- `HostIdentityResolver::probe_all()` — публичный API, возвращающий
+  одно `ProbeResult` на каждый сконфигурированный источник
+  (`[host_identity].sources`) без влияния на политику выбора
+  (`resolve()` остаётся first-working-wins). cdylib теперь на старте
+  каждой auth-сессии логирует по строке INFO на источник в
+  `pam_certauth.host_identity` (`probe ok` / `probe error` +
+  `probe selected`). Источник истины для регистрации банкомата в
+  реестре — этот лог; `sha256sum /etc/machine-id` вручную больше
+  не нужен и даёт расхождение, если `[host_identity].sources`
+  содержит не только `machine_id`.
+- `ResolvedHostId::hash_prefix()` — первые 8 hex символов sha256 для
+  on-screen диагностик. Сообщение `host_binding` mismatch на лок-скрине
+  банкомата теперь показывает короткий `host_id=a1b2c3d4 (source=…)`
+  вместо нечитаемых 64 hex. Полный hash остаётся в syslog.
+- fly-dm greeter baseline: в начале `pam_sm_authenticate` модуль
+  отправляет `PAM_TEXT_INFO` с короткой идентификацией машины
+  («Этот банкомат: host_id=… (source=…)»). `fly-dm` показывает её
+  в greeter UI при `greeter-show-messages = true` в
+  `/etc/X11/fly-dm/fly-dmrc` — инженер у банкомата мгновенно сверяет
+  hash с реестром, не заходя в shell.
+
+### Документация
+
+- `configuration.md` §«MAC integrity» — новая подсекция «Семантика
+  `runtime`» с матрицей `runtime × cert_integrity × astra-mac`,
+  таблица полей дополнена `runtime` и `warn_on_homedir_label_mismatch`.
+- `install.md` §8.5 переписан под runtime-переключатель: один и тот же
+  `.deb` для трёх сценариев (МКЦ выключен / включён / смешанный парк).
+  Подсекция §8.5.1 — baseline для fly-dm greeter.
+- `install.md` Troubleshooting — команда `journalctl … 'host_identity:
+  probe'` теперь источник истины для регистрации банкомата.
+
+### Внутреннее
+
+- Новые audit-события `mac_runtime_fallback` (WARN) и
+  `mac_runtime_disabled` (INFO) в target `mac.audit`.
+- `MacRuntimeMode` (validated layer) и `RawMacRuntimeMode`
+  (raw config) — pub re-exports через `pam_certauth_core::config::validated`
+  и `::config::raw`.
+- `build_backend(MacRuntimeMode)` в `pam_certauth::session` —
+  единственная точка решения «Parsec vs Stub», вместо двух compile-time
+  ветвей.
+
 ## [0.3.6] — 2026-05-25
 
 ### Диагностика

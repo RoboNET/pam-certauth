@@ -596,6 +596,11 @@ cat /etc/parsec/mswitch.conf 2>/dev/null         # zero_if_notfound: yes → М�
 ls /sys/kernel/security/parsec 2>/dev/null       # ENOENT → МКЦ выключен
 ```
 
+Начиная с 0.3.7 выбор backend'а делается **в runtime** через
+`[mac].runtime` (`required` | `auto` | `disabled`, default `auto`) —
+независимо от compile-time feature `astra-mac`. Это даёт один и тот же
+`.deb` использовать на машинах с МКЦ и без, не пересобирая бинарь.
+
 **Сценарий 1 — МКЦ выключен (текущий default на банкоматах):**
 
 ```
@@ -609,9 +614,14 @@ session   required pam_certauth.so
 
 ```toml
 [mac]
-cert_integrity = "ignored"
-# runtime = "disabled"   # планируется в следующем релизе (см. ниже)
+cert_integrity = "ignore"
+runtime = "disabled"
 ```
+
+`runtime = "disabled"` гарантирует, что даже если бинарь собран с
+`astra-mac`, никакие `pdp_*` вызовы делаться не будут — используется
+no-op `StubBackend`. Событие `mac_runtime_disabled` (INFO) фиксируется
+в syslog один раз на каждую auth-сессию.
 
 **Сценарий 2 — МКЦ включён:**
 
@@ -628,7 +638,13 @@ session   required pam_parsec_mac.so
 ```toml
 [mac]
 cert_integrity = "required"
+runtime = "required"
 ```
+
+`runtime = "required"` означает fail-closed: если по какой-то причине
+МКЦ-ядро на машине ВЫКЛЮЧИЛОСЬ (после downgrade ядра, например),
+аутентификация будет отвергнута с `mac_runtime_required` в syslog
+вместо тихой деградации.
 
 `pam_parsec_mac.so` в `account` и `session` фазах читает MAC-контекст,
 выставленный в `auth`-фазе. Если в `auth` нет ни одного модуля,
@@ -639,14 +655,42 @@ pam_parsec_mac(login:account): Can't obtain required data.
 NOTICE: pam_parsec_mac must be added to "auth" "account" and "session" stack
 ```
 
-> **Известное ограничение 0.3.6.** Если бинарь собран с feature
-> `astra-mac`, но МКЦ-ядро на конкретной машине выключено,
-> `ParsecBackend.apply_session_policy()` не сможет корректно
-> выставить контекст. Раннее лечение — пересобрать без `astra-mac`
-> или выровнять `[mac].cert_integrity` под фактическое состояние
-> ядра. Полноценный runtime-переключатель (`[mac].runtime =
-> "auto" | "required" | "disabled"`) спланирован к 0.3.7
-> (см. changelog 0.3.6 → «Deferred»).
+**Сценарий 3 — смешанный парк (default):**
+
+```toml
+[mac]
+cert_integrity = "optional"
+runtime = "auto"
+```
+
+При `auto` модуль пробует `parsec_strict_mode` ядра — если ядро
+отвечает «активно», берёт настоящий `ParsecBackend`; если нет,
+fallback на `StubBackend` с событием `mac_runtime_fallback` (WARN) в
+syslog. Подходит для дев-машин и smoke-теста на одной сборке.
+
+**Валидация конфига:**
+
+- `runtime = "disabled"` + `cert_integrity = "required"` — отвергается
+  на старте (логически несовместимо).
+- `runtime = "required"` в бинаре без `astra-mac` — отвергается на
+  старте.
+- `cert_integrity = "required"` в бинаре без `astra-mac` —
+  отвергается на старте (старое поведение).
+
+### 8.5.1 fly-dm greeter — диагностика на экране
+
+Начиная с 0.3.7 `pam_certauth` в начале `pam_sm_authenticate` отправляет
+`PAM_TEXT_INFO` с краткой идентификацией машины:
+
+```
+Этот банкомат: host_id=a1b2c3d4 (source=MachineId)
+```
+
+`fly-dm` отображает это сообщение в greeter UI, если включён
+`greeter-show-messages = true` в `/etc/X11/fly-dm/fly-dmrc`. Это
+даёт инженеру у банкомата мгновенно сверить hash с реестром, не
+заходя в shell. Полный host_id_hash остаётся в syslog (`journalctl
+-t pam_certauth | grep host_identity`).
 
 ### 8.6 Безопасность правки
 
@@ -729,10 +773,16 @@ host_id_hash этой машины: <hex>
 Диагностика на банкомате:
 
 ```bash
-# Реальный resolved host_id_hash (источник зависит от config.toml
-# [host_identity].sources):
+# Полная таблица — что ответил каждый сконфигурированный источник
+# host_identity на старте последней auth-сессии. Источник истины для
+# регистрации банкомата в реестре. Доступно начиная с 0.3.7.
+sudo journalctl -t pam_certauth | grep 'host_identity: probe' | tail -20
+# probe ok      source=MachineId raw=abc... host_id_hash_prefix=a1b2c3d4 host_id_hash=<full sha256 hex>
+# probe error   source=DmiBoardSerial error="ENOENT"
+# probe selected source=MachineId (first successful) host_id_hash_prefix=a1b2c3d4
+
+# Совместимая команда из старых релизов (одна строка resolved):
 sudo journalctl -t pam_certauth | grep 'host_id resolved' | tail -1
-# Печатает строку с source=..., raw=..., host_id_hash=<full sha256 hex>.
 
 # Что зашито в сертификате:
 openssl x509 -in /etc/pam_certauth/<atm>.pem -noout -text \

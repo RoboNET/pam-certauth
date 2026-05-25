@@ -1,3 +1,40 @@
+pam-certauth (0.3.7-1) unstable; urgency=medium
+
+  * Критично: новое поле `[mac].runtime` (required|auto|disabled,
+    default auto) разводит compile-time `astra-mac` от runtime-выбора
+    Parsec backend'а. Один и тот же `.deb` теперь работает на машинах
+    с МКЦ и без — поведение управляется через `config.toml`, не
+    пересборкой. `runtime = "disabled"` гарантирует `StubBackend`
+    (события `mac_runtime_disabled`); `auto` пробует
+    `parsec_strict_mode()` и при отсутствии ядра падает на stub с
+    `mac_runtime_fallback` (WARN); `required` fail-closed
+    отвергает аутентификацию с `mac_runtime_required` при отсутствии
+    активного МКЦ. Снимает блокер банкомата
+    «pam_parsec_mac: Can't obtain required data» без пересборки .deb.
+  * Диагностика: `HostIdentityResolver::probe_all()` + cdylib теперь
+    на старте каждой auth-сессии логирует по строке INFO на каждый
+    источник из `[host_identity].sources` (target
+    `pam_certauth.host_identity`, тег `host_identity: probe`).
+    Источник истины для регистрации банкомата в реестре — этот лог.
+  * Диагностика: `ResolvedHostId::hash_prefix()` (первые 8 hex).
+    `PAM_TEXT_INFO` при `host_binding` mismatch теперь показывает
+    `host_id=a1b2c3d4 (source=…)` вместо 64-char hash; полный hash
+    остаётся в syslog.
+  * Диагностика: fly-dm greeter baseline — в начале
+    `pam_sm_authenticate` отправляется `PAM_TEXT_INFO` с короткой
+    идентификацией машины. Показывается в greeter UI при
+    `greeter-show-messages = true` в `/etc/X11/fly-dm/fly-dmrc`.
+  * Валидация конфига: `runtime = "disabled"` +
+    `cert_integrity = "required"` отвергается на старте; `runtime =
+    "required"` без `astra-mac` отвергается на старте.
+  * Документация: `configuration.md` MAC integrity — новая подсекция
+    «Семантика `runtime`» + матрица. `install.md` §8.5 переписан под
+    runtime-переключатель (три сценария вместо двух); добавлен §8.5.1
+    про fly-dm greeter. Troubleshooting обновлён под новый
+    `host_identity: probe` лог.
+
+ -- Mikhail Korolev <mikhail@robonet.me>  Mon, 25 May 2026 15:00:00 +0300
+
 pam-certauth (0.3.6-1) unstable; urgency=medium
 
   * Диагностика: при resolve `host_id` в syslog логируется source/raw/
