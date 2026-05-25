@@ -17,6 +17,14 @@ pub mod store;
 
 pub use store::RegistryStore;
 
+/// Errors raised by [`SessionRegistry::update_target`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+pub enum UpdateTargetError {
+    /// No session with the supplied id is currently tracked.
+    #[error("no active session for the supplied id")]
+    NotFound,
+}
+
 /// Snapshot of one active session as known to monitord.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct ActiveSession {
@@ -137,6 +145,41 @@ impl SessionRegistry {
     /// Get a session by id.
     pub fn find_by_session_id(&self, id: Uuid) -> Option<ActiveSession> {
         self.inner.lock().by_id.get(&id).cloned()
+    }
+
+    /// Replace the [`SessionTarget`] of an existing entry in-place.
+    ///
+    /// Returns `Ok(())` when the entry was found and updated, and
+    /// `Err(())` when no entry matches `id` — callers (the IPC handler)
+    /// turn the latter into a `BAD_REQUEST` server reply so that a stale
+    /// `UpdateSessionTarget` from a long-gone PAM call never silently
+    /// resurrects a session.
+    ///
+    /// This intentionally does NOT touch the `by_uid` reverse index:
+    /// `target` is independent of `uid`, and re-keying the index here
+    /// would race with [`Self::find_by_uid`] callers that already hold a
+    /// snapshot. Persistence is the caller's responsibility (the state
+    /// manager calls `persist_async` after a successful update so the
+    /// new target survives a daemon restart — important for `Logout`
+    /// dispatch correctness after the user already logged in).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`UpdateTargetError::NotFound`] when no session with `id`
+    /// is currently tracked.
+    pub fn update_target(
+        &self,
+        id: Uuid,
+        new_target: SessionTarget,
+    ) -> Result<(), UpdateTargetError> {
+        let mut g = self.inner.lock();
+        match g.by_id.get_mut(&id) {
+            Some(entry) => {
+                entry.target = new_target;
+                Ok(())
+            }
+            None => Err(UpdateTargetError::NotFound),
+        }
     }
 
     /// Look up the active session for `uid`. Returns `None` when no session

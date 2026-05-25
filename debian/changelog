@@ -1,3 +1,67 @@
+pam-certauth (0.3.10-1) unstable; urgency=medium
+
+  * Боевой фикс: `pam_sm_open_session` теперь подтягивает
+    `XDG_SESSION_ID` из PAM environment (через `pam_getenv`) и пушит
+    его в monitord новой IPC-командой `UpdateSessionTarget`. До этого
+    monitord-запись оставалась с placeholder-target'ом, который
+    PAM-модуль захватывал на auth-фазе (`Tty("/dev/tty1")` /
+    `Display(":0")` / `Unknown`); action-runner физически не мог
+    вызвать `terminate_session` без logind id, и при извлечении
+    USB-токена logout НЕ происходил — `WARN pam_certauth.monitord:
+    Logout requested but session has no logind id`. Воспроизведено на
+    Astra SE 1.8.3 production-банкомате.
+  * IPC v2 расширен обратно совместимо: добавлены `ClientMessage::
+    UpdateSessionTarget { session_id, new_target }` и
+    `ServerMessage::SessionTargetUpdated { session_id }`. Старые
+    клиенты (которые не отправляют новую команду) работают как раньше;
+    старые daemon'ы (которые не понимают команду) отвечают
+    `BAD_REQUEST`, PAM-модуль это переживает с warn-логом, без
+    propagation в auth-вердикт.
+  * `SessionRegistry::update_target(id, new_target)` — новый
+    публичный метод; обновление выполняется под существующим mutex'ом,
+    `by_uid` reverse-index НЕ перестраивается (target ортогонален uid).
+    `state_manager` персистит snapshot после успешного update, чтобы
+    новый target пережил рестарт daemon'а.
+  * Action-runner: при дропе Lock/Logout из-за отсутствия logind id
+    теперь печатает actionable WARN с (action, session_id, target,
+    pam_user, pam_service) и INFO-tip с указанием на §10
+    install.md — оператор сразу понимает, в каком сервисе и как
+    переставлять `pam_systemd.so`.
+  * docs/install.md §8: добавлено явное требование — `session ...
+    pam_systemd.so` обязан идти ДО `@include certauth` в любом
+    `/etc/pam.d/<service>`. §10: новая статья «Logout requested but
+    session has no logind id» с тремя причинами (pam_systemd
+    отсутствует / ordering / sysvinit) и verify-шагами.
+  * docs/operations.md §3.6.1: новая статья с матрицей поведения
+    action-runner'а без logind id; hook/shutdown работают как
+    запасной путь, lock/logout — нет. §6.1: новые log-теги.
+  * Tests: +4 (registry unit `update_target_*`, dispatch unit
+    `derive_session_target_from_env_*`, end-to-end IPC
+    `update_session_target_*`). `cargo test --workspace`: 547 passed,
+    4 ignored (прежде: 543/4).
+
+ -- Mikhail Korolev <mikhail@robonet.me>  Mon, 25 May 2026 00:00:00 +0000
+
+pam-certauth (0.3.8-1) unstable; urgency=medium
+
+  * Критично: integrate-pam.sh теперь вставляет `@include certauth*`
+    ПОСЛЕ существующей строки `auth ... pam_parsec_mac.so`, а не перед
+    первой `auth`-строкой. На Astra SE `/etc/pam.d/login` и
+    `/etc/pam.d/fly-dm` штатно начинаются с `auth required
+    pam_parsec_mac.so`; placement до неё приводил к тому, что
+    `success=done` jump из `certauth-only` snippet'а обходил
+    auth-инстанс pam_parsec_mac, и account/session-инстансы валились
+    с `"Can't obtain required data"` → login deny несмотря на
+    успешную cert-аутентификацию. Подтверждено на боевом банкомате
+    (Astra SE 1.8.3, kernel 6.1.141): после ручного reordering и
+    автоматически с новым скриптом login проходит до конца.
+  * Test harness обновлён: `tests/scripts/test_integrate_pam.sh`
+    проверяет инвариант «`@include certauth-only` строго ПОСЛЕ
+    `pam_parsec_mac.so`».
+  * docs/install.md §8 обновлён: документирована логика placement
+    anchor.
+
+ -- Mikhail Korolev <michael443959@gmail.com>  Mon, 25 May 2026 15:40:00 +0300
 pam-certauth (0.3.9-1) unstable; urgency=medium
 
   * Startup validation pipeline: daemon на старте прогоняет шесть

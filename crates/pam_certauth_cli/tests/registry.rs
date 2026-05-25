@@ -125,6 +125,26 @@ fn from_snapshot_rebuilds_uid_index() {
 }
 
 #[test]
+fn update_target_swaps_target_in_place() {
+    let r = SessionRegistry::new();
+    let mut s = make(1, Some("AB"));
+    s.target = SessionTarget::tty("/dev/tty1");
+    r.add(s.clone());
+    r.update_target(s.session_id, SessionTarget::logind("c7"))
+        .expect("present");
+    let got = r.find_by_session_id(s.session_id).expect("present");
+    assert_eq!(got.target, SessionTarget::logind("c7"));
+}
+
+#[test]
+fn update_target_unknown_id_is_err() {
+    let r = SessionRegistry::new();
+    assert!(r
+        .update_target(Uuid::from_u128(42), SessionTarget::logind("c7"))
+        .is_err());
+}
+
+#[test]
 fn concurrent_add_remove_is_safe() {
     use std::sync::Arc;
     let r = Arc::new(SessionRegistry::new());

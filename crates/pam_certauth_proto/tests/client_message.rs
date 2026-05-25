@@ -65,6 +65,19 @@ fn ping_serializes() {
 }
 
 #[test]
+fn update_session_target_roundtrip() {
+    let msg = ClientMessage::UpdateSessionTarget {
+        session_id: Uuid::from_u128(7),
+        new_target: SessionTarget::logind("c42"),
+    };
+    let s = serde_json::to_string(&msg).expect("encode");
+    assert!(s.contains("\"update_session_target\""), "json = {s}");
+    assert!(s.contains("\"logind_session\""), "json = {s}");
+    let back: ClientMessage = serde_json::from_str(&s).expect("decode");
+    assert_eq!(back, msg);
+}
+
+#[test]
 fn rejects_negative_unix_seconds() {
     let json = r#"{"type":"session_close","session_id":"00000000-0000-0000-0000-000000000000","closed_at":-1}"#;
     let err = serde_json::from_str::<ClientMessage>(json).unwrap_err();
