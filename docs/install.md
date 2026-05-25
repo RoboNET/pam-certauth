@@ -473,8 +473,16 @@ openssl x509 -in /tmp/ca/alice.pem -noout -text \
 надо строкой `@include certauth`.
 
 Поставочный скрипт `/usr/share/pam-certauth/integrate-pam.sh`
-автоматически вставляет `@include certauth` перед первой `auth`-строкой
-и сохраняет резервную копию `<file>.bak.<UTC-timestamp>`.
+автоматически вставляет `@include certauth` в правильную позицию и
+сохраняет резервную копию `<file>.bak.<UTC-timestamp>`. Точка вставки:
+
+- Если в файле есть `auth ... pam_parsec_mac.so` (типично для Astra SE
+  `/etc/pam.d/login`, `/etc/pam.d/fly-dm`) — `@include` встаёт **после**
+  этой строки. Иначе snippet `certauth-only` с `success=done` обрывал бы
+  auth-стек до выполнения pam_parsec_mac, и его account/session-инстансы
+  валились с `"Can't obtain required data"` → login deny.
+- Иначе `@include` встаёт перед первой `auth`-строкой (legacy behaviour
+  для систем без МКЦ-стека, например Ubuntu/Debian dev-машин).
 
 > **Важно (0.3.10+) — порядок `pam_systemd.so` в `session`-фазе.**
 > Начиная с 0.3.10 наш `pam_sm_open_session` подтягивает `XDG_SESSION_ID`
