@@ -126,11 +126,16 @@ if [[ -n "$DEB_CARGO_EXTRA_OPTIONS" ]]; then
     echo "info: DEB_CARGO_EXTRA_OPTIONS=$DEB_CARGO_EXTRA_OPTIONS"
 fi
 
-cargo clean
-# shellcheck disable=SC2086  # word-split is intentional for extra flags
-cargo build --workspace --release $DEB_CARGO_EXTRA_OPTIONS
-
 # --- Package -----------------------------------------------------------------
+# dpkg-buildpackage drives the build through debian/rules:
+#   override_dh_auto_clean: rm -rf target debian/cargo_home
+#   override_dh_auto_build: cargo build --release --workspace --offline
+#                              || cargo build --release --workspace
+# So a pre-build here just duplicates work — debian/rules wiped target/
+# and rebuilt anyway. Letting dpkg-buildpackage own the build cuts the
+# release-build step from ~2× to 1×. The offline→online fallback in
+# debian/rules handles the network/registry warm-up that the pre-build
+# used to provide.
 dpkg-buildpackage -us -uc -b --no-sign
 
 # --- Lintian -----------------------------------------------------------------
