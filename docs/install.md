@@ -788,11 +788,65 @@ syslog. Подходит для дев-машин и smoke-теста на од�
 Этот банкомат: host_id=a1b2c3d4 (source=MachineId)
 ```
 
-`fly-dm` отображает это сообщение в greeter UI, если включён
-`greeter-show-messages = true` в `/etc/X11/fly-dm/fly-dmrc`. Это
-даёт инженеру у банкомата мгновенно сверить hash с реестром, не
-заходя в shell. Полный host_id_hash остаётся в syslog (`journalctl
--t pam_certauth | grep host_identity`).
+На текстовых каналах (TTY-login, sshd, sudo) это сообщение показывается
+автоматически — оператор сразу видит host_id, к которому привязан
+сертификат, не заходя в shell. Полный host_id_hash остаётся в syslog
+(`journalctl -t pam_certauth | grep host_identity`).
+
+На `fly-dm` (Astra GUI display manager) PAM_TEXT_INFO **не пробрасывается
+в UI**: на МКЦ-3 банкоматах fly-modern theme hardcoded'но рендерит в
+headline place "Усиленный уровень защищенности" (из
+`fly-dm_greet_modern.mo`), GreetString и PAM-сообщения игнорируются.
+Раньше (0.3.6–0.3.18) мы пробовали разные подходы — fly-dmrc
+`greeter-show-messages`, override `GreetString.desktop` — оба оказались
+cargo-cult на production fly-qdm 2.15+ под МКЦ.
+
+Единственный надёжный канал — впечатать host_id в JPG-фон,
+на который указывает `[background].path` в
+`/etc/X11/fly-dm/fly-modern/settings.ini`. Daemon делает это
+автоматически при опт-ине:
+
+```toml
+# /etc/pam_certauth/config.toml
+[fly_dm_greeter]
+update_wallpaper = true
+# wallpaper_target     = "/usr/share/wallpapers/fly-default-light.jpg"
+# wallpaper_backup     = "/var/lib/pam_certauth/wallpaper.orig.jpg"
+# wallpaper_font       = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
+# wallpaper_font_size  = 64
+# wallpaper_text_color = "#000000"
+# wallpaper_gravity    = "south"
+# wallpaper_offset_y   = 120
+# template_ru          = "Банкомат %n  host_id={host_id_short} ({source})"
+# template_en          = "ATM %n  host_id={host_id_short} ({source})"
+```
+
+При каждом старте `pam-certauth.service`:
+
+1. Первый раз: `cp wallpaper_target → wallpaper_backup` (one-time оригинал)
+2. Открывает `wallpaper_backup` как source
+3. Рендерит template_ru/en (по locale) с подстановкой
+   `{host_id_short}` (первые 8 hex) + `{source}` + `%n` (hostname)
+4. Atomic save → `wallpaper_target`
+
+Daemon **не редактирует** `settings.ini` (operator/ansible управляет
+blur, color_overlay, path). Если на хосте включён сильный
+`color_overlay=0,0,0,100` и `blur.enable=true` — текст может быть
+невидим. Снизить alpha и отключить blur:
+
+```ini
+# /etc/X11/fly-dm/fly-modern/settings.ini
+[background]
+path=/usr/share/wallpapers/fly-default-light.jpg
+color_overlay=0,0,0,30
+
+[background][blur]
+enable=false
+```
+
+После правки `settings.ini` нужен `systemctl restart fly-dm`. После
+правки `[fly_dm_greeter]` в config.toml — `systemctl restart
+pam-certauth`.
 
 ### 8.6 Безопасность правки
 
@@ -1344,24 +1398,50 @@ override = "test-vm-stable-id"     # любая строка, не меняет�
 
 В production на железных банкоматах `dmi_board_serial` обычно валиден.
 
-### fly-dm не показывает greeter banner `Этот банкомат: host_id=...`
+### fly-dm не показывает host_id на экране входа
 
-Симптом (0.3.7+): сообщение `PAM_TEXT_INFO` от нашего модуля не видно
-на greeter UI до prompt'а PIN'а, хотя в `journalctl` оно есть.
+Симптом: на login-экране fly-dm не видно идентификатора банкомата —
+ни через `PAM_TEXT_INFO` от нашего модуля, ни через стоковое
+"Добро пожаловать в %n" из `GreetString`.
 
-Причина: `fly-dm` по умолчанию не пробрасывает PAM info-messages в UI.
+Причина: на Astra с МКЦ-3 (production-банкоматы) fly-modern theme
+(`libfly-dm_greet_modern.so`) hardcoded'но подставляет в headline place
+строку "Усиленный уровень защищенности" из
+`/usr/share/locale/ru/LC_MESSAGES/fly-dm_greet_modern.mo` —
+по PARSEC API определяет МКЦ-уровень. GreetString и PAM-сообщения
+игнорируются.
 
-Фикс:
+Фикс — включить wallpaper-banner writer (с 0.3.19+):
+
+```toml
+# /etc/pam_certauth/config.toml
+[fly_dm_greeter]
+update_wallpaper = true
+```
+
+Затем (если на хосте сильное затемнение / blur скрывает текст):
 
 ```ini
-# /etc/X11/fly-dm/fly-dmrc
-[greeter]
-greeter-show-messages = true
+# /etc/X11/fly-dm/fly-modern/settings.ini
+[background]
+color_overlay=0,0,0,30
+
+[background][blur]
+enable=false
 ```
 
 ```bash
-sudo systemctl restart fly-dm
+sudo systemctl restart pam-certauth     # daemon перерисует banner
+sudo systemctl restart fly-dm           # fly-dm подхватит новый JPG
 ```
+
+Полный набор опций — см. §8.5.1 и `dist/config/config.toml.example`.
+
+**Предыдущие подходы (cargo-cult, удалены в 0.3.19):**
+- `greeter-show-messages = true` в `/etc/X11/fly-dm/fly-dmrc` — KDM/LightDM
+  legacy ключ, fly-qdm 2.15+ его не парсит
+- `/etc/X11/fly-dm/override/GreetString.desktop` — fly-modern на МКЦ-3
+  GreetString игнорирует, headline занят МКЦ-статусом
 
 ### DIGSIG `enforce` без подписи на `pam_certauth.so`
 

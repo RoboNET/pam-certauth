@@ -23,7 +23,6 @@ use std::path::PathBuf;
 
 use pam_certauth_core::config::ValidatedConfig;
 
-pub mod fly_dm_greeter;
 pub mod host_identity;
 pub mod mac_runtime;
 pub mod pam_stack;
@@ -244,15 +243,12 @@ pub fn run_startup_checks(cfg: &ValidatedConfig, opts: &StartupCheckOptions) -> 
 
     host_identity::check(cfg, opts.fs_root.as_deref(), &mut report);
 
-    fly_dm_greeter::check(opts.fs_root.as_deref(), &mut report);
-
     report
 }
 
 /// Re-exported here so callers (`daemon::run_async`, `check` subcommand,
 /// tests) have a single import surface.
 pub use crate::startup_check::{
-    fly_dm_greeter::check as check_fly_dm_greeter,
     mac_runtime::check as check_mac_runtime,
     pam_stack::check as check_pam_stack,
     parsec_caps::check as check_parsec_caps,

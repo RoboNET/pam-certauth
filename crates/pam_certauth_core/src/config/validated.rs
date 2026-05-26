@@ -87,33 +87,69 @@ pub struct ValidatedConfig {
 
 /// Validated `[fly_dm_greeter]` section. See [`RawFlyDmGreeter`] for the
 /// raw schema and motivation. Templates support `{host_id_short}` (8-char
-/// SHA-256 hex prefix) and `{source}` (`snake_case` source kind);
-/// fly-dm-native placeholders (`%n`, `%h`, `%d`) are passed through
-/// verbatim.
+/// SHA-256 hex prefix), `{source}` (`snake_case` source kind) and `%n`
+/// (local hostname).
 #[derive(Debug, Clone)]
 pub struct FlyDmGreeterSection {
-    /// When true, the daemon rewrites the GreetString.desktop file on
-    /// start. Default false (opt-in, Astra-specific).
-    pub update_greet_string: bool,
-    /// Absolute path to the GreetString.desktop file.
-    pub override_path: PathBuf,
-    /// Template rendered into the `Name=` line.
-    pub template_en: String,
-    /// Template rendered into the `Name[ru]=` line.
+    /// When true, the daemon bakes the host_id banner into the fly-dm
+    /// wallpaper on start. Default false (opt-in, Astra-specific).
+    pub update_wallpaper: bool,
+    /// Absolute path to the wallpaper image written by the daemon
+    /// (referenced from `/etc/X11/fly-dm/fly-modern/settings.ini`
+    /// `[background].path`).
+    pub wallpaper_target: PathBuf,
+    /// Absolute path to the preserved original wallpaper.
+    pub wallpaper_backup: PathBuf,
+    /// Absolute path to the TrueType font used to render the banner.
+    pub wallpaper_font: PathBuf,
+    /// Font size in pixels.
+    pub wallpaper_font_size: u32,
+    /// Text colour as RGBA.
+    pub wallpaper_text_color: [u8; 4],
+    /// Anchor on the image for the banner.
+    pub wallpaper_gravity: Gravity,
+    /// Horizontal pixel offset added to the gravity anchor.
+    pub wallpaper_offset_x: i32,
+    /// Vertical pixel offset added to the gravity anchor (upward for
+    /// south gravity, ImageMagick-like behaviour).
+    pub wallpaper_offset_y: i32,
+    /// Russian-locale template.
     pub template_ru: String,
-    /// Template rendered into the `Name[tt]=` line. When `None`, the
-    /// `Name[tt]=` line is omitted entirely.
-    pub template_tt: Option<String>,
+    /// Non-Russian / English template.
+    pub template_en: String,
+}
+
+/// Gravity / anchor position for the wallpaper banner.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Gravity {
+    /// Top centre.
+    North,
+    /// Bottom centre.
+    South,
+    /// Middle right.
+    East,
+    /// Middle left.
+    West,
+    /// Image centre.
+    Center,
 }
 
 impl Default for FlyDmGreeterSection {
     fn default() -> Self {
         Self {
-            update_greet_string: false,
-            override_path: PathBuf::from("/etc/X11/fly-dm/override/GreetString.desktop"),
-            template_en: "ATM %n - host_id={host_id_short} ({source})".to_string(),
-            template_ru: "Банкомат %n · host_id={host_id_short} ({source})".to_string(),
-            template_tt: None,
+            update_wallpaper: false,
+            wallpaper_target: PathBuf::from("/usr/share/wallpapers/fly-default-light.jpg"),
+            wallpaper_backup: PathBuf::from("/var/lib/pam_certauth/wallpaper.orig.jpg"),
+            wallpaper_font: PathBuf::from(
+                "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+            ),
+            wallpaper_font_size: 64,
+            wallpaper_text_color: [0, 0, 0, 255],
+            wallpaper_gravity: Gravity::South,
+            wallpaper_offset_x: 0,
+            wallpaper_offset_y: 120,
+            template_ru: "Банкомат %n  host_id={host_id_short} ({source})".to_string(),
+            template_en: "ATM %n  host_id={host_id_short} ({source})".to_string(),
         }
     }
 }
@@ -476,33 +512,120 @@ fn validate_fly_dm_greeter(raw: Option<&RawFlyDmGreeter>) -> Result<FlyDmGreeter
     let Some(raw) = raw else {
         return Ok(defaults);
     };
-    let override_path = match raw.override_path.as_deref() {
-        Some(p) => {
-            let pb = PathBuf::from(p);
-            if !pb.is_absolute() {
-                return Err(Error::ConfigInvalid {
-                    reason: format!(
-                        "fly_dm_greeter.override_path must be absolute (got {})",
-                        pb.display()
-                    ),
-                });
+
+    fn absolute_path(
+        field: &str,
+        value: Option<&String>,
+        default: PathBuf,
+    ) -> Result<PathBuf, Error> {
+        match value {
+            Some(p) => {
+                let pb = PathBuf::from(p);
+                if !pb.is_absolute() {
+                    return Err(Error::ConfigInvalid {
+                        reason: format!(
+                            "fly_dm_greeter.{field} must be absolute (got {})",
+                            pb.display()
+                        ),
+                    });
+                }
+                Ok(pb)
             }
-            pb
+            None => Ok(default),
         }
-        None => defaults.override_path,
+    }
+
+    let wallpaper_target = absolute_path(
+        "wallpaper_target",
+        raw.wallpaper_target.as_ref(),
+        defaults.wallpaper_target,
+    )?;
+    let wallpaper_backup = absolute_path(
+        "wallpaper_backup",
+        raw.wallpaper_backup.as_ref(),
+        defaults.wallpaper_backup,
+    )?;
+    let wallpaper_font = absolute_path(
+        "wallpaper_font",
+        raw.wallpaper_font.as_ref(),
+        defaults.wallpaper_font,
+    )?;
+
+    let wallpaper_text_color = match raw.wallpaper_text_color.as_deref() {
+        Some(s) => parse_hex_color(s).ok_or_else(|| Error::ConfigInvalid {
+            reason: format!(
+                "fly_dm_greeter.wallpaper_text_color must be #RRGGBB or #RRGGBBAA (got {s:?})"
+            ),
+        })?,
+        None => defaults.wallpaper_text_color,
     };
-    let template_en = raw.template_en.clone().unwrap_or(defaults.template_en);
-    let template_ru = raw.template_ru.clone().unwrap_or(defaults.template_ru);
-    // Empty string in TOML is meaningful for tt — treat as "still set, but
-    // empty" only if explicitly Some. None (omitted) means "no Name[tt]=".
-    let template_tt = raw.template_tt.clone();
+
+    let wallpaper_gravity = match raw.wallpaper_gravity.as_deref() {
+        Some(s) => parse_gravity(s).ok_or_else(|| Error::ConfigInvalid {
+            reason: format!(
+                "fly_dm_greeter.wallpaper_gravity must be one of \
+                 north|south|east|west|center (got {s:?})"
+            ),
+        })?,
+        None => defaults.wallpaper_gravity,
+    };
+
+    let wallpaper_font_size = raw
+        .wallpaper_font_size
+        .unwrap_or(defaults.wallpaper_font_size);
+    if wallpaper_font_size == 0 {
+        return Err(Error::ConfigInvalid {
+            reason: "fly_dm_greeter.wallpaper_font_size must be > 0".into(),
+        });
+    }
+
     Ok(FlyDmGreeterSection {
-        update_greet_string: raw.update_greet_string.unwrap_or(defaults.update_greet_string),
-        override_path,
-        template_en,
-        template_ru,
-        template_tt,
+        update_wallpaper: raw.update_wallpaper.unwrap_or(defaults.update_wallpaper),
+        wallpaper_target,
+        wallpaper_backup,
+        wallpaper_font,
+        wallpaper_font_size,
+        wallpaper_text_color,
+        wallpaper_gravity,
+        wallpaper_offset_x: raw.wallpaper_offset_x.unwrap_or(defaults.wallpaper_offset_x),
+        wallpaper_offset_y: raw.wallpaper_offset_y.unwrap_or(defaults.wallpaper_offset_y),
+        template_ru: raw.template_ru.clone().unwrap_or(defaults.template_ru),
+        template_en: raw.template_en.clone().unwrap_or(defaults.template_en),
     })
+}
+
+fn parse_hex_color(s: &str) -> Option<[u8; 4]> {
+    let s = s.strip_prefix('#')?;
+    if !s.chars().all(|c| c.is_ascii_hexdigit()) {
+        return None;
+    }
+    match s.len() {
+        6 => {
+            let r = u8::from_str_radix(&s[0..2], 16).ok()?;
+            let g = u8::from_str_radix(&s[2..4], 16).ok()?;
+            let b = u8::from_str_radix(&s[4..6], 16).ok()?;
+            Some([r, g, b, 255])
+        }
+        8 => {
+            let r = u8::from_str_radix(&s[0..2], 16).ok()?;
+            let g = u8::from_str_radix(&s[2..4], 16).ok()?;
+            let b = u8::from_str_radix(&s[4..6], 16).ok()?;
+            let a = u8::from_str_radix(&s[6..8], 16).ok()?;
+            Some([r, g, b, a])
+        }
+        _ => None,
+    }
+}
+
+fn parse_gravity(s: &str) -> Option<Gravity> {
+    match s.to_ascii_lowercase().as_str() {
+        "north" => Some(Gravity::North),
+        "south" => Some(Gravity::South),
+        "east" => Some(Gravity::East),
+        "west" => Some(Gravity::West),
+        "center" | "centre" => Some(Gravity::Center),
+        _ => None,
+    }
 }
 
 /// Maximum length of the hex-encoded `categories` field: 16 hex chars = 64 bits.
@@ -1192,46 +1315,98 @@ mod tests {
     #[test]
     fn fly_dm_greeter_defaults_when_section_absent() {
         let s = validate_fly_dm_greeter(None).expect("ok");
-        assert!(!s.update_greet_string);
+        assert!(!s.update_wallpaper);
         assert_eq!(
-            s.override_path,
-            PathBuf::from("/etc/X11/fly-dm/override/GreetString.desktop")
+            s.wallpaper_target,
+            PathBuf::from("/usr/share/wallpapers/fly-default-light.jpg")
         );
+        assert_eq!(
+            s.wallpaper_backup,
+            PathBuf::from("/var/lib/pam_certauth/wallpaper.orig.jpg")
+        );
+        assert_eq!(s.wallpaper_gravity, Gravity::South);
+        assert_eq!(s.wallpaper_font_size, 64);
+        assert_eq!(s.wallpaper_text_color, [0, 0, 0, 255]);
+        assert_eq!(s.wallpaper_offset_y, 120);
         assert!(s.template_en.contains("{host_id_short}"));
         assert!(s.template_ru.contains("{host_id_short}"));
-        assert!(s.template_tt.is_none());
     }
 
     #[test]
     fn fly_dm_greeter_partial_section_fills_defaults() {
         let raw = RawFlyDmGreeter {
-            update_greet_string: Some(true),
-            override_path: None,
-            template_en: None,
+            update_wallpaper: Some(true),
+            wallpaper_target: None,
+            wallpaper_backup: None,
+            wallpaper_font: None,
+            wallpaper_font_size: Some(96),
+            wallpaper_text_color: Some("#FFEEDD".to_string()),
+            wallpaper_gravity: Some("center".to_string()),
+            wallpaper_offset_x: Some(-10),
+            wallpaper_offset_y: None,
             template_ru: Some("custom ru {host_id_short}".to_string()),
-            template_tt: Some("tt {host_id_short}".to_string()),
+            template_en: None,
         };
         let s = validate_fly_dm_greeter(Some(&raw)).expect("ok");
-        assert!(s.update_greet_string);
-        assert_eq!(
-            s.override_path,
-            PathBuf::from("/etc/X11/fly-dm/override/GreetString.desktop")
-        );
+        assert!(s.update_wallpaper);
+        assert_eq!(s.wallpaper_font_size, 96);
+        assert_eq!(s.wallpaper_text_color, [0xFF, 0xEE, 0xDD, 0xFF]);
+        assert_eq!(s.wallpaper_gravity, Gravity::Center);
+        assert_eq!(s.wallpaper_offset_x, -10);
+        assert_eq!(s.wallpaper_offset_y, 120); // default kept
         assert!(s.template_en.contains("{host_id_short}")); // default kept
         assert_eq!(s.template_ru, "custom ru {host_id_short}");
-        assert_eq!(s.template_tt.as_deref(), Some("tt {host_id_short}"));
     }
 
     #[test]
-    fn fly_dm_greeter_rejects_relative_override_path() {
+    fn fly_dm_greeter_rejects_relative_wallpaper_target() {
         let raw = RawFlyDmGreeter {
-            update_greet_string: Some(true),
-            override_path: Some("etc/X11/foo.desktop".to_string()),
+            update_wallpaper: Some(true),
+            wallpaper_target: Some("share/wallpapers/foo.jpg".to_string()),
             ..Default::default()
         };
         let err = validate_fly_dm_greeter(Some(&raw)).unwrap_err();
         match err {
             Error::ConfigInvalid { reason } => assert!(reason.contains("absolute")),
+            other => panic!("unexpected: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn fly_dm_greeter_rejects_invalid_hex_color() {
+        let raw = RawFlyDmGreeter {
+            update_wallpaper: Some(true),
+            wallpaper_text_color: Some("not-a-color".to_string()),
+            ..Default::default()
+        };
+        let err = validate_fly_dm_greeter(Some(&raw)).unwrap_err();
+        match err {
+            Error::ConfigInvalid { reason } => assert!(reason.contains("wallpaper_text_color")),
+            other => panic!("unexpected: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn fly_dm_greeter_accepts_8_digit_hex_color_with_alpha() {
+        let raw = RawFlyDmGreeter {
+            update_wallpaper: Some(true),
+            wallpaper_text_color: Some("#11223344".to_string()),
+            ..Default::default()
+        };
+        let s = validate_fly_dm_greeter(Some(&raw)).expect("ok");
+        assert_eq!(s.wallpaper_text_color, [0x11, 0x22, 0x33, 0x44]);
+    }
+
+    #[test]
+    fn fly_dm_greeter_rejects_unknown_gravity() {
+        let raw = RawFlyDmGreeter {
+            update_wallpaper: Some(true),
+            wallpaper_gravity: Some("upside_down".to_string()),
+            ..Default::default()
+        };
+        let err = validate_fly_dm_greeter(Some(&raw)).unwrap_err();
+        match err {
+            Error::ConfigInvalid { reason } => assert!(reason.contains("wallpaper_gravity")),
             other => panic!("unexpected: {other:?}"),
         }
     }

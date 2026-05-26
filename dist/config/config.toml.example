@@ -238,29 +238,42 @@ journald_priority = true
 # command         = ["/usr/local/sbin/lock-screen"]
 # timeout_seconds = 5
 
-# --- Astra fly-dm greeter banner --------------------------------------------
-# When `update_greet_string = true`, pam-certauth on each daemon start
-# writes /etc/X11/fly-dm/override/GreetString.desktop with the resolved
-# host_id_hash (first 8 hex chars) and source. The original file is
-# preserved as GreetString.desktop.orig on first run.
+# ------------------------------------------------------------------
+# [fly_dm_greeter] — fly-dm login-screen wallpaper banner
+# ------------------------------------------------------------------
+# On Astra МКЦ-3 (production ATM) fly-modern theme hardcoded'но
+# подставляет в headline place "Усиленный уровень защищенности"
+# из fly-dm_greet_modern.mo; GreetString игнорируется. Единственный
+# надёжный канал показать host_id оператору — впечатать его в
+# JPG-фон, на который указывает settings.ini [background].path.
 #
-# Result: above the login form, fly-dm shows e.g.
-#   "Банкомат astra184 · host_id=abc12345 (dmi_board_serial)"
-# making it visually obvious which ATM the operator is touching and
-# matching the host_id the cert is bound to.
+# When update_wallpaper = true, pam-certauth on each daemon start:
+#   1. cp wallpaper_target → wallpaper_backup (one-time)
+#   2. open wallpaper_backup as source
+#   3. render text overlay (template_ru / template_en по locale)
+#   4. atomic write → wallpaper_target
 #
-# Opt-in: default false. Astra-only — silent skip on hosts without
-# /etc/X11/fly-dm/.
+# pam-certauth НЕ редактирует /etc/X11/fly-dm/fly-modern/settings.ini.
+# Operator/ansible управляет blur=false, color_overlay alpha,
+# и (если нужно) указывает кастомный path. Default Astra path:
+# /usr/share/wallpapers/fly-default-light.jpg.
 #
 # Templates support placeholders:
 #   {host_id_short}  - 8-char SHA-256 hex prefix of host_id
 #   {source}         - snake_case source kind (e.g. dmi_board_serial)
-# fly-dm's own %n / %h / %d (hostname, host+domain, display) are
-# substituted by fly-dm itself and pass through unchanged.
+#   %n               - local hostname (substituted by pam-certauth)
+#
+# Opt-in: default false.
 
 [fly_dm_greeter]
-update_greet_string = false
-# override_path  = "/etc/X11/fly-dm/override/GreetString.desktop"
-# template_en    = "ATM %n - host_id={host_id_short} ({source})"
-# template_ru    = "Банкомат %n · host_id={host_id_short} ({source})"
-# template_tt    = "Банкомат %n · host_id={host_id_short}"
+update_wallpaper = false
+# wallpaper_target     = "/usr/share/wallpapers/fly-default-light.jpg"
+# wallpaper_backup     = "/var/lib/pam_certauth/wallpaper.orig.jpg"
+# wallpaper_font       = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
+# wallpaper_font_size  = 64
+# wallpaper_text_color = "#000000"
+# wallpaper_gravity    = "south"   # north | south | east | west | center
+# wallpaper_offset_x   = 0
+# wallpaper_offset_y   = 120
+# template_ru          = "Банкомат %n  host_id={host_id_short} ({source})"
+# template_en          = "ATM %n  host_id={host_id_short} ({source})"
