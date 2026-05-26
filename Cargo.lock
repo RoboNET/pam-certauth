@@ -1177,7 +1177,7 @@ dependencies = [
 
 [[package]]
 name = "pam_certauth"
-version = "0.3.15"
+version = "0.3.16"
 dependencies = [
  "hex",
  "nix 0.31.2",
@@ -1199,7 +1199,7 @@ dependencies = [
 
 [[package]]
 name = "pam_certauth_cli"
-version = "0.3.15"
+version = "0.3.16"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1234,7 +1234,7 @@ dependencies = [
 
 [[package]]
 name = "pam_certauth_core"
-version = "0.3.15"
+version = "0.3.16"
 dependencies = [
  "chrono",
  "cryptoki",
@@ -1269,7 +1269,7 @@ dependencies = [
 
 [[package]]
 name = "pam_certauth_proto"
-version = "0.3.15"
+version = "0.3.16"
 dependencies = [
  "serde",
  "serde_json",

@@ -170,7 +170,11 @@ jobs:
         # shared-key привязан к matrix-target — кэш ubuntu и astra
         # ни в коем случае не должен пересекаться (разные линкеры,
         # разные ABI, разный target/).
-        uses: Swatinem/rust-cache@v2
+        # Pinned to v2.7.8 because GitHub codeload was returning 404 for
+        # the resolved @v2 SHA (e18b...) — see #30 build failure. The
+        # commit is reachable via API but not via the runner's codeload
+        # endpoint; pinning bypasses the broken tag resolution.
+        uses: Swatinem/rust-cache@aa7c1c80a07a27a84c0aa76d0cef0aad3830e330 # v2.7.8
         with:
           shared-key: build-deb-${{ matrix.target.id }}
           cache-on-failure: true
