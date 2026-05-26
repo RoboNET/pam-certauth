@@ -99,38 +99,77 @@ pub struct RawConfig {
     pub fly_dm_greeter: Option<RawFlyDmGreeter>,
 }
 
-/// Raw `[fly_dm_greeter]` block: Astra fly-dm login-screen banner integration.
+/// Raw `[fly_dm_greeter]` block: Astra fly-dm login-screen wallpaper
+/// banner integration.
 ///
-/// When `update_greet_string = true`, on each daemon start `pam-certauth`
-/// writes the resolved `host_id` short prefix into
-/// `/etc/X11/fly-dm/override/GreetString.desktop` so the ATM identifier
-/// is visible above the login form. Opt-in; default is `false`. Templates
-/// support the placeholders `{host_id_short}` (8-char hex prefix of the
-/// SHA-256 `host_id`) and `{source}` (`snake_case` source kind such as
-/// `dmi_board_serial`). The .desktop file's own `%n`, `%h`, `%d`
-/// substitutions are performed by fly-dm itself and are passed through
-/// unchanged.
+/// On Astra МКЦ-3 (production ATM) the `fly-modern` greeter theme
+/// hard-codes "Усиленный уровень защищенности" into the headline place
+/// from `fly-dm_greet_modern.mo`; the `GreetString` xdmcp setting is
+/// ignored. The only reliable surface for showing `host_id` to the
+/// operator is the JPG/PNG file referenced by
+/// `/etc/X11/fly-dm/fly-modern/settings.ini` `[background].path`.
+///
+/// When `update_wallpaper = true`, on each daemon start `pam-certauth`:
+///   1. If `wallpaper_backup` does not exist yet, copies `wallpaper_target`
+///      → `wallpaper_backup` (one-time, preserves the stock image).
+///   2. Opens the backup image as the source.
+///   3. Renders a text overlay using the appropriate locale template.
+///   4. Atomically writes the result to `wallpaper_target`.
+///
+/// `pam-certauth` never edits `settings.ini` — that file is managed by
+/// the operator / ansible (blur, color-overlay alpha, custom path).
+///
+/// Templates support the placeholders `{host_id_short}` (8-char hex
+/// prefix of the SHA-256 `host_id`), `{source}` (`snake_case` source
+/// kind such as `dmi_board_serial`), and `%n` which is substituted with
+/// the local hostname at render time.
 #[derive(Debug, Clone, Default, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RawFlyDmGreeter {
-    /// When true, the daemon (on start) rewrites GreetString.desktop with
-    /// the resolved `host_id`; when false (default), the file is left
-    /// untouched.
+    /// When true, the daemon (on start) bakes the resolved `host_id`
+    /// banner into the fly-dm background wallpaper; when false (default),
+    /// the file is left untouched.
     #[serde(default)]
-    pub update_greet_string: Option<bool>,
-    /// Absolute path to the GreetString.desktop file. Default
-    /// `/etc/X11/fly-dm/override/GreetString.desktop`.
+    pub update_wallpaper: Option<bool>,
+    /// Absolute path to the wallpaper file written by the daemon (the
+    /// same path that `settings.ini` `[background].path` references).
+    /// Default `/usr/share/wallpapers/fly-default-light.jpg`.
     #[serde(default)]
-    pub override_path: Option<String>,
-    /// Template for the `Name=` (default / English) line.
+    pub wallpaper_target: Option<String>,
+    /// Absolute path to the preserved original wallpaper. The daemon
+    /// copies `wallpaper_target` → `wallpaper_backup` exactly once,
+    /// then always re-renders from the backup. Kept outside
+    /// `/usr/share/wallpapers/` so an apt upgrade of `fly-qdm` cannot
+    /// trample it. Default `/var/lib/pam_certauth/wallpaper.orig.jpg`.
     #[serde(default)]
-    pub template_en: Option<String>,
-    /// Template for the `Name[ru]=` line.
+    pub wallpaper_backup: Option<String>,
+    /// Absolute path to a TrueType font file used to render the banner.
+    /// Default `/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf`.
+    #[serde(default)]
+    pub wallpaper_font: Option<String>,
+    /// Font size in pixels. Default 64.
+    #[serde(default)]
+    pub wallpaper_font_size: Option<u32>,
+    /// Text colour as `#RRGGBB` or `#RRGGBBAA`. Default `#000000`.
+    #[serde(default)]
+    pub wallpaper_text_color: Option<String>,
+    /// Anchor for the text on the image: `north`, `south`, `east`,
+    /// `west`, or `center`. Default `south`.
+    #[serde(default)]
+    pub wallpaper_gravity: Option<String>,
+    /// Horizontal pixel offset added to the gravity anchor. Default 0.
+    #[serde(default)]
+    pub wallpaper_offset_x: Option<i32>,
+    /// Vertical pixel offset added to the gravity anchor; for `south`
+    /// gravity this is interpreted upward (ImageMagick-like). Default 120.
+    #[serde(default)]
+    pub wallpaper_offset_y: Option<i32>,
+    /// Russian-locale template.
     #[serde(default)]
     pub template_ru: Option<String>,
-    /// Template for the `Name[tt]=` line. Omitted from output when not set.
+    /// Non-Russian (default / English) template.
     #[serde(default)]
-    pub template_tt: Option<String>,
+    pub template_en: Option<String>,
 }
 
 const fn default_usb_wait_seconds() -> u64 {
