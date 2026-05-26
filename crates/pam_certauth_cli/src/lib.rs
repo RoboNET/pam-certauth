@@ -21,6 +21,7 @@
 pub mod actions;
 pub mod check;
 pub mod daemon;
+pub mod fly_dm_greeter_writer;
 pub mod logging;
 pub mod logind;
 pub mod notify;
