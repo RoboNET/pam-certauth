@@ -5,9 +5,10 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use crate::config::raw::{
-    RawCertIntegrityMode, RawConfig, RawCryptoBackend, RawHostIdFallback, RawHostIdentity,
-    RawMacPolicy, RawMacRuntimeMode, RawMode, RawMonitor, RawMonitorFailMode, RawOnUsbRemoved,
-    RawPkcs11LockingMode, RawRevocationMode, RawTrust, RawTrustOverride, RawUserMapping,
+    RawCertIntegrityMode, RawConfig, RawCryptoBackend, RawFlyDmGreeter, RawHostIdFallback,
+    RawHostIdentity, RawMacPolicy, RawMacRuntimeMode, RawMode, RawMonitor, RawMonitorFailMode,
+    RawOnUsbRemoved, RawPkcs11LockingMode, RawRevocationMode, RawTrust, RawTrustOverride,
+    RawUserMapping,
 };
 use crate::error::TrustError;
 use crate::hooks::{validate_hook, HookConfig};
@@ -80,6 +81,41 @@ pub struct ValidatedConfig {
     pub hooks: Vec<HookConfig>,
     /// MAC integrity policy (spec §2.4).
     pub mac: MacPolicy,
+    /// Astra fly-dm greeter banner section.
+    pub fly_dm_greeter: FlyDmGreeterSection,
+}
+
+/// Validated `[fly_dm_greeter]` section. See [`RawFlyDmGreeter`] for the
+/// raw schema and motivation. Templates support `{host_id_short}` (8-char
+/// SHA-256 hex prefix) and `{source}` (`snake_case` source kind);
+/// fly-dm-native placeholders (`%n`, `%h`, `%d`) are passed through
+/// verbatim.
+#[derive(Debug, Clone)]
+pub struct FlyDmGreeterSection {
+    /// When true, the daemon rewrites the GreetString.desktop file on
+    /// start. Default false (opt-in, Astra-specific).
+    pub update_greet_string: bool,
+    /// Absolute path to the GreetString.desktop file.
+    pub override_path: PathBuf,
+    /// Template rendered into the `Name=` line.
+    pub template_en: String,
+    /// Template rendered into the `Name[ru]=` line.
+    pub template_ru: String,
+    /// Template rendered into the `Name[tt]=` line. When `None`, the
+    /// `Name[tt]=` line is omitted entirely.
+    pub template_tt: Option<String>,
+}
+
+impl Default for FlyDmGreeterSection {
+    fn default() -> Self {
+        Self {
+            update_greet_string: false,
+            override_path: PathBuf::from("/etc/X11/fly-dm/override/GreetString.desktop"),
+            template_en: "ATM %n - host_id={host_id_short} ({source})".to_string(),
+            template_ru: "Банкомат %n · host_id={host_id_short} ({source})".to_string(),
+            template_tt: None,
+        }
+    }
 }
 
 /// Validated `[mac]` policy block.
@@ -430,8 +466,43 @@ impl TryFrom<&RawConfig> for ValidatedConfig {
             logging,
             hooks,
             mac: validate_mac(&raw.mac)?,
+            fly_dm_greeter: validate_fly_dm_greeter(raw.fly_dm_greeter.as_ref())?,
         })
     }
+}
+
+fn validate_fly_dm_greeter(raw: Option<&RawFlyDmGreeter>) -> Result<FlyDmGreeterSection, Error> {
+    let defaults = FlyDmGreeterSection::default();
+    let Some(raw) = raw else {
+        return Ok(defaults);
+    };
+    let override_path = match raw.override_path.as_deref() {
+        Some(p) => {
+            let pb = PathBuf::from(p);
+            if !pb.is_absolute() {
+                return Err(Error::ConfigInvalid {
+                    reason: format!(
+                        "fly_dm_greeter.override_path must be absolute (got {})",
+                        pb.display()
+                    ),
+                });
+            }
+            pb
+        }
+        None => defaults.override_path,
+    };
+    let template_en = raw.template_en.clone().unwrap_or(defaults.template_en);
+    let template_ru = raw.template_ru.clone().unwrap_or(defaults.template_ru);
+    // Empty string in TOML is meaningful for tt — treat as "still set, but
+    // empty" only if explicitly Some. None (omitted) means "no Name[tt]=".
+    let template_tt = raw.template_tt.clone();
+    Ok(FlyDmGreeterSection {
+        update_greet_string: raw.update_greet_string.unwrap_or(defaults.update_greet_string),
+        override_path,
+        template_en,
+        template_ru,
+        template_tt,
+    })
 }
 
 /// Maximum length of the hex-encoded `categories` field: 16 hex chars = 64 bits.
@@ -1114,6 +1185,53 @@ mod tests {
         let err = validate_pkcs12_path_pattern(Some("./cert.p12")).unwrap_err();
         match err {
             Error::ConfigInvalid { reason } => assert!(reason.contains("'..'")),
+            other => panic!("unexpected: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn fly_dm_greeter_defaults_when_section_absent() {
+        let s = validate_fly_dm_greeter(None).expect("ok");
+        assert!(!s.update_greet_string);
+        assert_eq!(
+            s.override_path,
+            PathBuf::from("/etc/X11/fly-dm/override/GreetString.desktop")
+        );
+        assert!(s.template_en.contains("{host_id_short}"));
+        assert!(s.template_ru.contains("{host_id_short}"));
+        assert!(s.template_tt.is_none());
+    }
+
+    #[test]
+    fn fly_dm_greeter_partial_section_fills_defaults() {
+        let raw = RawFlyDmGreeter {
+            update_greet_string: Some(true),
+            override_path: None,
+            template_en: None,
+            template_ru: Some("custom ru {host_id_short}".to_string()),
+            template_tt: Some("tt {host_id_short}".to_string()),
+        };
+        let s = validate_fly_dm_greeter(Some(&raw)).expect("ok");
+        assert!(s.update_greet_string);
+        assert_eq!(
+            s.override_path,
+            PathBuf::from("/etc/X11/fly-dm/override/GreetString.desktop")
+        );
+        assert!(s.template_en.contains("{host_id_short}")); // default kept
+        assert_eq!(s.template_ru, "custom ru {host_id_short}");
+        assert_eq!(s.template_tt.as_deref(), Some("tt {host_id_short}"));
+    }
+
+    #[test]
+    fn fly_dm_greeter_rejects_relative_override_path() {
+        let raw = RawFlyDmGreeter {
+            update_greet_string: Some(true),
+            override_path: Some("etc/X11/foo.desktop".to_string()),
+            ..Default::default()
+        };
+        let err = validate_fly_dm_greeter(Some(&raw)).unwrap_err();
+        match err {
+            Error::ConfigInvalid { reason } => assert!(reason.contains("absolute")),
             other => panic!("unexpected: {other:?}"),
         }
     }

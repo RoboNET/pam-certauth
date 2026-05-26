@@ -237,3 +237,30 @@ journald_priority = true
 # stage           = "usb_removed"
 # command         = ["/usr/local/sbin/lock-screen"]
 # timeout_seconds = 5
+
+# --- Astra fly-dm greeter banner --------------------------------------------
+# When `update_greet_string = true`, pam-certauth on each daemon start
+# writes /etc/X11/fly-dm/override/GreetString.desktop with the resolved
+# host_id_hash (first 8 hex chars) and source. The original file is
+# preserved as GreetString.desktop.orig on first run.
+#
+# Result: above the login form, fly-dm shows e.g.
+#   "Банкомат astra184 · host_id=abc12345 (dmi_board_serial)"
+# making it visually obvious which ATM the operator is touching and
+# matching the host_id the cert is bound to.
+#
+# Opt-in: default false. Astra-only — silent skip on hosts without
+# /etc/X11/fly-dm/.
+#
+# Templates support placeholders:
+#   {host_id_short}  - 8-char SHA-256 hex prefix of host_id
+#   {source}         - snake_case source kind (e.g. dmi_board_serial)
+# fly-dm's own %n / %h / %d (hostname, host+domain, display) are
+# substituted by fly-dm itself and pass through unchanged.
+
+[fly_dm_greeter]
+update_greet_string = false
+# override_path  = "/etc/X11/fly-dm/override/GreetString.desktop"
+# template_en    = "ATM %n - host_id={host_id_short} ({source})"
+# template_ru    = "Банкомат %n · host_id={host_id_short} ({source})"
+# template_tt    = "Банкомат %n · host_id={host_id_short}"
