@@ -1,3 +1,38 @@
+pam-certauth (0.3.19-1) unstable; urgency=medium
+
+  * fly-dm greeter pivot #2: GreetString.desktop writer was no-op
+    on production МКЦ-3 ATM (fly-modern hardcodes "Усиленный
+    уровень защищенности" in the headline place). Replaced by a
+    wallpaper writer that bakes host_id into the JPG that
+    settings.ini [background].path points to. Opt-in via
+    [fly_dm_greeter].update_wallpaper. Pure Rust (image + ab_glyph),
+    no native deps added. See PR #36.
+  * New CLI subcommand `pam-certauth dump-host-id` — probes EVERY
+    canonical host_identity source (not only the subset in
+    [host_identity].sources) and emits a TSV report. The
+    `active_under_current_config=yes` column marks the source the
+    daemon currently picks. `--output FILE` or `--usb` to write
+    atomically. Used by operators after the clone-image bootstrap
+    flip to discover what host_id_hash the hardware ended up with.
+    See PR #38.
+  * New /usr/share/pam-certauth/finish-bootstrap.sh — single-command
+    transition from clone-image bootstrap state to production:
+    atomic config rewrite (sources = ["override"] → real sources)
+    with backup, pam-certauth check validation, daemon restart,
+    automatic dump-host-id --usb. Flags --non-interactive
+    (ansible), --no-restart, --no-dump, --sources. Idempotent.
+    See PR #38.
+  * New admin-tools release tarball
+    pam-certauth-admin-tools-<ver>.tar.gz uploaded to GitHub Release
+    alongside the .deb (NOT packaged into the .deb). Contains
+    issue-service-cert.sh (per-host / wildcard / bootstrap modes),
+    vault-pki-setup.sh, prepare-usb-flash.sh, README. Project-
+    neutral naming throughout. See PR #37.
+  * docs/install.md, docs/operations.md, docs/cert-issuance.md —
+    cross-linked clone-image workflow.
+
+ -- Mikhail Korolev <michael443959@gmail.com>  Wed, 27 May 2026 19:45:00 +0300
+
 pam-certauth (0.3.18-1) unstable; urgency=medium
 
   * Packaging cleanup: drop the fly-dm greeter debconf prompt added
