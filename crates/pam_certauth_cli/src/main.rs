@@ -9,6 +9,7 @@ use clap::{Parser, Subcommand};
 
 use pam_certauth_cli::check::{self, CheckArgs};
 use pam_certauth_cli::daemon::{self, DaemonArgs};
+use pam_certauth_cli::dump_host_id::{self, DumpHostIdArgs};
 
 #[derive(Debug, Parser)]
 #[command(name = "pam-certauth", version, about = "PAM CertAuth control plane")]
@@ -26,6 +27,12 @@ enum Cmd {
     /// 1 when at least one check reports ERROR. Intended as a preflight
     /// before `systemctl restart pam-certauth`.
     Check(CheckArgs),
+    /// Probe every `[host_identity]` source and emit a TSV report of the
+    /// resulting `host_id_hash` values. Use on freshly cloned ATM images
+    /// to learn which host_id the daemon will resolve so the CA admin can
+    /// issue a per-host service cert. Output destinations: `--output PATH`,
+    /// `--usb` (writes to first viable USB partition), or stdout.
+    DumpHostId(DumpHostIdArgs),
 }
 
 fn main() -> ExitCode {
@@ -33,5 +40,6 @@ fn main() -> ExitCode {
     match cli.cmd {
         Cmd::Daemon(args) => daemon::run(args),
         Cmd::Check(args) => check::run(args),
+        Cmd::DumpHostId(args) => dump_host_id::run_cli(args),
     }
 }

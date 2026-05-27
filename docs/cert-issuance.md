@@ -182,3 +182,70 @@ IntegrityLabel ::= SEQUENCE {
 
 DER здесь — три TLV: `SEQUENCE`, `INTEGER 2`, `BIT STRING '01'B`.
 
+## Workflow для клонированных образов: `pam-certauth dump-host-id`
+
+Когда АРМ разворачивается из клона эталонного образа, `host_id` АРМ-а
+становится известен только после первого бута: значения `dmi_board_serial`,
+`machine_id` и т.п. различаются у каждого экземпляра железа.
+Чтобы CA-админ мог выписать per-host сертификат, привязанный к
+правильному `host_id_hash`, оператор снимает дамп прямо с АРМ-а.
+
+Порядок действий:
+
+1. Загрузка клона с bootstrap-сертификатом
+   (`[host_identity].sources = ["override"]`).
+2. Оператор запускает одну команду:
+
+   ```bash
+   sudo /usr/share/pam-certauth/finish-bootstrap.sh
+   ```
+
+   Скрипт делает всё нужное в одном проходе:
+   - переписывает `config.toml` атомарно
+     (`sources = ["override"]` → `sources = ["dmi_board_serial", "machine_id"]`,
+     строка `override = "..."` комментируется), с бекапом
+     `config.toml.bak.<UTC>`;
+   - валидирует новый конфиг через `pam-certauth check` и откатывается
+     к бекапу, если валидация падает;
+   - перезапускает `pam-certauth.service` и ждёт `is-active=active`
+     (до 30 с);
+   - снимает дамп `pam-certauth dump-host-id --usb` с ретраями
+     (полминуты), либо ложит TSV в `/var/lib/pam_certauth/` если флешка
+     не появилась.
+
+   Полезные флаги:
+   - `--non-interactive` — пропустить подтверждение (для ansible).
+   - `--sources "dmi_board_serial,machine_id"` (или переменная окружения
+     `POST_INSTALL_SOURCES`) — заменить production-список источников.
+   - `--no-restart`, `--no-dump` — для dry-run / отдельных этапов.
+
+   Скрипт идемпотентен: повторный запуск на уже перенастроенном АРМ-е
+   обнаружит отсутствие `sources = ["override"]` и выйдет с кодом 0
+   без изменений.
+
+   Снятый TSV имеет столбцы
+   `source`, `status`, `hash_hex`, `hash_prefix`, `raw`, `normalized`,
+   `active_under_current_config`, `reason` — одна строка на каждый
+   *известный* источник (не только настроенные). Строка с
+   `active_under_current_config=yes` — это тот источник, который демон
+   реально использует прямо сейчас.
+
+   Если нужно снять дамп вручную в обход скрипта (например, после уже
+   состоявшегося flip-а):
+   - `pam-certauth dump-host-id --usb` — на USB-флешку;
+   - `pam-certauth dump-host-id --output /tmp/host.tsv` — в файл;
+   - `pam-certauth dump-host-id` (без флагов) — в stdout.
+
+3. Оператор приносит флешку CA-админу. Админ читает `hash_hex` из
+   строки с `active_under_current_config=yes` и подаёт его в
+   `dist/admin-tools/issue-service-cert.sh` как параметр `host_id_hash`.
+4. Per-host сертификат + новый `.p12` ложатся на ту же флешку через
+   `dist/admin-tools/prepare-usb-flash.sh`.
+5. Оператор возвращает флешку на АРМ — bootstrap-сертификат больше
+   не нужен, на АРМ-е остаётся только per-host цепочка.
+
+Команда выходит с ненулевым кодом, если ни один источник не отдал
+непустое значение (это означает, что Ansible-flip не отработал или
+DMI-поля BIOS-а пустые) — это однозначный сигнал «не выписывайте
+сертификат, пока не почините вход».
+

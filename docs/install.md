@@ -220,6 +220,29 @@ Exit-код: **0** — только INFO/WARN; **1** — есть хотя бы 
 обрывается, в `journalctl -u pam-certauth` останутся структурные
 сообщения с `target=pam_certauth.startup_check` для каждой проверки.
 
+### 2.4¾ Сценарий клонированного образа (golden image → ATM)
+
+Если устанавливаете на множество банкоматов через клон одного образа,
+полезны два инструмента (полный workflow — в
+[docs/cert-issuance.md](cert-issuance.md), раздел «Workflow для клонированных образов»):
+
+- `pam-certauth dump-host-id [--output FILE | --usb]` — пробует
+  ВСЕ известные `host_identity`-источники (`machine_id`, `dmi_*`,
+  `hostname`, `override`, `custom_command` если configured), пишет
+  TSV-отчёт. Столбец `active_under_current_config=yes` отмечает
+  источник, который daemon реально использует сейчас. `--usb`
+  автоматически монтирует первую USB-флешку r/w и пишет
+  `host-ids-<hostname>-<UTC>.tsv`.
+
+- `/usr/share/pam-certauth/finish-bootstrap.sh` — единственная
+  команда после раскатки клона: переписывает
+  `[host_identity].sources = ["override"]` на production-список
+  (`["dmi_board_serial", "machine_id"]` по умолчанию), валидирует
+  через `pam-certauth check`, рестартует daemon, снимает дамп
+  host_id'ов на USB. Флаг `--non-interactive` — для ansible.
+  Идемпотентен: повторный запуск на уже перенастроенном АРМ-е
+  выходит с кодом 0 без изменений.
+
 ### 2.5 Проверка systemd-юнита
 
 ```bash
