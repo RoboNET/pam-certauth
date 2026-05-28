@@ -182,70 +182,65 @@ IntegrityLabel ::= SEQUENCE {
 
 DER здесь — три TLV: `SEQUENCE`, `INTEGER 2`, `BIT STRING '01'B`.
 
-## Workflow для клонированных образов: `pam-certauth dump-host-id`
+## Workflow для клонированных образов
 
-Когда АРМ разворачивается из клона эталонного образа, `host_id` АРМ-а
-становится известен только после первого бута: значения `dmi_board_serial`,
-`machine_id` и т.п. различаются у каждого экземпляра железа.
-Чтобы CA-админ мог выписать per-host сертификат, привязанный к
-правильному `host_id_hash`, оператор снимает дамп прямо с АРМ-а.
+Полный end-to-end runbook (эталон → клон → flip → выпуск per-host) —
+в **[docs/clone-image.md](clone-image.md)**. Здесь — только CA-сторона:
+как читать TSV-дамп и какие параметры подаются в
+`issue-service-cert.sh`.
 
-Порядок действий:
+### TSV-дамп от оператора
 
-1. Загрузка клона с bootstrap-сертификатом
-   (`[host_identity].sources = ["override"]`).
-2. Оператор запускает одну команду:
+Оператор после `finish-bootstrap.sh` присылает CA-админу файл
+`host-ids-<hostname>-<UTC>.tsv` (с USB или через защищённый канал).
+Колонки:
 
-   ```bash
-   sudo /usr/share/pam-certauth/finish-bootstrap.sh
-   ```
+```
+source  status  hash_hex  hash_prefix  raw  normalized  active_under_current_config  reason
+```
 
-   Скрипт делает всё нужное в одном проходе:
-   - переписывает `config.toml` атомарно
-     (`sources = ["override"]` → `sources = ["dmi_board_serial", "machine_id"]`,
-     строка `override = "..."` комментируется), с бекапом
-     `config.toml.bak.<UTC>`;
-   - валидирует новый конфиг через `pam-certauth check` и откатывается
-     к бекапу, если валидация падает;
-   - перезапускает `pam-certauth.service` и ждёт `is-active=active`
-     (до 30 с);
-   - снимает дамп `pam-certauth dump-host-id --usb` с ретраями
-     (полминуты), либо ложит TSV в `/var/lib/pam_certauth/` если флешка
-     не появилась.
+Одна строка на каждый **известный** источник (не только настроенные
+в `[host_identity].sources`): `machine_id`, `dmi_board_serial`,
+`dmi_product_serial`, `dmi_chassis_serial`, `hostname`, `override`,
+`custom_command` (если configured).
 
-   Полезные флаги:
-   - `--non-interactive` — пропустить подтверждение (для ansible).
-   - `--sources "dmi_board_serial,machine_id"` (или переменная окружения
-     `POST_INSTALL_SOURCES`) — заменить production-список источников.
-   - `--no-restart`, `--no-dump` — для dry-run / отдельных этапов.
+Строка с `active_under_current_config=yes` — это тот источник,
+который daemon **сейчас** использует. Только её `hash_hex` идёт
+в сертификат.
 
-   Скрипт идемпотентен: повторный запуск на уже перенастроенном АРМ-е
-   обнаружит отсутствие `sources = ["override"]` и выйдет с кодом 0
-   без изменений.
+### Выпуск per-host сертификата
 
-   Снятый TSV имеет столбцы
-   `source`, `status`, `hash_hex`, `hash_prefix`, `raw`, `normalized`,
-   `active_under_current_config`, `reason` — одна строка на каждый
-   *известный* источник (не только настроенные). Строка с
-   `active_under_current_config=yes` — это тот источник, который демон
-   реально использует прямо сейчас.
+`hash_hex` подаётся в `issue-service-cert.sh` (из admin-tools
+tarball'а, см. [clone-image.md §6.1](clone-image.md)):
 
-   Если нужно снять дамп вручную в обход скрипта (например, после уже
-   состоявшегося flip-а):
-   - `pam-certauth dump-host-id --usb` — на USB-флешку;
-   - `pam-certauth dump-host-id --output /tmp/host.tsv` — в файл;
-   - `pam-certauth dump-host-id` (без флагов) — в stdout.
+```bash
+./issue-service-cert.sh --mode per-host \
+    --host-id-hash <hash_hex> \
+    --user <service_user>
+```
 
-3. Оператор приносит флешку CA-админу. Админ читает `hash_hex` из
-   строки с `active_under_current_config=yes` и подаёт его в
-   `dist/admin-tools/issue-service-cert.sh` как параметр `host_id_hash`.
-4. Per-host сертификат + новый `.p12` ложатся на ту же флешку через
-   `dist/admin-tools/prepare-usb-flash.sh`.
-5. Оператор возвращает флешку на АРМ — bootstrap-сертификат больше
-   не нужен, на АРМ-е остаётся только per-host цепочка.
+Cert получает `pam_cert_host_binding = <hash_hex>`,
+`pam_cert_user_binding = <service_user>` и стандартный
+`extendedKeyUsage = clientAuth, emailProtection`. На МКЦ-АРМ
+дополнительно `pam_cert_max_integrity` (см. §«Поле MaxIntegrity»).
 
-Команда выходит с ненулевым кодом, если ни один источник не отдал
-непустое значение (это означает, что Ansible-flip не отработал или
-DMI-поля BIOS-а пустые) — это однозначный сигнал «не выписывайте
-сертификат, пока не почините вход».
+Готовый `.p12` упаковывается на ту же флешку через
+`prepare-usb-flash.sh` и возвращается на АРМ.
+
+### Pre-flight checks
+
+`pam-certauth dump-host-id` (вызываемый внутри `finish-bootstrap.sh`
+или вручную) выходит с **ненулевым кодом**, если ни один источник
+не отдал непустое значение. Это однозначный сигнал «не выписывайте
+сертификат, пока не починён вход» — типичные причины: пустые
+DMI-поля в VM, очищенный `machine_id`, неработающий `custom_command`.
+См. [clone-image.md §8](clone-image.md) — troubleshooting.
+
+### Ручной дамп (без скрипта)
+
+После уже состоявшегося flip-а:
+
+- `pam-certauth dump-host-id --usb` — на USB-флешку;
+- `pam-certauth dump-host-id --output /tmp/host.tsv` — в файл;
+- `pam-certauth dump-host-id` (без флагов) — в stdout.
 

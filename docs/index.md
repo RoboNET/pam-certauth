@@ -3,30 +3,61 @@
 Все документы — на русском языке (primary). Английская обзорная
 страница доступна отдельно.
 
-## Для администраторов
+## Маршруты по ролям
 
-- [README.md](../README.md) — обзор проекта, быстрый старт.
-- [docs/install.md](install.md) — пошаговая установка.
-- [docs/configuration.md](configuration.md) — справочник по
-  `config.toml`.
-- [docs/cert-issuance.md](cert-issuance.md) — выпуск сертификатов с
-  расширениями `pam_cert_host_binding`, `pam_cert_user_binding` и
-  `pam_cert_max_integrity` (МКЦ).
-- [docs/operations.md](operations.md) — runbook эксплуатации.
+### Оператор / интегратор (раскатка на машинах)
 
-## Для безопасников
+1. [install.md](install.md) — пошаговая установка `pam_certauth`.
+2. [pam-integration.md](pam-integration.md) — правка `/etc/pam.d/*`,
+   режимы (`2fa` / `optional` / `cert-only`), SysV.
+3. [configuration.md](configuration.md) — справочник по `config.toml`.
+4. [mac-integrity.md](mac-integrity.md) — opt-in активация МКЦ
+   на Astra strict-mode.
+5. [clone-image.md](clone-image.md) — раскатка парка через
+   клонированный образ.
+6. [fly-dm-greeter.md](fly-dm-greeter.md) — wallpaper banner на
+   fly-dm под МКЦ.
+7. [operations.md](operations.md) — runbook регулярных операций.
 
-- [docs/threat-model.md](threat-model.md) — модель угроз с указанием
-  evidence для каждого утверждения.
-- [docs/architecture.md](architecture.md) — архитектура, IPC-протокол,
-  fail-closed правила.
+### CA-админ (выпуск сертификатов)
 
-## Для разработчиков
+1. [cert-issuance.md](cert-issuance.md) — расширения
+   `pam_cert_host_binding`, `pam_cert_user_binding`,
+   `pam_cert_max_integrity`, сценарии выпуска.
+2. [clone-image.md §6](clone-image.md) — CA-сторона clone-image
+   workflow (admin-tools tarball, выпуск per-host).
 
-- [docs/development.md](development.md) — гид контрибьютора.
-- [docs/changelog.md](changelog.md) — история изменений.
-- API-документация Rust: запустить `cargo doc --workspace --no-deps`
-  локально; результат — в `target/doc/pam_certauth_core/index.html`.
+### Безопасник
+
+1. [threat-model.md](threat-model.md) — модель угроз с evidence.
+2. [architecture.md](architecture.md) — IPC-протокол, fail-closed
+   правила, host identity chain.
+3. [mac-integrity.md](mac-integrity.md) — МКЦ activation и защита
+   `config.toml` через ilevel=63.
+
+### Разработчик
+
+1. [development.md](development.md) — гид контрибьютора.
+2. [architecture.md](architecture.md) — внутренняя архитектура.
+3. [changelog.md](changelog.md) — история изменений.
+4. API: `cargo doc --workspace --no-deps` → `target/doc/pam_certauth_core/index.html`.
+
+### Когда что-то сломалось
+
+- [troubleshooting.md](troubleshooting.md) — единый справочник по
+  диагностике. Cert/auth-ошибки, USB, monitord, PAM lockout, МКЦ,
+  fly-dm, clone-image, инциденты безопасности.
+
+## Что нового в 0.3.19
+
+- `pam-certauth dump-host-id` — TSV-дамп всех host_identity-источников.
+- `finish-bootstrap.sh` — single-pass переход с clone-image bootstrap
+  на production.
+- `[fly_dm_greeter].update_wallpaper` — впечатать `host_id` в JPG-фон
+  fly-dm.
+- Admin-tools tarball отдельно от `.deb` (GitHub Release).
+
+См. [changelog.md](changelog.md).
 
 ## Что нового в 0.3.0
 
@@ -34,23 +65,9 @@
   strict mode.
 - X.509-расширение `pam_cert_max_integrity` — потолок целостности
   сессии инженера.
-- Новая секция `[mac]` в `config.toml` с тринарной политикой
+- Секция `[mac]` в `config.toml` с тринарной политикой
   `cert_integrity` (`required` / `optional` / `ignore`).
 - Feature-флаг `astra-mac`; stub-сборка для не-Astra хостов.
-
-## Что нового в 0.1.1
-
-- Cert-driven авторизация: расширения `pam_cert_host_binding` /
-  `pam_cert_user_binding` имеют приоритет над `[[user_mapping]]`;
-  TOML-список оставлен как legacy fallback.
-- Три эксплуатационных режима (`2fa` / `optional` / `cert-only`),
-  переключаемых `integrate-pam.sh --mode=...`.
-- syslog-backend для PAM-модуля: `tracing::error!` /
-  `tracing::warn!` пишутся в `/var/log/auth.log` под `pam_certauth`.
-- SysV-init скрипт `/etc/init.d/pam-certauth` — для хостов
-  без systemd.
-- Документированы `on_usb_removed`-режимы, USBGuard-interop и
-  Astra ЗПС (DIGSIG) caveat.
 
 ## English documentation
 

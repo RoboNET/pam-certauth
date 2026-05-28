@@ -1,28 +1,14 @@
-# pam_certauth — USB-token certificate authentication for Astra Linux SE
+# pam_certauth — USB-token certificate authentication for Linux
 
 > Russian translation: [README.ru.md](README.ru.md). Detailed
 > reference docs in [docs/](docs/) are Russian-primary; this README is
 > the English entry point.
 
-`pam_certauth` is a PAM module for Astra Linux SE 1.7+ that replaces
+`pam_certauth` is a Linux PAM module that replaces
 password-based authentication with X.509 certificate verification. The
 private key lives on a USB token (Rutoken EDS 2.0/3.0 via PKCS#11,
 JaCarta GOST-2 via PKCS#11) or, for development setups, in a
 passphrase-protected `.p12` on a USB filesystem.
-
-## What's new in 0.3.0
-
-0.3.0 adds **MAC integrity (МКЦ)** integration for Astra SE strict
-mode. New X.509 extension `pam_cert_max_integrity` declares the
-ceiling clearance for an engineer session; the resolved label is
-applied to the process tree via libpdp/libparsec and audited.
-Configuration lives in the new `[mac]` section. See
-[docs/install.md](docs/install.md) and
-[docs/configuration.md](docs/configuration.md).
-
-The 0.2.x scopes / M-of-N work-order / approver-EKU experiment was
-rolled back; the surface area is back to the 0.1.x cert-auth baseline
-plus MAC integrity.
 
 ## Capabilities
 
@@ -41,13 +27,11 @@ plus MAC integrity.
 
 ## Supported operating systems
 
-| OS                                              | Version           | Status                                                       |
-|-------------------------------------------------|-------------------|--------------------------------------------------------------|
-| Astra Linux SE                                  | 1.7, 1.7.5, 1.7.6 | Primary target, smoke-tested in a VM.                        |
-| Astra Linux CE «Орёл»                           | 2.12              | Supported, smoke-tested.                                     |
-| Astra Linux SE «Воронеж» / «Смоленск»           | 1.7+              | Supported via compatible packages.                           |
-| Ubuntu                                          | 22.04 LTS         | Best-effort, no GOST (no certified `gost-engine`).           |
-| Debian                                          | 12 «bookworm»     | Best-effort, no GOST.                                        |
+| OS             | Version       | Status                                             |
+|----------------|---------------|----------------------------------------------------|
+| Astra Linux SE | 1.8           | Primary target, smoke-tested in a VM.              |
+| Ubuntu         | 22.04 LTS     | Best-effort, no GOST (no certified `gost-engine`). |
+| Debian         | 12 «bookworm» | Best-effort, no GOST.                              |
 
 ## Supported tokens
 

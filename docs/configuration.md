@@ -190,6 +190,37 @@ PAM-пользователем разрешено залогиниться, а �
 - `${host_id}` — вычисленный `host_id`.
 - `${session_id}` — UUID PAM-сессии.
 
+### Секция `[fly_dm_greeter]` (0.3.19+)
+
+Опциональная. Контролирует wallpaper writer для fly-dm — впечатывает
+`host_id` в JPG-фон, на который указывает `[background].path` в
+`/etc/X11/fly-dm/fly-modern/settings.ini`. Workaround для МКЦ-3
+fly-modern theme, где PAM_TEXT_INFO не пробрасывается в UI.
+
+| Поле                    | Тип    | Default                                                       | Описание                                                                 |
+|-------------------------|--------|---------------------------------------------------------------|--------------------------------------------------------------------------|
+| `update_wallpaper`      | bool   | `false`                                                       | Включить wallpaper writer.                                               |
+| `wallpaper_target`      | path   | `/usr/share/wallpapers/fly-default-light.jpg`                 | JPG, который daemon перерисовывает.                                      |
+| `wallpaper_backup`      | path   | `/var/lib/pam_certauth/wallpaper.orig.jpg`                    | Куда сохраняется one-time оригинал источника.                            |
+| `wallpaper_font`        | path   | `/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf`        | TrueType шрифт для рендера.                                              |
+| `wallpaper_font_size`   | int    | `64`                                                          | Размер шрифта в пунктах.                                                 |
+| `wallpaper_text_color`  | string | `"#000000"`                                                   | Цвет в hex (`#RRGGBB`).                                                  |
+| `wallpaper_gravity`     | enum   | `"south"`                                                     | `north` / `south` / `east` / `west` / `center` — якорь позиционирования. |
+| `wallpaper_offset_y`    | int    | `120`                                                         | Смещение в пикселях от gravity-якоря.                                    |
+| `template_ru`           | string | `"Банкомат %n  host_id={host_id_short} ({source})"`           | Шаблон для ru locale.                                                    |
+| `template_en`           | string | `"ATM %n  host_id={host_id_short} ({source})"`                | Шаблон для en locale.                                                    |
+
+Подстановки в template'е: `{host_id_short}` (первые 8 hex sha256),
+`{source}` (имя источника — `MachineId`, `DmiBoardSerial` ...), `%n`
+(hostname). Поведение, baseline для `settings.ini`, troubleshooting
+— см. **[fly-dm-greeter.md](fly-dm-greeter.md)**.
+
+Legacy-поле `update_greet_string` (0.3.16–0.3.18) — переписывало
+`/etc/X11/fly-dm/override/GreetString.desktop`. На production
+МКЦ-3 fly-modern игнорируется (no-op). Сохранено для обратной
+совместимости, но НЕ работает на банкоматах. Использовать
+`update_wallpaper` вместо.
+
 ### Секция `[[trust_override]]`
 
 Массив таблиц. Каждая запись — переопределение `[trust]` для

@@ -178,263 +178,32 @@ openssl crl -in /etc/pam_certauth/crl/staff.crl -noout -lastupdate -nextupdate
 по парку. На каждой железке `machine_id` / DMI / hostname уникальны и
 отличаются от эталонного.
 
-Workflow подробно — в [cert-issuance.md](cert-issuance.md), раздел
-«Workflow для клонированных образов». Краткий план:
+**Полный workflow:** [docs/clone-image.md](clone-image.md) — bootstrap
+эталона, `finish-bootstrap.sh` на клоне, выпуск per-host сертификата,
+Ansible-выкатка, troubleshooting.
 
-1. На эталоне `config.toml` — `[host_identity].sources = ["override"]`
-   + `override = "installation"`, в trust store — bootstrap-сертификат
-   с `host_binding = "installation"` (см. `dist/admin-tools/issue-service-cert.sh`,
-   режим `bootstrap`).
-2. Клон образа → новая железка → boot. Bootstrap-сертификат принят.
-3. Оператор на АРМ-е запускает:
-   ```bash
-   sudo /usr/share/pam-certauth/finish-bootstrap.sh
-   ```
-   Скрипт меняет `sources` на реальные (по умолчанию
-   `["dmi_board_serial", "machine_id"]`), валидирует конфиг,
-   перезапускает daemon, снимает дамп host_id'ов на USB.
-4. Оператор приносит USB CA-админу. Админ выписывает per-host
-   сертификат по `hash_hex` из строки `active_under_current_config=yes`,
-   кладёт через `dist/admin-tools/prepare-usb-flash.sh` обратно
-   на ту же флешку.
-5. Оператор возвращает USB на АРМ — bootstrap-сертификат больше
-   не валиден (host_id_hash изменился после flip-а), работает только
-   per-host цепочка.
+Краткий контур для дежурного:
 
-Для ansible-раскатки скрипт принимает `--non-interactive` и
-`--sources "dmi_board_serial,machine_id"`. Идемпотентен.
+1. Эталон: `[host_identity].sources = ["override"]` +
+   bootstrap-cert с `host_binding = "installation"`.
+2. Клон → boot → bootstrap auth работает.
+3. На каждом АРМ-е: `sudo /usr/share/pam-certauth/finish-bootstrap.sh`
+   (или Ansible с `--non-interactive`). Flip + дамп host_id на USB.
+4. CA-админ выписывает per-host сертификат по `hash_hex` из строки
+   `active_under_current_config=yes` (`issue-service-cert.sh` из
+   admin-tools tarball).
+5. USB возвращается на АРМ через `prepare-usb-flash.sh` — bootstrap
+   больше не используется, работает per-host цепочка.
 
 ## 3. Действия при инцидентах
 
-### 3.1 Компрометация сертификата пользователя
+Все инциденты и troubleshooting вынесены в единый справочник —
+**[docs/troubleshooting.md](troubleshooting.md)**:
 
-**Симптом:** уведомление от пользователя или SOC.
-
-**Действия:**
-
-1. Внести серийник в CRL УЦ.
-2. Перевыпустить и опубликовать CRL.
-3. Сразу обновить CRL на endpoints (см. §2.2; ускоренная процедура —
-   `systemctl start pam-certauth-crl-update.service`).
-4. Проверить журнал:
-
-   ```bash
-   sudo journalctl -u pam-certauth -g 'revoked' -n 100
-   ```
-
-5. Сообщить пользователю; организовать выпуск нового сертификата.
-
-### 3.2 Потеря токена
-
-**Действия:**
-
-1. Revoke серийника (см. 3.1).
-2. Дождаться propagation CRL.
-3. Выпустить replacement-токен с новым сертификатом, в котором
-   корректно проставлены `pam_cert_host_binding` и
-   `pam_cert_user_binding` (см. [cert-issuance.md](cert-issuance.md)).
-
-### 3.3 Утрата CA private key (worst-case)
-
-**Действия:**
-
-1. **Немедленно** прекратить новые выпуски сертификатов.
-2. Объявить инцидент уровня Critical; задействовать команду ИБ.
-3. Disaster recovery — отдельный sub-runbook
-   `docs/operations-disaster-recovery.md` (создаётся организацией;
-   объём типового документа — 10–20 страниц).
-4. Подготовить новый CA из cold-storage backup'а или перевыпустить с
-   нуля.
-5. Координированное обновление всех endpoints.
-6. Опубликовать инцидент через канал `security@...` и в
-   [docs/changelog.md](changelog.md) секции `Security`.
-
-### 3.4 monitord не запускается
-
-**Симптом:** `systemctl status pam-certauth` показывает
-`failed`.
-
-**Диагностика:**
-
-```bash
-sudo journalctl -xeu pam-certauth -n 200
-```
-
-**Типовые причины:**
-
-- занятый сокет: проверить `lsof /run/pam_certauth/monitord.sock`;
-- нет прав на `/run/pam_certauth/`: проверить `ls -la /run/pam_certauth/`,
-  должно быть `0750 root:root`;
-- повреждённый `config.toml`: запустить вручную:
-
-  ```bash
-  sudo /usr/bin/pam-certauth
-  ```
-
-  и прочитать stdout/stderr;
-- отсутствие `gost-engine`: проверить `openssl engine gost -t`.
-
-### 3.5 USB-токен заблокирован USBGuard или политикой ЗПС
-
-**Симптом:** аутентификация падает с
-`AUTHINFO_UNAVAIL` сразу после вставки токена; в `/var/log/auth.log`
-строка вида:
-
-```
-pam_certauth: WARN  pam_certauth.flow: usb device found ...
-pam_certauth: WARN  pam_certauth.auth: authentication failed
-              error=mount: mount(2) failed: Operation not permitted (os error 1)
-```
-
-**Причины:**
-
-- USBGuard в `block`-режиме и токен не в allowlist-rule;
-- ЗПС (`astra-digsig-control`) в `enforce`-режиме и
-  `/lib/security/pam_certauth.so` или `/usr/bin/pam-certauth`
-  не подписаны валидным ключом из `/etc/digsig/keys/`.
-
-**Диагностика:**
-
-```bash
-# USBGuard
-sudo usbguard list-devices              # столбец "block" → токен заблокирован
-sudo usbguard list-rules
-journalctl -u usbguard.service -n 30 --no-pager
-
-# ЗПС
-sudo astra-digsig-control status        # "ВКЛЮЧЕНО"/"НЕАКТИВНО"
-sudo dmesg | grep -i digsig | tail
-```
-
-**Действие — USBGuard:**
-
-```bash
-# либо разрешить конкретный токен по vid:pid:
-sudo usbguard append-rule \
-    'allow id 0aca:1234 name "Rutoken ECP" hash "ABC..."'
-
-# либо вписать правило в /etc/usbguard/rules.conf и перезапустить:
-sudo systemctl restart usbguard
-```
-
-Дополнительно в systemd-юнит monitord следует добавить порядок запуска,
-чтобы наш демон не стартовал до USBGuard:
-
-```bash
-sudo mkdir -p /etc/systemd/system/pam-certauth.service.d
-sudo tee /etc/systemd/system/pam-certauth.service.d/usbguard.conf <<EOF
-[Unit]
-After=usbguard.service
-Wants=usbguard.service
-EOF
-sudo systemctl daemon-reload
-```
-
-**Действие — ЗПС:**
-
-`pam_certauth.so` и `pam-certauth` обязаны быть подписаны
-системой ЭЦП Astra. На машине разработки подпись устанавливается через
-`bsign` GPG-ключом из доверенного связки `/etc/digsig/keys/`. Production-
-сборки должны проходить через CI Astra-партнёра, который выдаёт
-подписанный `.deb`. Без подписи в `enforce`-режиме никакая
-PAM-аутентификация не пройдёт; logging-only режим не блокирует, но
-заполняет `/var/log/syslog` шумом `DIGSIG: NOT_ELF_SIGNED`.
-
-### 3.6 USB-токен утерян / заблокирован — пользователь не может войти
-
-**Это by-design**, но операторам сети надо понимать последствия.
-
-`pam_certauth` спроектирован как **жёсткий** второй фактор: без
-физического присутствия валидного токена с правильными расширениями
-`pam_cert_host_binding` и `pam_cert_user_binding` пользователь
-**не может пройти** PAM-стек, в который интегрирован модуль
-(`/etc/pam.d/sudo`, `/etc/pam.d/login`, `/etc/pam.d/fly-dm` и т. д.).
-Альтернативного пути аутентификации `pam_certauth` сам не предоставляет.
-
-**Что должен сделать админ ДО первого внедрения:**
-
-1. Сохранить локальный root-shell с выключенным `pam_certauth` или
-   оставить sudoers-правило для админ-аккаунта без второго фактора —
-   иначе блокировка единственного токена выводит из строя машину.
-2. Подготовить процесс выпуска **резервных** сертификатов: каждому
-   привилегированному пользователю — две физические флешки с разными
-   ключами, обе подписаны CA, обе с одинаковым `pam_cert_user_binding`.
-3. Документировать SLA на перевыпуск утерянного сертификата
-   (см. § 3.1 «Компрометация сертификата пользователя»).
-
-**Что произойдёт при потере токена:**
-
-- Все последующие попытки auth → `Authentication service cannot retrieve
-  authentication info` (PAM_AUTHINFO_UNAVAIL после `usb_wait_seconds`,
-  по умолчанию 10 c).
-- `monitord` продолжит работать, но не зарегистрирует ни одной активной
-  сессии — `on_usb_removed`-действие не сработает (нечего блокировать).
-
-**Что произойдёт при блокировке токена USBGuard'ом или ЗПС'ом:**
-
-- То же что при отсутствии токена + строки ошибки в `auth.log` (см. §
-  3.5).
-- Если блокировка случайная (новое правило USBGuard) — рекомендуется
-  держать админ-канал доступа (SSH с key-only auth, без PAM-цепочки
-  pam_certauth) до полной валидации развёртывания.
-
-### 3.6.1 USB извлечён, но logout не происходит (0.3.10+)
-
-**Симптом:** в journald корректно фиксируется удаление токена, monitord
-объявляет grace-окно истёкшим, но logout/lock не выполняется:
-
-```
-INFO pam_certauth.monitord: grace window expired, dispatching action serial="..."
-WARN pam_certauth.monitord: USB-removal action dropped: session has no logind id
-                            action=Logout target=Tty("/dev/tty1") ...
-INFO pam_certauth.monitord: tip: pam_sm_open_session pushes XDG_SESSION_ID to monitord ...
-```
-
-**Причина:** `pam_sm_open_session` не смог достать `XDG_SESSION_ID` из
-PAM-environment, поэтому monitord-запись осталась с placeholder-target'ом
-(`Tty` / `Display` / `Unknown`), а action-runner физически не умеет
-вызвать `terminate_session` без logind id.
-
-**Action-runner fallback (текущее поведение, 0.3.10):**
-
-| Конфигурация              | Что произойдёт без logind id                |
-|---------------------------|---------------------------------------------|
-| `action = "lock"`         | Дропается с WARN; сессия остаётся открытой  |
-| `action = "logout"`       | Дропается с WARN; сессия остаётся открытой  |
-| `action = "shutdown"`     | Срабатывает — `power_off` не требует logind |
-| `action = "hook"`         | Срабатывает — hook получает SESSION_ID env  |
-
-Hook-сценарий даёт оператору запасной выход: написать скрипт, который
-сам решает что делать без logind (например `pkill -KILL -u $PAM_USER`
-или `chvt 1` + sysrq).
-
-**Полный разбор причин и фикс** — `docs/install.md` §10
-«`Logout requested but session has no logind id`».
-
-### 3.7 PAM-стек заблокирован после неудачной правки
-
-**Симптом:** все пользователи (включая root) не могут войти.
-
-**Recovery:**
-
-1. На экране GRUB добавить к строке ядра:
-   `systemd.unit=rescue.target init=/bin/bash`.
-2. Перемонтировать `/` в `rw`:
-
-   ```bash
-   mount -o remount,rw /
-   ```
-
-3. Откатить `/etc/pam.d/*` из резервных копий, созданных
-   `integrate-pam.sh`:
-
-   ```bash
-   ls /etc/pam.d/*.bak.* | tail
-   cp /etc/pam.d/sudo.bak.20260501T103000Z /etc/pam.d/sudo
-   ```
-
-4. `systemctl reboot`.
-
+- [§8 Инциденты безопасности](troubleshooting.md#8-инциденты-безопасности): компрометация cert, потеря токена, CA worst-case, DIGSIG
+- [§2 USB и токены](troubleshooting.md#2-usb-и-токены): USBGuard, ЗПС, потеря/блокировка токена
+- [§3 monitord и daemon](troubleshooting.md#3-monitord-и-daemon): failed-старт, недоступный сокет
+- [§4 PAM-стек и lockout](troubleshooting.md#4-pam-стек-и-lockout): replay из rescue.target, `Logout requested but session has no logind id`
 ## 4. Backup и restore конфигурации
 
 ### 4.1 Что бэкапить
@@ -593,3 +362,33 @@ OCSP/CRL-кэши остаются в `/var/lib/pam_certauth/` и
 
 Для конфиденциальных сообщений о безопасности — см. контакты в
 [README.md](../README.md#безопасность-и-сообщения-об-уязвимостях).
+
+## CLA automation
+
+External-contributor CLA flow is enforced by `.github/workflows/cla.yml`
+(CLA Assistant Lite). Reference: design spec
+`docs/superpowers/specs/2026-06-04-cla-automation-design.md`.
+
+- **Signatures:** stored in the private repo `RoboNET/cla-signatures`,
+  file `signatures/version-1/cla.json`. Never edit manually.
+- **Token:** secret `CLA_SIGNATURES_PAT` (fine-grained PAT, contents:write
+  on `cla-signatures` only) expires yearly — renew in GitHub Developer
+  settings and update via `gh secret set CLA_SIGNATURES_PAT --repo
+  RoboNET/pam-certauth`. Symptom of expiry: CLA workflow run fails with a
+  401/403 on the signatures repo.
+- **Updating the CLA text:** bump **Document version** in
+  `docs/cla/CLA-individual.md`, change `path-to-signatures` in the workflow
+  to `signatures/version-2/cla.json` — the bot will re-request signatures
+  from everyone on their next PR.
+- **Corporate CLA:** executed manually via e-mail (see
+  `docs/cla/CLA-corporate.md`); after execution add the designated GitHub
+  accounts to the `allowlist` input in `.github/workflows/cla.yml`.
+- **Legal status:** the CLA text is a draft pending lawyer review; schedule
+  review before any certification round or external investment due
+  diligence. Re-signing mechanism above covers text upgrades.
+- **Pending first external PR:** the flow has not yet been exercised
+  end-to-end, and the CLA check is not yet a required status check on
+  `main`. When the first external PR arrives: verify the bot blocks and
+  unblocks correctly (including the `Full name:` line in the signing
+  comment), confirm the signature lands in `cla-signatures`, then add the
+  exact check name to branch protection as a required status check.

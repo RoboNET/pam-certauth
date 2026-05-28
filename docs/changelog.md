@@ -1,5 +1,139 @@
 # Changelog
 
+## [0.3.19] — 2026-05-09
+
+### Added
+
+- **`pam-certauth dump-host-id` CLI subcommand.** Пробует **ВСЕ**
+  канонические `host_identity`-источники (не только подмножество в
+  `[host_identity].sources`) и пишет TSV-отчёт. Колонки:
+  `source`, `status`, `hash_hex`, `hash_prefix`, `raw`, `normalized`,
+  `active_under_current_config`, `reason`. Строка с
+  `active_under_current_config=yes` отмечает источник, который daemon
+  сейчас реально использует. Запись атомарная через `--output FILE`
+  или `--usb` (автоматический mount первой USB r/w, имя
+  `host-ids-<hostname>-<UTC>.tsv`). Stdout без флагов. Exit ≠ 0,
+  если ни один источник не отдал непустое значение — сигнал «не
+  выписывать сертификат, пока не починён вход».
+- **`/usr/share/pam-certauth/finish-bootstrap.sh`** — single-pass
+  переход с clone-image bootstrap state на production. Атомарный
+  rewrite `config.toml` (`sources = ["override"]` → реальные источники)
+  с backup'ом `.bak.<UTC>`, валидация через `pam-certauth check`,
+  рестарт daemon'а, `dump-host-id --usb`. Флаги: `--non-interactive`
+  (Ansible), `--sources "A,B"` (или env `POST_INSTALL_SOURCES`),
+  `--no-restart`, `--no-dump`. Идемпотент: повторный запуск без
+  `sources = ["override"]` exit 0 без изменений.
+- **fly-dm greeter pivot #2: wallpaper writer.** GreetString.desktop
+  writer из 0.3.16 оказался no-op на production МКЦ-3 АРМ (fly-modern
+  hardcoded'но рендерит «Усиленный уровень защищенности» в headline
+  place). Замена: впечатать `host_id` в JPG, на который смотрит
+  `[background].path` в `/etc/X11/fly-dm/fly-modern/settings.ini`.
+  Opt-in: `[fly_dm_greeter].update_wallpaper = true`. Pure Rust
+  (`image` + `ab_glyph`), без native deps. Templates `template_ru` /
+  `template_en` (по locale), one-time backup оригинала. Atomic save.
+- **Admin-tools release tarball** `pam-certauth-admin-tools-<ver>.tar.gz`
+  загружается в GitHub Release **рядом** с `.deb` (НЕ упакован в `.deb`):
+  `issue-service-cert.sh` (per-host / wildcard / bootstrap modes),
+  `vault-pki-setup.sh`, `prepare-usb-flash.sh`, README. Project-neutral
+  naming. Хранится на CA-машине, не на боевых АРМ.
+
+### Docs
+
+- Новый документ `docs/clone-image.md` — end-to-end runbook раскатки
+  парка АРМ через клонированный образ (bootstrap-эталон,
+  `finish-bootstrap.sh`, CA-сторона, troubleshooting, Ansible).
+- `docs/install.md` §2.4¾, `docs/operations.md` §2.4,
+  `docs/cert-issuance.md` cross-linked на новый документ.
+
+## [0.3.18] — 2026-04-19
+
+### Removed
+
+- **Drop debconf prompt в `debian/postinst`** (введён в 0.3.16).
+  Операторы раскатывают через готовые `config.toml` (Ansible /
+  centralized rollout) — debconf-шаг при `dpkg install` только
+  переключал флаг в `config.toml` и добавлял moving parts (templates,
+  debconf dep, postinst branching) без изменения production-поведения.
+- Удалены `debian/templates`, `debian/config`, debconf-branch в
+  `debian/postinst`, `debconf` из `debian/control Depends`,
+  `confmodule` sourcing.
+
+### Unchanged
+
+- Daemon-side feature не менялась: `[fly_dm_greeter].update_greet_string = true`
+  в `config.toml` по-прежнему заставляет демон переписывать
+  `/etc/X11/fly-dm/override/GreetString.desktop` на старте.
+
+## [0.3.17] — 2026-04-19
+
+### CI-only
+
+- Per-build pipeline time снижено:
+  - `astra` job теперь `cargo nextest run --workspace --features astra-mac`
+    в **debug** profile. Прежний release-run занимал 510s vs ubuntu 56s
+    (9.1×) из-за workflow-level `CARGO_PROFILE_RELEASE_CODEGEN_UNITS=1`
+    + `LTO=thin` (нужны для production `.deb`), которые делают release
+    test compilation катастрофически медленным. Тесты по-прежнему
+    проходят `astra-mac` feature-gate.
+  - `scripts/build-deb.sh` больше не делает `cargo clean && cargo build --release`
+    перед `dpkg-buildpackage`. `debian/rules` уже чистит `target/` через
+    `override_dh_auto_clean` и пересобирает через `override_dh_auto_build` —
+    pre-build был чистым дублированием работы (~60s/pipeline).
+- Source-code изменений vs 0.3.16 нет. Тот же `.deb`, быстрее CI.
+
+## [0.3.16] — 2026-04-18
+
+### Changed
+
+- **fly-dm greeter pivot.** Revert `fly-dmrc greeter-show-messages`
+  (cargo-cult из 0.3.15 — таргетил KDM/LightDM legacy key, который
+  fly-qdm не парсит). Переключение на механизм, который реально
+  работает на Astra fly-qdm 2.15+: `/etc/X11/fly-dm/override/GreetString.desktop`
+  (freedesktop i18n `.desktop` файл). Live-testing на Astra VM
+  подтвердил рендер `host_id` в headline login-form'ы.
+- Opt-in: `[fly_dm_greeter].update_greet_string = true`. На старте
+  daemon резолвит host identity и переписывает `GreetString.desktop`
+  с short hash + source:
+  ```
+  Банкомат astra184 · host_id=abc12345 (dmi_board_serial)
+  ```
+  Original сохраняется как `.orig` при первом запуске. Atomic write
+  (tmpfile + rename). Silent skip на хостах без `/etc/X11/fly-dm/`.
+  Log-and-continue — auth никогда не блокируется ошибкой greeter writer.
+- Debconf prompt в `debian/postinst` (en + ru) спрашивает оператора
+  про включение banner'а; default off. **Удалён в 0.3.18** (см. выше).
+- `pam-certauth check` validator: `fly_dm_greeter_greet_string_customized`,
+  `_default`, `_override_missing`, `_read_failed` — Info-записи.
+- `integrate-pam.sh`: убраны `--enable-greeter-messages` /
+  `--no-greeter-messages` флаги и `fly-dmrc patcher` из 0.3.15.
+  Скрипт снова занимается **только** PAM-stack editing.
+
+## [0.3.15] — 2026-04-18
+
+### Added (superseded by 0.3.16 → 0.3.19)
+
+- Попытка №1 заставить fly-dm показать PAM_TEXT_INFO с `host_id`:
+  патч `fly-dmrc` через `integrate-pam.sh` (`greeter-show-messages = true`
+  под `[greeter]`). Идемпотент, backup `fly-dmrc.bak.<UTC>`. Флаги
+  `--enable-greeter-messages` (default ON для `fly-dm*`),
+  `--no-greeter-messages` (CI). `--unintegrate` `fly-dmrc` не трогает.
+- Startup-check `fly_dm_greeter` читает `fly-dmrc` и эмитит Info-запись:
+  `messages_on` / `_off` / `_default` / `_read_failed`. Silent skip
+  при отсутствии файла (sshd-only хосты, серверы).
+- **Не сработало на fly-qdm 2.15+** — таргетили KDM legacy key. Revert
+  в 0.3.16, окончательный workaround через wallpaper writer в 0.3.19.
+
+## [0.3.14] — 2026-04-05
+
+### Fixed
+
+- **Build hotfix.** Timestamp в `debian/changelog` для 0.3.13
+  (12:00 +0300) был раньше чем 0.3.12 (18:00 +0300) — Ubuntu lintian
+  `latest-changelog-entry-without-new-date` валил `.deb` build. Astra
+  `.deb` в 0.3.13 release собрался (Astra pipeline пропускает lintian).
+  Этот релиз бампает версию + timestamp, оба `.deb` строятся.
+- Функциональных изменений vs 0.3.13 нет.
+
 ## [0.3.13] — 2026-04-05
 
 ### Fixed
