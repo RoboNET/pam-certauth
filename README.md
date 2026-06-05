@@ -144,7 +144,12 @@ Documentation index: [docs/index.md](docs/index.md) (Russian).
 
 ## License
 
-Apache License 2.0 — see [LICENSE](LICENSE).
+Dual-licensed: [GNU AGPL-3.0](LICENSE) OR [commercial](LICENSE.commercial).
+Releases up to and including v0.3.19 were published under Apache-2.0
+and remain available under that license.
+
+> Development continues under the name **Tessera**:
+> <https://github.com/RoboNET/tessera>.
 
 ## Maintainer contact
 

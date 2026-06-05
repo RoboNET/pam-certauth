@@ -251,7 +251,12 @@ PAM-cdylib `pam_certauth.so` пишет события `tracing` в syslog
 
 ## Лицензия
 
-Apache License 2.0 — см. [LICENSE](LICENSE).
+Двойная лицензия: [GNU AGPL-3.0](LICENSE) ИЛИ [коммерческая](LICENSE.commercial).
+Релизы до v0.3.19 включительно опубликованы под Apache-2.0 и остаются
+доступными под ней.
+
+> Разработка продолжается под именем **Tessera**:
+> <https://github.com/RoboNET/tessera>.
 
 ## Контакты сопровождения
 
