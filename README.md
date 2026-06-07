@@ -1,3 +1,9 @@
+> [!IMPORTANT]
+> **This repository is archived.** The project has been renamed and
+> development continues as **Tessera**:
+> <https://github.com/RoboNET/tessera>. This repository is kept for
+> reference only and receives no updates or security fixes.
+
 # pam_certauth — USB-token certificate authentication for Linux
 
 > Russian translation: [README.ru.md](README.ru.md). Detailed
